@@ -1,0 +1,13 @@
+Action: Analyze deployment constraints for target environment.
+
+Context:
+- Target environment: {target_environment}
+- System context: {system_context}
+- Architecture: {architecture}
+
+Instructions:
+1. Identify infrastructure, platform, resource, and environment constraints.
+2. Categorize constraints as mandatory, recommended, or optional.
+3. Assess priority and impact (blocks_deployment, affects_performance, etc.).
+4. Document technical details and cost implications.
+

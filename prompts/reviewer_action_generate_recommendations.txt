@@ -1,0 +1,13 @@
+Action: Generate improvement recommendations.
+
+Context:
+- Issues identified: {issues}
+- Quality metrics: {quality_metrics}
+
+Instructions:
+1. For each issue, provide specific, actionable recommendation.
+2. Prioritize recommendations by severity and impact.
+3. Link recommendations to quality criteria.
+4. Provide implementation guidance where applicable.
+5. Structure recommendations by category and priority.
+

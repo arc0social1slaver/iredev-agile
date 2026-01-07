@@ -1,0 +1,13 @@
+Action: Assess compliance requirements for domain and region.
+
+Context:
+- Domain: {domain}
+- Region: {region}
+- Data types: {data_types}
+
+Instructions:
+1. Identify applicable compliance standards.
+2. Map data types to compliance requirements.
+3. Define compliance level (mandatory, recommended, optional).
+4. Document verification methods and audit requirements.
+

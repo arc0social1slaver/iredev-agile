@@ -1,0 +1,13 @@
+Action: Generate user scenarios for personas.
+
+Context:
+- Persona: {persona_name}
+- System context: {system_context}
+- Persona characteristics: {persona_characteristics}
+
+Instructions:
+1. Create realistic scenarios covering typical usage patterns.
+2. Include: title, description, context, preconditions, steps, expected outcome, success criteria.
+3. Consider frequency, importance, and complexity.
+4. Cover both happy paths and error scenarios.
+

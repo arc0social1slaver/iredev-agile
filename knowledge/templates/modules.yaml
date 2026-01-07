@@ -1,0 +1,29 @@
+version: "1.0.0"
+description: "Configuration for template knowledge modules"
+
+modules:
+  srs_template:
+    file: "srs_template.yaml"
+    version: "1.0.0"
+    enabled: true
+    cache_enabled: true
+    auto_update: false
+    dependencies: ["ieee_830"]
+    load_priority: 0
+    metadata:
+      name: "SRS Document Template"
+      description: "Standard SRS document template"
+      tags: ["srs", "template", "documentation"]
+  
+  user_story_template:
+    file: "user_story_template.yaml"
+    version: "1.0.0"
+    enabled: false  # Not created yet
+    cache_enabled: true
+    auto_update: false
+    dependencies: []
+    load_priority: 1
+    metadata:
+      name: "User Story Template"
+      description: "Template for user stories"
+      tags: ["user_story", "template", "agile"]

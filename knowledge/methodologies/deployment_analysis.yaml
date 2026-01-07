@@ -1,0 +1,209 @@
+name: "Deployment Analysis Methodology"
+version: "1.0.0"
+description: "Systematic approach to analyzing deployment constraints and requirements"
+type: "methodology"
+created_at: "2024-01-01T00:00:00"
+
+content:
+  description: "Structured methodology for deployment constraint analysis"
+  
+  methodology_overview:
+    purpose: "Systematically identify and analyze deployment constraints for software systems"
+    scope: "Covers infrastructure, platform, environment, and resource constraints"
+    approach: "Risk-based analysis with stakeholder involvement"
+  
+  phases:
+    phase_1_environment_analysis:
+      name: "Environment Analysis"
+      description: "Analyze target deployment environment characteristics"
+      activities:
+        - "Identify target deployment environments"
+        - "Assess environment capabilities and limitations"
+        - "Document infrastructure requirements"
+        - "Evaluate platform compatibility"
+      deliverables:
+        - "Environment assessment report"
+        - "Infrastructure requirements document"
+        - "Platform compatibility matrix"
+      duration: "2-3 days"
+    
+    phase_2_constraint_identification:
+      name: "Constraint Identification"
+      description: "Identify all deployment-related constraints"
+      activities:
+        - "Conduct stakeholder interviews"
+        - "Review technical specifications"
+        - "Analyze regulatory requirements"
+        - "Assess resource limitations"
+      deliverables:
+        - "Constraint inventory"
+        - "Stakeholder requirements"
+        - "Regulatory compliance checklist"
+      duration: "3-5 days"
+    
+    phase_3_impact_assessment:
+      name: "Impact Assessment"
+      description: "Assess impact and priority of identified constraints"
+      activities:
+        - "Evaluate constraint criticality"
+        - "Assess implementation complexity"
+        - "Analyze cost implications"
+        - "Determine risk levels"
+      deliverables:
+        - "Impact assessment matrix"
+        - "Risk analysis report"
+        - "Cost-benefit analysis"
+      duration: "2-3 days"
+    
+    phase_4_mitigation_planning:
+      name: "Mitigation Planning"
+      description: "Develop strategies to address constraints"
+      activities:
+        - "Design mitigation strategies"
+        - "Plan implementation approach"
+        - "Identify alternative solutions"
+        - "Create contingency plans"
+      deliverables:
+        - "Mitigation strategy document"
+        - "Implementation roadmap"
+        - "Contingency plans"
+      duration: "3-4 days"
+  
+  constraint_categories:
+    infrastructure:
+      description: "Physical and virtual infrastructure limitations"
+      examples:
+        - "Hardware specifications"
+        - "Network bandwidth"
+        - "Storage capacity"
+        - "Geographic distribution"
+      analysis_criteria:
+        - "Availability"
+        - "Performance"
+        - "Scalability"
+        - "Cost"
+    
+    platform:
+      description: "Platform and technology stack constraints"
+      examples:
+        - "Operating system compatibility"
+        - "Runtime environment requirements"
+        - "Database platform limitations"
+        - "Third-party service dependencies"
+      analysis_criteria:
+        - "Compatibility"
+        - "Support lifecycle"
+        - "Licensing costs"
+        - "Migration complexity"
+    
+    environment:
+      description: "Deployment environment specific constraints"
+      examples:
+        - "Security policies"
+        - "Network configurations"
+        - "Access controls"
+        - "Monitoring requirements"
+      analysis_criteria:
+        - "Security level"
+        - "Compliance requirements"
+        - "Operational complexity"
+        - "Maintenance overhead"
+    
+    resource:
+      description: "Resource availability and allocation constraints"
+      examples:
+        - "Budget limitations"
+        - "Personnel availability"
+        - "Time constraints"
+        - "Skill requirements"
+      analysis_criteria:
+        - "Cost impact"
+        - "Resource availability"
+        - "Timeline feasibility"
+        - "Skill gap analysis"
+  
+  analysis_techniques:
+    stakeholder_analysis:
+      description: "Identify and analyze stakeholder requirements"
+      steps:
+        - "Map stakeholder ecosystem"
+        - "Conduct stakeholder interviews"
+        - "Document requirements and constraints"
+        - "Prioritize stakeholder needs"
+    
+    technical_assessment:
+      description: "Evaluate technical constraints and capabilities"
+      steps:
+        - "Review system architecture"
+        - "Assess technology compatibility"
+        - "Evaluate performance requirements"
+        - "Identify technical risks"
+    
+    risk_analysis:
+      description: "Identify and assess deployment risks"
+      steps:
+        - "Identify potential risks"
+        - "Assess risk probability and impact"
+        - "Prioritize risks by severity"
+        - "Develop risk mitigation strategies"
+    
+    cost_benefit_analysis:
+      description: "Evaluate costs and benefits of deployment options"
+      steps:
+        - "Identify all cost components"
+        - "Quantify benefits and value"
+        - "Compare deployment alternatives"
+        - "Recommend optimal approach"
+  
+  best_practices:
+    early_engagement:
+      - "Involve stakeholders from project start"
+      - "Conduct regular constraint reviews"
+      - "Maintain open communication channels"
+      - "Document all decisions and rationale"
+    
+    comprehensive_analysis:
+      - "Consider all constraint categories"
+      - "Use multiple analysis techniques"
+      - "Validate findings with stakeholders"
+      - "Document assumptions and dependencies"
+    
+    iterative_approach:
+      - "Refine constraints throughout project"
+      - "Adapt to changing requirements"
+      - "Learn from deployment experiences"
+      - "Continuously improve processes"
+    
+    risk_management:
+      - "Identify risks early and often"
+      - "Develop comprehensive mitigation plans"
+      - "Monitor risks throughout deployment"
+      - "Maintain contingency plans"
+  
+  deliverables:
+    constraint_analysis_report:
+      sections:
+        - "Executive summary"
+        - "Environment analysis"
+        - "Constraint inventory"
+        - "Impact assessment"
+        - "Mitigation strategies"
+        - "Recommendations"
+      format: "Structured document with appendices"
+    
+    deployment_requirements:
+      sections:
+        - "Infrastructure requirements"
+        - "Platform requirements"
+        - "Security requirements"
+        - "Performance requirements"
+        - "Operational requirements"
+      format: "Requirements specification document"
+
+metadata:
+  author: "iReDev Framework"
+  tags: ["deployment", "analysis", "methodology", "constraints"]
+  references:
+    - "Software Deployment Best Practices"
+    - "Infrastructure as Code Principles"
+    - "DevOps Deployment Strategies"

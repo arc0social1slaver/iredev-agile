@@ -1,0 +1,229 @@
+name: "SRS Document Template"
+version: "1.0.0"
+description: "Standard template for Software Requirements Specification documents"
+type: "templates"
+created_at: "2024-01-01T00:00:00"
+
+content:
+  description: "IEEE 830 compliant SRS document template"
+  
+  template_structure:
+    document_header:
+      title: "[System Name] Software Requirements Specification"
+      version: "[Version Number]"
+      date: "[Date]"
+      authors: "[Author Names]"
+      reviewers: "[Reviewer Names]"
+      approval: "[Approval Authority]"
+    
+    revision_history:
+      columns: ["Version", "Date", "Author", "Description"]
+      example:
+        - version: "1.0"
+          date: "YYYY-MM-DD"
+          author: "[Author Name]"
+          description: "Initial version"
+    
+    table_of_contents:
+      auto_generated: true
+      include_figures: true
+      include_tables: true
+    
+    sections:
+      1_introduction:
+        1.1_purpose:
+          content: |
+            This document specifies the requirements for [System Name]. 
+            It is intended for [target audience] and will be used for [purpose].
+          
+        1.2_scope:
+          content: |
+            [System Name] is a [system type] that will [primary function].
+            The system will [key capabilities] and will not [exclusions].
+          
+        1.3_definitions:
+          format: "term: definition"
+          examples:
+            - "SRS: Software Requirements Specification"
+            - "API: Application Programming Interface"
+        
+        1.4_references:
+          format: "[ID] Title, Author, Date"
+          examples:
+            - "[IEEE830] IEEE Std 830-1998, IEEE, 1998"
+        
+        1.5_overview:
+          content: |
+            This document is organized into [number] sections:
+            - Section 2 provides overall description
+            - Section 3 details specific requirements
+      
+      2_overall_description:
+        2.1_product_perspective:
+          subsections:
+            system_interfaces: "Description of system interfaces"
+            user_interfaces: "Description of user interfaces"
+            hardware_interfaces: "Description of hardware interfaces"
+            software_interfaces: "Description of software interfaces"
+            communications_interfaces: "Description of communication interfaces"
+            memory_constraints: "Description of memory constraints"
+        
+        2.2_product_functions:
+          format: "High-level summary of functions"
+          template: |
+            The system will provide the following major functions:
+            - [Function 1]: [Description]
+            - [Function 2]: [Description]
+        
+        2.3_user_characteristics:
+          categories:
+            - "Primary users: [description]"
+            - "Secondary users: [description]"
+            - "Technical expertise: [level]"
+            - "Domain knowledge: [level]"
+        
+        2.4_constraints:
+          types:
+            regulatory: "Regulatory constraints"
+            hardware: "Hardware limitations"
+            interfaces: "Interface constraints"
+            parallel_operation: "Parallel operation constraints"
+            audit_functions: "Audit function constraints"
+            control_functions: "Control function constraints"
+            higher_order_language: "Language constraints"
+            signal_handshake: "Signal handshake protocols"
+            reliability: "Reliability requirements"
+            criticality: "Criticality of application"
+            safety_security: "Safety and security considerations"
+        
+        2.5_assumptions_dependencies:
+          assumptions: "List of assumptions"
+          dependencies: "List of dependencies"
+      
+      3_specific_requirements:
+        3.1_external_interfaces:
+          user_interfaces:
+            template: |
+              UI-[ID]: [Interface Name]
+              Description: [Description]
+              Inputs: [Input specifications]
+              Outputs: [Output specifications]
+          
+          hardware_interfaces:
+            template: |
+              HW-[ID]: [Interface Name]
+              Description: [Description]
+              Supported hardware: [Hardware list]
+          
+          software_interfaces:
+            template: |
+              SW-[ID]: [Interface Name]
+              Description: [Description]
+              Interface type: [Type]
+              Data format: [Format]
+          
+          communications_interfaces:
+            template: |
+              COM-[ID]: [Interface Name]
+              Protocol: [Protocol]
+              Data format: [Format]
+              Error handling: [Error handling]
+        
+        3.2_functions:
+          template: |
+            FUNC-[ID]: [Function Name]
+            Description: [Detailed description]
+            Inputs: [Input specifications]
+            Processing: [Processing description]
+            Outputs: [Output specifications]
+            Error handling: [Error conditions and responses]
+        
+        3.3_performance_requirements:
+          categories:
+            response_time: "Response time requirements"
+            throughput: "Throughput requirements"
+            capacity: "Capacity requirements"
+            degradation_modes: "Degradation mode requirements"
+            resource_utilization: "Resource utilization requirements"
+        
+        3.4_logical_database_requirements:
+          data_elements:
+            template: |
+              DATA-[ID]: [Data Element Name]
+              Description: [Description]
+              Type: [Data type]
+              Range: [Value range]
+              Accuracy: [Accuracy requirements]
+          
+          relationships: "Description of data relationships"
+          integrity_constraints: "Data integrity constraints"
+          retention_requirements: "Data retention requirements"
+        
+        3.5_design_constraints:
+          standards_compliance: "Standards that must be followed"
+          hardware_limitations: "Hardware-imposed constraints"
+          software_limitations: "Software-imposed constraints"
+        
+        3.6_software_system_attributes:
+          reliability:
+            template: |
+              The system shall have a reliability of [percentage]% uptime
+              Mean time between failures: [MTBF]
+              Mean time to repair: [MTTR]
+          
+          availability:
+            template: |
+              The system shall be available [percentage]% of the time
+              Scheduled downtime: [hours] per [period]
+          
+          security:
+            template: |
+              Access control: [requirements]
+              Data protection: [requirements]
+              Audit trail: [requirements]
+          
+          maintainability:
+            template: |
+              Code documentation: [requirements]
+              Modular design: [requirements]
+              Change impact: [requirements]
+          
+          portability:
+            template: |
+              Target platforms: [platforms]
+              Portability constraints: [constraints]
+
+  formatting_guidelines:
+    numbering: "Use hierarchical numbering (1, 1.1, 1.1.1)"
+    requirements_format: "REQ-[ID]: The system shall [requirement]"
+    cross_references: "Use section numbers for cross-references"
+    tables: "Include table captions and numbering"
+    figures: "Include figure captions and numbering"
+    
+  quality_checklist:
+    completeness:
+      - "All sections are present"
+      - "All requirements are specified"
+      - "All interfaces are defined"
+    
+    consistency:
+      - "Terminology is consistent"
+      - "Numbering is consistent"
+      - "Format is consistent"
+    
+    clarity:
+      - "Requirements are unambiguous"
+      - "Language is precise"
+      - "Examples are provided where needed"
+    
+    traceability:
+      - "Requirements are numbered"
+      - "Cross-references are accurate"
+      - "Source requirements are identified"
+
+metadata:
+  author: "iReDev Framework"
+  tags: ["template", "srs", "ieee_830", "documentation"]
+  references:
+    - "IEEE Std 830-1998"
+    - "Software Requirements Engineering practices"

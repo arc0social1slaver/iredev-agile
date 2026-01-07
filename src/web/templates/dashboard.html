@@ -1,0 +1,277 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - iReDev Framework{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1 class="mb-4">
+            <i class="fas fa-tachometer-alt text-primary"></i> Dashboard
+        </h1>
+    </div>
+</div>
+
+<!-- Statistics Cards -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card bg-primary text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h5 class="card-title">Active Processes</h5>
+                        <h2 class="mb-0">{{ active_sessions|length }}</h2>
+                    </div>
+                    <div class="align-self-center">
+                        <i class="fas fa-play-circle fa-2x"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card bg-warning text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h5 class="card-title">Pending Reviews</h5>
+                        <h2 class="mb-0">{{ pending_reviews|length }}</h2>
+                    </div>
+                    <div class="align-self-center">
+                        <i class="fas fa-clipboard-check fa-2x"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card bg-success text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h5 class="card-title">Completed Today</h5>
+                        <h2 class="mb-0">0</h2>
+                    </div>
+                    <div class="align-self-center">
+                        <i class="fas fa-check-circle fa-2x"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card bg-info text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h5 class="card-title">Total Artifacts</h5>
+                        <h2 class="mb-0">0</h2>
+                    </div>
+                    <div class="align-self-center">
+                        <i class="fas fa-file-alt fa-2x"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Active Processes -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="fas fa-play-circle text-primary"></i> Active Processes
+                </h5>
+                <a href="{{ url_for('start_process') }}" class="btn btn-primary btn-sm">
+                    <i class="fas fa-plus"></i> Start New Process
+                </a>
+            </div>
+            <div class="card-body">
+                {% if active_sessions %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Project</th>
+                                    <th>Status</th>
+                                    <th>Phase</th>
+                                    <th>Progress</th>
+                                    <th>Created</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for session in active_sessions %}
+                                <tr>
+                                    <td>
+                                        <strong>{{ session.project_config.project_name }}</strong>
+                                        <br>
+                                        <small class="text-muted">{{ session.project_config.domain }}</small>
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-{{ 'success' if session.status.value == 'completed' else 'warning' if session.status.value == 'paused_for_review' else 'primary' }}">
+                                            {{ session.status.value.replace('_', ' ').title() }}
+                                        </span>
+                                    </td>
+                                    <td>{{ session.current_phase.value.replace('_', ' ').title() }}</td>
+                                    <td>
+                                        <div class="progress" style="height: 20px;">
+                                            <div class="progress-bar" role="progressbar" 
+                                                 style="width: {{ (session.progress * 100)|round }}%"
+                                                 aria-valuenow="{{ (session.progress * 100)|round }}" 
+                                                 aria-valuemin="0" aria-valuemax="100">
+                                                {{ (session.progress * 100)|round }}%
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td>{{ session.created_at|datetime }}</td>
+                                    <td>
+                                        <a href="{{ url_for('process_detail', session_id=session.session_id) }}" 
+                                           class="btn btn-sm btn-outline-primary">
+                                            <i class="fas fa-eye"></i> View
+                                        </a>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center py-4">
+                        <i class="fas fa-inbox fa-3x text-muted mb-3"></i>
+                        <h5 class="text-muted">No active processes</h5>
+                        <p class="text-muted">Start a new requirement development process to get started.</p>
+                        <a href="{{ url_for('start_process') }}" class="btn btn-primary">
+                            <i class="fas fa-plus"></i> Start New Process
+                        </a>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Pending Reviews -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="fas fa-clipboard-check text-warning"></i> Pending Reviews
+                </h5>
+                <a href="{{ url_for('review_dashboard') }}" class="btn btn-outline-warning btn-sm">
+                    <i class="fas fa-eye"></i> View All
+                </a>
+            </div>
+            <div class="card-body">
+                {% if pending_reviews %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Description</th>
+                                    <th>Phase</th>
+                                    <th>Artifact Type</th>
+                                    <th>Created</th>
+                                    <th>Timeout</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for review in pending_reviews[:5] %}
+                                <tr>
+                                    <td>{{ review.description }}</td>
+                                    <td>{{ review.phase.replace('_', ' ').title() }}</td>
+                                    <td>
+                                        <span class="badge bg-secondary">
+                                            {{ review.artifact_type.value.replace('_', ' ').title() }}
+                                        </span>
+                                    </td>
+                                    <td>{{ review.created_at|datetime }}</td>
+                                    <td>
+                                        <span class="text-{{ 'danger' if review.timeout_at < now() else 'warning' }}">
+                                            {{ review.timeout_at|datetime }}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <a href="{{ url_for('review_detail', review_id=review.id) }}" 
+                                           class="btn btn-sm btn-warning">
+                                            <i class="fas fa-clipboard-check"></i> Review
+                                        </a>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    {% if pending_reviews|length > 5 %}
+                        <div class="text-center mt-3">
+                            <a href="{{ url_for('review_dashboard') }}" class="btn btn-outline-warning">
+                                View {{ pending_reviews|length - 5 }} more reviews
+                            </a>
+                        </div>
+                    {% endif %}
+                {% else %}
+                    <div class="text-center py-4">
+                        <i class="fas fa-check-circle fa-3x text-success mb-3"></i>
+                        <h5 class="text-muted">No pending reviews</h5>
+                        <p class="text-muted">All reviews are up to date.</p>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Real-time updates via WebSocket
+const socket = io();
+
+socket.on('connect', function() {
+    console.log('Connected to iReDev server');
+});
+
+socket.on('phase_started', function(data) {
+    // Update UI when a phase starts
+    showNotification(`Phase started: ${data.phase}`, 'info');
+    setTimeout(() => location.reload(), 2000);
+});
+
+socket.on('phase_completed', function(data) {
+    // Update UI when a phase completes
+    showNotification(`Phase completed: ${data.phase}`, 'success');
+    setTimeout(() => location.reload(), 2000);
+});
+
+socket.on('review_required', function(data) {
+    // Update UI when review is required
+    showNotification('New review required', 'warning');
+    setTimeout(() => location.reload(), 2000);
+});
+
+function showNotification(message, type) {
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
+    alertDiv.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    const container = document.querySelector('.container');
+    container.insertBefore(alertDiv, container.firstChild);
+    
+    // Auto-dismiss after 5 seconds
+    setTimeout(() => {
+        if (alertDiv.parentNode) {
+            alertDiv.remove();
+        }
+    }, 5000);
+}
+</script>
+{% endblock %}

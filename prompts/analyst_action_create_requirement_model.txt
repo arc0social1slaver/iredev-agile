@@ -1,0 +1,14 @@
+Action: Create structured requirement model.
+
+Context:
+- System requirements: {requirements}
+- Stakeholder info: {stakeholder_info}
+- Domain: {domain}
+
+Instructions:
+1. Organize requirements into functional, non-functional, and constraints.
+2. Identify assumptions and dependencies.
+3. Define stakeholders and their roles.
+4. Create glossary of key terms.
+5. Establish relationships between requirements.
+

@@ -1,0 +1,12 @@
+Action: Create consolidated user requirements list.
+
+Context:
+- Interview records: {interview_records}
+- Requirements identified: {requirements}
+
+Instructions:
+1. Consolidate requirements from all interviews.
+2. Remove duplicates and merge similar requirements.
+3. Prioritize requirements.
+4. Structure as traceable, sortable list with source, priority, and description.
+

@@ -17,7 +17,7 @@ from typing import Dict, Any, List, Optional, Callable, Tuple
 from ..agent.communication import CommunicationProtocol, Message, MessageType
 from ..artifact.events import EventBus, Event, EventType
 from ..artifact.pool import ArtifactPool
-from ..artifact.models import Artifact, ArtifactType, ArtifactStatus
+from ..artifact.models import Artifact, ArtifactType, ArtifactStatus, ArtifactMetadata
 from .human_in_loop import HumanFeedback, FeedbackType
 
 logger = logging.getLogger(__name__)
@@ -376,6 +376,19 @@ class FeedbackProcessor:
 
             # Get the updated artifact
             artifact = self.artifact_pool.get_artifact(task.artifact_id)
+
+            ## Arifact mockup
+            artifact = Artifact(
+                id=task.artifact_id,
+                type=ArtifactType.INTERVIEW_RECORD,
+                content={"Subject": "PPL"},
+                metadata=ArtifactMetadata(source_agent="interviewer"),
+                version="1.0",
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
+                created_by="interviewer",
+                status=ArtifactStatus.APPROVED,
+            )
             if not artifact:
                 return False
 
@@ -480,6 +493,7 @@ class FeedbackProcessor:
             estimated_effort=self._estimate_effort(
                 primary_action, len(specific_issues)
             ),
+            metadata={"artifact_id": artifact.id},
         )
 
     def _match_feedback_patterns(self, content: str) -> FeedbackAction:
@@ -658,7 +672,7 @@ class FeedbackProcessor:
         agent_name: str,
         action: FeedbackAction,
         session_id: str,
-        priority: int = None,
+        priority: Optional[int] = None,
     ) -> CorrectionTask:
         """Create a correction task."""
         if priority is None:
@@ -734,10 +748,10 @@ class FeedbackProcessor:
             # Send correction request to the responsible agent
             message = Message(
                 id=str(uuid.uuid4()),
-                type=MessageType.TASK_REQUEST,
+                type=MessageType.REQUEST,
                 sender="feedback_processor",
                 recipient=task.agent_name,
-                content={
+                payload={
                     "task_type": "correction",
                     "action": task.action.value,
                     "artifact_id": task.artifact_id,
@@ -746,15 +760,30 @@ class FeedbackProcessor:
                     "metadata": task.metadata,
                 },
                 timestamp=datetime.now(),
+                session_id=task.metadata.get("session_id", ""),
             )
 
             # Send message through communication protocol
-            success = self.communication_protocol.send_message(message)
+            success = None
+            if self.communication_protocol:
+                success = self.communication_protocol.send_message(
+                    recipient=task.agent_name,
+                    message_type=MessageType.REQUEST,
+                    payload={
+                        "task_type": "correction",
+                        "action": task.action.value,
+                        "artifact_id": task.artifact_id,
+                        "instructions": task.instructions,
+                        "priority": task.priority,
+                        "metadata": task.metadata,
+                    },
+                )
 
             if success:
                 task.result = {"message_sent": True, "message_id": message.id}
+                return True
 
-            return success
+            return False
 
         except Exception as e:
             logger.error(f"Error executing correction action: {e}")
@@ -798,4 +827,26 @@ class FeedbackProcessor:
         # This would need to be implemented based on how we track
         # which artifact the feedback is about
         # For now, we'll need to get this information from the feedback metadata
-        return None  # Placeholder
+        # return None  # Placeholder
+
+        artifact_id = analysis.metadata.get("artifact_id", "")
+
+        # artifact = self.artifact_pool.get_artifact(artifact_id)
+
+        ## Artifact mockup
+        from .orchestrator import ArtifactMetadata
+
+        artifact = Artifact(
+            id=artifact_id,
+            type=ArtifactType.INTERVIEW_RECORD,
+            content={},
+            metadata=ArtifactMetadata(source_agent="interviewer"),
+            version="1.0",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            created_by="interviewer",
+            status=ArtifactStatus.DRAFT,
+        )
+        if not artifact:
+            return None
+        return artifact

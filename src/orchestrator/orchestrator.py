@@ -290,6 +290,7 @@ class RequirementOrchestrator:
             self.communication_protocol = CommunicationProtocol(
                 "agent_coordinator", session.session_id, coordinator
             )
+            self.feedback_processor.communication_protocol = self.communication_protocol
             self._register_agent_instance()
 
             asyncio.create_task(self.communication_protocol.start_async_processing())
@@ -373,7 +374,7 @@ class RequirementOrchestrator:
                     session_id, artifact_type.value, artifact_id
                 )
 
-    def resume_after_review(self, session_id: str, feedback: Dict[str, Any]) -> None:
+    def resume_after_review(self, session_id: str, feedback, artifact_id) -> None:
         """
         Resume the process after human review.
 
@@ -391,36 +392,85 @@ class RequirementOrchestrator:
                 logger.warning(f"Session {session_id} is not paused for review")
                 return
 
+            self._process_feedback(session_id, feedback, artifact_id)
             # Record feedback
             session.current_review_point = None
             session.review_history.append(
                 {
                     "timestamp": datetime.now().isoformat(),
                     "phase": session.current_phase.value,
-                    "feedback": feedback,
+                    "feedback": feedback.to_dict(),
                 }
             )
 
             session.status = ProcessStatus.RUNNING
             session.updated_at = datetime.now()
 
-            # Publish feedback received event
-            self.event_bus.publish(
-                Event(
-                    id=str(uuid.uuid4()),
-                    type=EventType.HUMAN_FEEDBACK_RECEIVED,
-                    source="human_reviewer",
-                    target="orchestrator",
-                    payload={"feedback": feedback, "session_id": session_id},
-                    timestamp=datetime.now(),
-                    session_id=session_id,
-                )
-            )
-
             logger.info(f"Resumed session {session_id} after review")
 
             # Continue orchestration
             # asyncio.create_task(self._run_orchestration(session_id))
+
+    def _process_feedback(self, session_id, feedback_data, artifact_id):
+
+        session = self.active_sessions.get(session_id)
+        if not session:
+            return
+
+        review_point_id = (
+            feedback_data.to_dict().get("review_point_id")
+            or session.current_review_point
+        )
+
+        review_point = None
+
+        # Try to get review point from completed reviews
+        for rp in self.human_review_manager.completed_reviews.values():
+            if rp.id == review_point_id:
+                review_point = rp
+                break
+
+        if not review_point:
+            logger.error(f"Review point {review_point_id} not found")
+            return
+
+        # artifact = self.artifact_pool.get_artifact(artifact_id)
+        ## Mockup data
+        artifact = Artifact(
+            id=str(uuid.uuid4()),
+            type=ArtifactType.INTERVIEW_RECORD,
+            content={},
+            metadata=ArtifactMetadata(source_agent="interviewer"),
+            version="1.0",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            created_by="interviewer",
+            status=ArtifactStatus.DRAFT,
+        )
+        if not artifact:
+            raise ValueError(f"Artifact {artifact_id} not found")
+
+        analysis = self.feedback_processor.process_feedback(feedback_data, artifact)
+        correction_tasks = self.feedback_processor.create_correction_tasks(
+            analysis, session_id
+        )
+
+        for task in correction_tasks:
+            success = self.feedback_processor.execute_correction_task(task.id)
+            if success:
+                validation_criteria = {
+                    "min_content_length": 3,  # Minimum content length
+                    "required_sections": ["requirements", "specifications"],
+                }
+                is_valid = self.feedback_processor.validate_correction(
+                    task.id, validation_criteria
+                )
+                if is_valid:
+                    logger.info(f"✅ Correction task {task.id} validated successfully")
+                else:
+                    logger.warning(f"⚠️ Correction task {task.id} failed validation")
+            else:
+                logger.error(f"❌ Correction task {task.id} execution failed")
 
     def get_process_status(self, session_id: str) -> Optional[ProcessSession]:
         """
@@ -845,4 +895,4 @@ class RequirementOrchestrator:
             )
             logger.info(f"✅ Feedback submitted for review point {review_point_id}")
 
-            self.resume_after_review(session_id, feedback.to_dict())
+            self.resume_after_review(session_id, feedback, artifact_id)

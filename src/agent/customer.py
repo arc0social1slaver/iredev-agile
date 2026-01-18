@@ -1,4 +1,6 @@
 from .base import BaseAgent
+from typing import Optional
+
 
 class Customer(BaseAgent):
     """Human Input to provide goal and comfirm"""

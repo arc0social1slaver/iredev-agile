@@ -13,7 +13,7 @@ class HuggingFaceLLM(BaseLLM):
         model_name: str,
         api_base: str = "http://localhost:8000/v1",
         api_key: str = "EMPTY",
-        device: str = None,  # Kept for backward compatibility
+        # device: Optional[str] = None,  # Kept for backward compatibility
         # torch_dtype: Optional[torch.dtype] = None,  # Kept for backward compatibility
         max_input_tokens: int = 10000,  # Maximum input tokens allowed
     ):
@@ -130,7 +130,7 @@ class HuggingFaceLLM(BaseLLM):
         self,
         messages: List[Dict[str, str]],
         temperature: float,
-        max_tokens: Optional[int],
+        max_output_tokens: Optional[int],
     ) -> str:
         """Generate a response using the vLLM API.
 
@@ -143,7 +143,7 @@ class HuggingFaceLLM(BaseLLM):
             Generated response text
         """
         max_output_tokens = (
-            max_tokens if max_tokens is not None else self.max_output_tokens
+            max_output_tokens
         )
         # Check token count and truncate if needed
         total_tokens = self._count_tokens(messages)

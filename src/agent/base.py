@@ -114,7 +114,7 @@ class BaseAgent(ABC):
         return self.llm.generate(
             messages=messages if messages is not None else self.memory,
             temperature=self.llm_params["temperature"],
-            max_tokens=self.llm_params["max_output_tokens"],
+            max_output_tokens=self.llm_params["max_output_tokens"],
         )
 
     @abstractmethod

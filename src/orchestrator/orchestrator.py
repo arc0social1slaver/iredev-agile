@@ -199,7 +199,7 @@ class RequirementOrchestrator:
 
         # Agent assignments for each phase
         self.phase_agents = {
-            ProcessPhase.INTERVIEW: ["interviewer"],
+            ProcessPhase.INTERVIEW: ["interviewer", "enduser"],
             ProcessPhase.USER_MODELING: ["enduser"],
             ProcessPhase.DEPLOYMENT_ANALYSIS: ["deployer"],
             ProcessPhase.REQUIREMENT_ANALYSIS: ["analyst"],

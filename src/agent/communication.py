@@ -676,11 +676,6 @@ class CommunicationProtocol:
                 await self._handle_response(message)
                 return
 
-            elif message.type == MessageType.TASK_PROCESS:
-                agent_task = asyncio.create_task(self._process_task_assignment(message))
-                await asyncio.wait([agent_task])
-                return
-
             # Find handlers for this message type
             handlers = self.message_handlers.get(message.type, [])
 
@@ -735,46 +730,6 @@ class CommunicationProtocol:
             future = self.pending_requests[correlation_id]
             if not future.done():
                 future.set_result(message)
-
-    async def _process_task_assignment(self, message: Message) -> None:
-        """
-        Execute a task with the assigned agent instance.
-
-        Args:
-            task_id: Task identifier
-            agent_name: Agent name
-            agent_instance: Actual agent instance
-        """
-        from .coordination import TaskStatus
-
-        task_id = message.payload.get("task_id", "")
-        agent_name = message.payload.get("agent_name", "")
-
-        task = self.coordinator.tasks.get(task_id)
-        agent_instance = self.agent_instances.get(agent_name)
-
-        if not task or not agent_instance:
-            logger.error(
-                f"Task {task_id} or agent {agent_instance} not found for execution"
-            )
-            return
-
-        with self.coordinator._lock:
-            task.status = TaskStatus.IN_PROGRESS
-            task.started_at = datetime.now()
-
-        try:
-            logger.info(f"Starting execution of task {task_id} with agent {agent_name}")
-
-            result = await agent_instance.process(task)
-            logger.info(f"Agent {agent_name} completed task {task_id}")
-
-            self.coordinator.complete_task(task_id, agent_name, result)
-            return
-        except Exception as e:
-            logger.error(f"Error executing task {task_id} with agent {agent_name}: {e}")
-            self.coordinator.fail_task(task_id, agent_name, str(e))
-            raise
 
     async def _send_heartbeats(self) -> None:
         """Send periodic heartbeat messages."""

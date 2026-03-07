@@ -39,7 +39,11 @@ class BaseInterviewerAgent(KnowledgeDrivenAgent):
         interview_config = self.config.get("custom_params", {})
 
         # Interview configuration
+        self.max_customer_turns = interview_config.get("max_customer_turns", 50)
+        self.max_enduser_turns = interview_config.get("max_enduser_turns", 50)
         self.completeness_threshold = interview_config.get(
+            "completeness_threshold", 0.8
+        )
 
         # Interview state
         self.current_interview_session: Optional[str] = None

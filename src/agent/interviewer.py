@@ -36,11 +36,10 @@ class BaseInterviewerAgent(KnowledgeDrivenAgent):
             config_path=config_path,
             **kwargs,
         )
+        interview_config = self.config.get("custom_params", {})
 
         # Interview configuration
-        self.max_customer_turns = self.config.get("max_customer_turns", 50)
-        self.max_enduser_turns = self.config.get("max_enduser_turns", 50)
-        self.completeness_threshold = self.config.get("completeness_threshold", 0.8)
+        self.completeness_threshold = interview_config.get(
 
         # Interview state
         self.current_interview_session: Optional[str] = None
@@ -785,18 +784,18 @@ Instructions:
 class InterviewerAgent(BaseInterviewerAgent):
     """Backward compatibility wrapper for InterviewerAgent."""
 
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, *args, **kwargs):
         # Convert old config format if needed
         if isinstance(config_path, dict):
             config = config_path
         else:
             config = {}
 
-        super().__init__(config_path=config_path)
+        super().__init__(config_path=config_path, *args, **kwargs)
 
         # Maintain old attribute names for compatibility
-        self.max_customer_turns = config.get("max_customer_turns", 50)
-        self.max_enduser_turns = config.get("max_enduser_turns", 50)
+        # self.max_customer_turns = config.get("max_customer_turns", 50)
+        # self.max_enduser_turns = config.get("max_enduser_turns", 50)
 
     def conduct_stakeholder_interview(
         self,

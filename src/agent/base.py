@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any, Optional
 import os
 from pathlib import Path
-from src.config.config_manager import get_config_manager
+from src.config.config_manager import get_config_manager, AgentConfig
 
 from .llm.factory import LLMFactory
 from .llm.base import BaseLLM
@@ -27,7 +27,7 @@ class BaseAgent(ABC):
         self.llm, self.llm_params = self._initialize_llm(name, config_path)
         config_manager = get_config_manager()
         iredev_config = config_manager.load_config()
-        self.config = iredev_config.agents[name].__dict__
+        self.config = iredev_config.agents.get(name, AgentConfig(name)).__dict__
 
     def _initialize_llm(
         self, agent_name: str, config_path: Optional[str] = None

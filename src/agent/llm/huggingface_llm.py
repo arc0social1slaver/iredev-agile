@@ -14,7 +14,7 @@ class HuggingFaceLLM(BaseLLM):
         api_base: str = "http://localhost:8000/v1",
         api_key: str = "EMPTY",
         device: str = None,  # Kept for backward compatibility
-        torch_dtype: torch.dtype = None,  # Kept for backward compatibility
+        # torch_dtype: Optional[torch.dtype] = None,  # Kept for backward compatibility
         max_input_tokens: int = 10000,  # Maximum input tokens allowed
     ):
         """Initialize HuggingFace LLM via vLLM API.

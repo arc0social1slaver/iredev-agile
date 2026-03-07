@@ -318,6 +318,25 @@ Instructions:
 3. Link NFRs to source personas and scenarios.
 4. Prioritize based on user impact.
 """,
+            "interviewer_asking": """Action: Provide authentic goals, frustrations, expectations, and feedback in a natural, conversational way — as if you are a real person using this system.
+
+Context:
+- Question from interviewer: {msg}
+
+ALLOWED ACTIONS (choose EXACTLY ONE):
+- respond: provide the answer text and recipients.
+- clarify: ask interviewer for clarification (if question ambiguous).
+
+DECISION RULES:
+- If question is clear: respond with relevant details
+- If question is ambiguous: ask for clarify
+- If question is outside your knowledge: respond with what you know
+- Always try to provide examples and specific details
+
+Instructions:
+1. Structure response as:
+   RESPOND: [Your answer]
+""",
         }
 
         base_prompt = action_prompts.get(action, f"Action: {action}")
@@ -1751,10 +1770,36 @@ Instructions:
 
         return implementation_plan
 
-    async def process(self, task: Task) -> Dict:
-        logger.info(f"Analyst {self.name} executing task: {task.description}")
+    async def process(
+        self,
+        task: Task,
+        in_queue_mess: Optional[asyncio.Queue],
+        out_queue_mess: Optional[asyncio.Queue],
+    ) -> Dict:
+        logger.info(f"Agent {self.name} executing task: {task.description}")
 
-        await asyncio.sleep(5)
+        if task.metadata.get("phase") == "interview":
+            while True and in_queue_mess and out_queue_mess:
+                msg = await in_queue_mess.get()
+                if msg == "STOP":
+                    break
+
+                action_prompt = self._get_action_prompt(
+                    "interviewer_asking",
+                    context={"msg": msg},
+                )
+                cot_result = await asyncio.to_thread(
+                    self.generate_with_cot,
+                    prompt=action_prompt,
+                    context={
+                        "msg": msg,
+                    },
+                    reasoning_template="enduser_response",
+                )
+                question = cot_result["response"].replace("RESPOND:", "").strip()
+                logger.info(f"[EndUser]: {question}")
+                await out_queue_mess.put(question)
+                in_queue_mess.task_done()
 
         return {
             "artifact_type": "requirement_model",

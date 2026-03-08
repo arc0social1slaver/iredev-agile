@@ -728,6 +728,8 @@ class AgentCoordinator:
             List of (task_id, agent_name) assignments
         """
         assignments = []
+        in_queue_mess = asyncio.Queue()
+        out_queue_mess = asyncio.Queue()
 
         with self._lock:
             # Get available agents
@@ -743,6 +745,7 @@ class AgentCoordinator:
 
             # Process task queue
             remaining_tasks = []
+            task_execute = []
 
             for task_id in self.task_queue:
                 task = self.tasks[task_id]
@@ -780,6 +783,12 @@ class AgentCoordinator:
 
                     assignments.append((task_id, selected_agent))
 
+                    task_execute.append(
+                        self.process_task_assignment(
+                            task_id, selected_agent, in_queue_mess, out_queue_mess
+                        )
+                    )
+
                     # Remove from available agents if overloaded
                     if agent_state.load_level >= 0.8:
                         del available_agents[selected_agent]
@@ -792,10 +801,54 @@ class AgentCoordinator:
                 else:
                     remaining_tasks.append(task_id)
 
-            # Update task queue
+            # Update task
+            for task_exe in task_execute:
+                await task_exe
             self.task_queue = remaining_tasks
 
         return assignments
+
+    def process_task_assignment(
+        self,
+        task_id: str,
+        agent_name: str,
+        in_queue_mess: asyncio.Queue,
+        out_queue_mess: asyncio.Queue,
+    ):
+        """Process a task assignment by executing it with the agent."""
+
+        def on_process_done(task_result: asyncio.Task):
+            result = task_result.result()
+            logger.info(f"Agent {agent_name} completed task {task_id}")
+            self.complete_task(task_id, agent_name, result)
+
+        agent = self.agent_instances.get(agent_name)
+        task = self.tasks.get(task_id)
+
+        if not task or not agent:
+            logger.error(
+                f"Task {task_id} or agent {agent_name} not found for execution"
+            )
+            return
+
+        # Update task status to IN_PROGRESS
+        with self._lock:
+            task.status = TaskStatus.IN_PROGRESS
+            task.started_at = datetime.now()
+
+        try:
+            logger.info(f"Starting execution of task {task_id} with agent {agent_name}")
+
+            result_task = asyncio.create_task(
+                agent.process(task, in_queue_mess, out_queue_mess)
+            )
+            result_task.add_done_callback(on_process_done)
+
+            return result_task
+        except Exception as e:
+            logger.error(f"Error executing task {task_id} with agent {agent_name}: {e}")
+            self.fail_task(task_id, agent_name, str(e))
+            raise
 
     def complete_task(
         self, task_id: str, agent_name: str, result: Optional[Dict[str, Any]] = None

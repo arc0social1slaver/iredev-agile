@@ -36,11 +36,14 @@ class BaseInterviewerAgent(KnowledgeDrivenAgent):
             config_path=config_path,
             **kwargs,
         )
+        interview_config = self.config.get("custom_params", {})
 
         # Interview configuration
-        self.max_customer_turns = self.config.get("max_customer_turns", 50)
-        self.max_enduser_turns = self.config.get("max_enduser_turns", 50)
-        self.completeness_threshold = self.config.get("completeness_threshold", 0.8)
+        self.max_customer_turns = interview_config.get("max_customer_turns", 50)
+        self.max_enduser_turns = interview_config.get("max_enduser_turns", 50)
+        self.completeness_threshold = interview_config.get(
+            "completeness_threshold", 0.8
+        )
 
         # Interview state
         self.current_interview_session: Optional[str] = None
@@ -136,8 +139,11 @@ Instructions:
                 return base_prompt
         return base_prompt
 
-    def chat_with_customer(
-        self, customer: Customer, stakeholder_type: str = "customer"
+    async def chat_with_stakeholder(
+        self,
+        in_queue_mess: Optional[asyncio.Queue] = None,
+        out_queue_mess: Optional[asyncio.Queue] = None,
+        stakeholder_type: str = "enduser",
     ) -> Dict[str, Any]:
         """
         Conduct a structured interview with a customer using knowledge-driven approach.
@@ -151,6 +157,7 @@ Instructions:
         """
         # Start new interview session
         session_id = str(uuid.uuid4())
+        is_ended = False
         self.current_interview_session = session_id
 
         # Initialize interview record
@@ -194,7 +201,7 @@ Instructions:
 
         logger.info(f"Starting interview session {session_id} with {stakeholder_type}")
 
-        while turn_count < self.max_customer_turns:
+        while turn_count < self.max_enduser_turns and in_queue_mess and out_queue_mess:
             # Generate response using CoT reasoning with action prompt
             action_prompt = self._get_action_prompt(
                 "conduct_interview",
@@ -208,7 +215,8 @@ Instructions:
                 },
             )
 
-            cot_result = self.generate_with_cot(
+            cot_result = await asyncio.to_thread(
+                self.generate_with_cot,
                 prompt=action_prompt,
                 context={
                     "stakeholder_type": stakeholder_type,
@@ -216,7 +224,7 @@ Instructions:
                     "methodology_guide": methodology_guide,
                     "interview_record": interview_record,
                 },
-                reasoning_template="interview_questioning",
+                reasoning_template="interview_planning",
             )
 
             response = cot_result["response"]
@@ -234,10 +242,13 @@ Instructions:
             }
 
             self.add_to_memory("assistant", question)
-            print(f"\n[Interviewer]: {question}")
+            logger.info(f"[Interviewer]: {question}")
 
-            # Get customer response
-            answer = customer.chat_with_interviewer(question)
+            await in_queue_mess.put(question)
+
+            # Get stakeholder response
+            answer = await out_queue_mess.get()
+
             turn_data["answer"] = answer
             turn_data["answer_timestamp"] = datetime.now()
 
@@ -251,17 +262,23 @@ Instructions:
             interview_record["requirements_identified"].extend(extracted_requirements)
 
             # Check if conversation should end
-            if end_conversation or self._should_end_conversation(interview_record):
-                print(
-                    "\n[Interviewer]: Thank you for your time. I have gathered comprehensive information about your requirements."
+            if end_conversation and self._should_end_conversation(interview_record):
+                logger.info(
+                    "[Interviewer]: Thank you for your time. I have gathered comprehensive information about your requirements."
                 )
                 self.add_to_memory(
                     "assistant",
                     "Ending conversation - requirements gathering complete.",
                 )
+                await in_queue_mess.put("STOP")
+                is_ended = True
                 break
 
             turn_count += 1
+            out_queue_mess.task_done()
+
+        if not is_ended and in_queue_mess:
+            await in_queue_mess.put("STOP")
 
         # Finalize interview record
         interview_record["end_time"] = datetime.now()
@@ -785,18 +802,18 @@ Instructions:
 class InterviewerAgent(BaseInterviewerAgent):
     """Backward compatibility wrapper for InterviewerAgent."""
 
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, *args, **kwargs):
         # Convert old config format if needed
         if isinstance(config_path, dict):
             config = config_path
         else:
             config = {}
 
-        super().__init__(config_path=config_path)
+        super().__init__(config_path=config_path, *args, **kwargs)
 
         # Maintain old attribute names for compatibility
-        self.max_customer_turns = config.get("max_customer_turns", 50)
-        self.max_enduser_turns = config.get("max_enduser_turns", 50)
+        # self.max_customer_turns = config.get("max_customer_turns", 50)
+        # self.max_enduser_turns = config.get("max_enduser_turns", 50)
 
     def conduct_stakeholder_interview(
         self,
@@ -1927,11 +1944,29 @@ class InterviewerAgent(BaseInterviewerAgent):
 
         return "\n".join(report_lines)
 
-    async def process(self, task: Task) -> Dict:
+    async def process(
+        self,
+        task: Task,
+        in_queue_mess: Optional[asyncio.Queue],
+        out_queue_mess: Optional[asyncio.Queue],
+    ) -> Dict:
         logger.info(f"Interviewer {self.name} executing task: {task.description}")
 
-        await asyncio.sleep(5)
+        if task.metadata.get("phase") == "interview":
+            interview_record = await self.chat_with_stakeholder(
+                in_queue_mess, out_queue_mess, "enduser"
+            )
 
+            # interview_artifact = self.create_interview_artifact(
+            #     interview_record
+            # )  ## STILL BUGS
+
+            # ---------- Uncomment for print the artifact
+            # import json
+
+            # with open("demo1.json", "w", encoding="utf-8") as f:
+            #     json.dump(interview_record, f, indent=4, default=str)
+            # ----------
         return {
             "artifact_type": "interview_transcript",
             "participants": task.metadata.get("stakeholders", []),

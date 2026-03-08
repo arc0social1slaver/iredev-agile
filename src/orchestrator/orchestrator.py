@@ -199,7 +199,7 @@ class RequirementOrchestrator:
 
         # Agent assignments for each phase
         self.phase_agents = {
-            ProcessPhase.INTERVIEW: ["interviewer"],
+            ProcessPhase.INTERVIEW: ["interviewer", "enduser"],
             ProcessPhase.USER_MODELING: ["enduser"],
             ProcessPhase.DEPLOYMENT_ANALYSIS: ["deployer"],
             ProcessPhase.REQUIREMENT_ANALYSIS: ["analyst"],
@@ -847,10 +847,6 @@ class RequirementOrchestrator:
     def _on_task_assigned(self, session_id: str, task_id: str, agent_name: str) -> None:
         """Handle task assignment."""
         logger.info(f"Task {task_id} assigned to {agent_name} in session {session_id}")
-        if self.communication_protocol:
-            self.communication_protocol.send_task_process(
-                "agent_coordinator", {"task_id": task_id, "agent_name": agent_name}
-            )
 
     def _on_task_completed(
         self, session_id: str, task_id: str, agent_name: str

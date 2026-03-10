@@ -235,7 +235,7 @@ class RequirementOrchestrator:
         logger.info("Initialized RequirementOrchestrator")
 
     def _initialize_agents(self):
-        self.agents["interviewer"] = InterviewerAgent()
+        self.agents["interviewer"] = InterviewerAgent(artifact_pool=self.artifact_pool)
         self.agents["enduser"] = EndUserAgent()
 
     def _register_agent_instance(self):

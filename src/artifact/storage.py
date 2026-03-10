@@ -214,7 +214,7 @@ class FileSystemArtifactStorage(ArtifactStorage):
             
             try:
                 with open(file_path, 'w', encoding='utf-8') as f:
-                    json.dump(artifact.to_dict(), f, indent=2, ensure_ascii=False)
+                    json.dump(artifact.to_dict(), f, indent=4, default=str)
                 return artifact.id
             except Exception as e:
                 raise RuntimeError(f"Failed to store artifact {artifact.id}: {e}")

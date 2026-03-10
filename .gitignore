@@ -218,3 +218,6 @@ __marimo__/
 # Config file
 config/agent_config.yaml
 config/iredev_config.yaml
+
+# Artifacts
+artifacts

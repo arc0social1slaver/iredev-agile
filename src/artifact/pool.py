@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any, Callable
 
 from .models import Artifact, ArtifactVersion, ArtifactQuery, ArtifactStatus, ArtifactType
-from .storage import ArtifactStorage, MemoryArtifactStorage
+from .storage import ArtifactStorage, MemoryArtifactStorage, FileSystemArtifactStorage
 from .events import EventBus, Event, EventType, get_event_bus
 
 
@@ -62,7 +62,7 @@ class ArtifactPool:
     def __init__(self, storage: Optional[ArtifactStorage] = None, 
                  event_bus: Optional[EventBus] = None,
                  session_id: Optional[str] = None):
-        self.storage = storage or MemoryArtifactStorage()
+        self.storage = storage or FileSystemArtifactStorage()
         self.event_bus = event_bus or get_event_bus()
         self.session_id = session_id or str(uuid.uuid4())
         self.change_tracker = ChangeTracker()

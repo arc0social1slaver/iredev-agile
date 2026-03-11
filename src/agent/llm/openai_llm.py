@@ -119,7 +119,7 @@ class OpenAILLM(BaseLLM):
         self,
         messages: List[Dict[str, str]],
         temperature: float,
-        max_tokens: Optional[int],
+        max_output_tokens: Optional[int],
     ) -> str:
         """Generate a response using OpenAI API with rate limiting.
 
@@ -135,14 +135,14 @@ class OpenAILLM(BaseLLM):
         input_tokens = self._count_messages_tokens(messages)
 
         # Wait if we're approaching rate limits (estimate output tokens as max_output_tokens)
-        self.rate_limiter.wait_if_needed(input_tokens, max_tokens)
+        self.rate_limiter.wait_if_needed(input_tokens, max_output_tokens)
 
         # Make the API call
         response = self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             temperature=temperature,
-            max_tokens=max_tokens if max_tokens else None,
+            max_completion_tokens=max_output_tokens if max_output_tokens else None,
         )
 
         result_text = response.choices[0].message.content

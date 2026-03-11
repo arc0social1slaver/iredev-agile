@@ -3,6 +3,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from .customer import Customer
 from ..knowledge.base_types import KnowledgeType
 from ..artifact.models import Artifact, ArtifactType, ArtifactStatus, ArtifactMetadata
+from ..artifact.pool import ArtifactPool
 from ..orchestrator.orchestrator import Task
 from datetime import datetime
 import logging
@@ -238,7 +239,7 @@ Instructions:
                 "question": question,
                 "reasoning": reasoning,
                 "methodology": methodology,
-                "timestamp": datetime.now(),
+                "timestamp": datetime.now().isoformat(),
             }
 
             self.add_to_memory("assistant", question)
@@ -250,7 +251,7 @@ Instructions:
             answer = await out_queue_mess.get()
 
             turn_data["answer"] = answer
-            turn_data["answer_timestamp"] = datetime.now()
+            turn_data["answer_timestamp"] = datetime.now().isoformat()
 
             self.add_to_memory("user", answer)
             interview_record["turns"].append(turn_data)
@@ -802,7 +803,7 @@ Instructions:
 class InterviewerAgent(BaseInterviewerAgent):
     """Backward compatibility wrapper for InterviewerAgent."""
 
-    def __init__(self, config_path: Optional[str] = None, *args, **kwargs):
+    def __init__(self, config_path: Optional[str] = None, artifact_pool: Optional[ArtifactPool] = None, *args, **kwargs):
         # Convert old config format if needed
         if isinstance(config_path, dict):
             config = config_path
@@ -810,6 +811,7 @@ class InterviewerAgent(BaseInterviewerAgent):
             config = {}
 
         super().__init__(config_path=config_path, *args, **kwargs)
+        self.artifact_pool: ArtifactPool = artifact_pool
 
         # Maintain old attribute names for compatibility
         # self.max_customer_turns = config.get("max_customer_turns", 50)
@@ -1295,77 +1297,38 @@ class InterviewerAgent(BaseInterviewerAgent):
         """
         # Create artifact metadata
         metadata = ArtifactMetadata(
-            title=f"Interview Record - {interview_record['stakeholder_info'].get('type', 'Stakeholder')}",
-            description=f"Structured interview record with {interview_record['stakeholder_info'].get('type', 'stakeholder')}",
-            author=self.name,
-            version="1.0",
             tags=[
                 "interview",
                 "requirements",
                 "elicitation",
-                interview_record["stakeholder_info"].get("type", "stakeholder"),
+                interview_record["stakeholder_type"],
             ],
-            source="interviewer_agent",
-            confidence_score=interview_record.get("quality_score", 0.8),
+            source_agent="interviewer",
+            related_artifacts=[],
+            quality_score=None,
+            review_comments=[],
+            custom_properties=[]
         )
 
         # Structure the artifact content
         artifact_content = {
             "interview_metadata": {
                 "session_id": interview_record["session_id"],
-                "stakeholder_info": interview_record["stakeholder_info"],
-                "duration_minutes": interview_record.get("total_duration_minutes", 0),
-                "quality_score": interview_record.get("quality_score", 0.0),
-                "completeness_score": interview_record.get(
-                    "completeness_assessment", {}
-                ).get("overall_score", 0.0),
+                "stakeholder_type": interview_record["stakeholder_type"],
             },
             "interview_process": {
-                "objectives": interview_record.get("interview_objectives", []),
-                "phases_completed": [
-                    phase["phase_name"] for phase in interview_record.get("phases", [])
-                ],
-                "total_questions_asked": sum(
-                    len(phase.get("questions_asked", []))
-                    for phase in interview_record.get("phases", [])
-                ),
+                "total_questions_asked": len(interview_record.get("turns", [])),
                 "methodologies_applied": list(
                     set(
                         [
-                            q.get("methodology", "")
-                            for phase in interview_record.get("phases", [])
-                            for q in phase.get("questions_asked", [])
+                            turn.get("methodology", "")
+                            for turn in interview_record.get("turns", [])
                         ]
                     )
                 ),
             },
-            "requirements_discovered": {
-                "functional_requirements": [
-                    req
-                    for req in interview_record.get("requirements_identified", [])
-                    if req.get("type") == "functional"
-                ],
-                "non_functional_requirements": [
-                    req
-                    for req in interview_record.get("requirements_identified", [])
-                    if req.get("type") == "non_functional"
-                ],
-                "constraints": interview_record.get("constraints_identified", []),
-                "assumptions": interview_record.get("assumptions_identified", []),
-                "business_rules": interview_record.get("business_rules", []),
-            },
-            "analysis_results": {
-                "gaps_identified": interview_record.get("gaps_identified", []),
-                "stakeholder_concerns": interview_record.get(
-                    "stakeholder_concerns", []
-                ),
-                "success_criteria": interview_record.get("success_criteria", []),
-                "priority_areas": self._extract_priority_areas(interview_record),
-                "risk_factors": self._identify_risk_factors(interview_record),
-            },
-            "next_steps": interview_record.get("next_steps", []),
             "raw_interview_data": {
-                "phases": interview_record.get("phases", []),
+                "turns": interview_record.get("turns", []),
                 "start_time": (
                     interview_record.get("start_time").isoformat()
                     if interview_record.get("start_time")
@@ -1957,16 +1920,14 @@ class InterviewerAgent(BaseInterviewerAgent):
                 in_queue_mess, out_queue_mess, "enduser"
             )
 
-            # interview_artifact = self.create_interview_artifact(
-            #     interview_record
-            # )  ## STILL BUGS
+            interview_artifact = self.create_interview_artifact(
+                interview_record
+            )
 
-            # ---------- Uncomment for print the artifact
-            # import json
+            self.artifact_pool.store_artifact(
+                interview_artifact, self.name
+            )
 
-            # with open("demo1.json", "w", encoding="utf-8") as f:
-            #     json.dump(interview_record, f, indent=4, default=str)
-            # ----------
         return {
             "artifact_type": "interview_transcript",
             "participants": task.metadata.get("stakeholders", []),

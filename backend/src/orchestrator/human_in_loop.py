@@ -230,7 +230,7 @@ class HumanReviewManager:
             # Update artifact status
             artifact.status = ArtifactStatus.UNDER_REVIEW
             self.artifact_pool.update_artifact(
-                artifact_id, {"status": ArtifactStatus.UNDER_REVIEW.value}
+                artifact_id, {"status": ArtifactStatus.UNDER_REVIEW}
             )
 
             # Publish review requested event
@@ -331,12 +331,12 @@ class HumanReviewManager:
                     artifact.status = ArtifactStatus.APPROVED
                     self.artifact_pool.update_artifact(
                         review_point.artifact_id,
-                        {"status": ArtifactStatus.APPROVED.value},
+                        {"status": ArtifactStatus.APPROVED},
                     )
                 else:
                     artifact.status = ArtifactStatus.DRAFT
                     self.artifact_pool.update_artifact(
-                        review_point.artifact_id, {"status": ArtifactStatus.DRAFT.value}
+                        review_point.artifact_id, {"status": ArtifactStatus.DRAFT}
                     )
 
             # Publish feedback received event

@@ -68,9 +68,7 @@ Neutral, empathetic, and inquisitive; fluent in both business and technical term
 Workflow:
 1. Conduct multi-round dialogue with end users.
 2. Produce interview records immediately after dialogues.
-3. Write a consolidated user requirements list.
-4. Conduct multi-round dialogue with system deployers.
-5. Write an operation environment list.
+3. Write a consolidated user stories after every dialogues with end users.
 
 Experience & Preferred Practices:
 1. Follow ISO/IEC/IEEE 29148 and BABOK v3 guidance.
@@ -129,6 +127,100 @@ Instructions:
 2. Remove duplicates and merge similar requirements.
 3. Prioritize requirements.
 4. Structure as traceable, sortable list with source, priority, and description.
+""",
+            "conduct_user_story": """You are a requirements analyst tasked with extracting user stories from stakeholder interviews.
+
+STAKEHOLDER TYPE: {stakeholder_type}
+
+INTERVIEWER'S QUESTION: "{question}"
+
+STAKEHOLDER'S RESPONSE: "{answer}"
+
+REQUIREMENT_IDENTIFIED: {requirement}
+
+TASK: Analyze requirements identifed, the stakeholder's response and extract any user stories you find. A user story follows the format:
+"As a [role], I want [goal] so that [benefit]"
+
+Look for natural language that implies:
+- Who the user is (role)
+- What they want to accomplish (goal)
+- Why they want it (benefit)
+
+EXTRACTION GUIDELINES:
+1. If you find explicit "As a... I want... so that..." statements, extract them directly
+2. If you find implied needs, convert them to proper user story format
+3. If you find pain points, convert them to stories about what would solve them
+4. If you find multiple stories in one response, extract all of them
+5. If no clear story is found, return an empty list
+6. After extraction, remove duplicates and merge similar user stories.
+
+RESPONSE FORMAT:
+Return a JSON array of user stories. Each story should have:
+- role: the user role
+- goal: what they want to accomplish  
+- benefit: why they want it
+- confidence: 0.0-1.0 how confident you are this is a valid story
+
+If no stories are found, return an empty array: []
+
+Return ONLY the JSON array, no other text.
+""",
+            "create_functional_and_non_functional_requirements": """You are a requirements analyst extracting ONLY functional and non-functional requirements from stakeholder interviews.
+
+CONTEXT:
+- Stakeholder Type: {stakeholder_type}
+- Interviewer's Question: "{question}"
+- Stakeholder's Response: "{answer}"
+
+TASK: Analyze the stakeholder's response, extract ONLY functional requirements and non-functional requirements from the response.
+
+## FUNCTIONAL REQUIREMENTS
+What the system MUST DO - specific behaviors, features, or capabilities.
+
+## NON-FUNCTIONAL REQUIREMENTS
+Quality attributes - HOW WELL the system performs.
+Categories:
+- Performance: speed, response time, throughput, ...
+- Security: authentication, encryption, access control, ...
+- Usability: ease of use, learnability, ...
+- Reliability: uptime, availability, fault tolerance, ...
+- Scalability: handle growth, concurrent users, ...
+- Accessibility: screen readers, keyboard navigation, ...
+- Maintainability: easy to update, configure, ...
+
+EXTRACTION RULES:
+1. Extract ONLY what is explicitly stated or clearly implied
+2. Do NOT extract user stories, epics, pain points, or other artifact types
+3. If the same requirement is mentioned multiple times, include it only once
+4. For NFRs, identify the correct category
+5. Preserve the original phrasing
+6. If no clear functional requirement is found, return empty array: []
+7. If no clear non-functional requirement is found, return empty array: []
+8. After extraction, remove duplicates and merge similar requirements
+
+RESPONSE FORMAT:
+Return a JSON object with exactly this structure:
+{{
+    "functional": [
+        {{
+            "description": [clear description of the functional requirement],
+            "original_phrase": [exact quote from response],
+            "confidence": [0.0-1.0 how confident you are this is a valid requirement],
+            "measurable_criteria": [clear measurable criteria of the functional requirement],
+            "acceptance_criteria": [clear acceptance criteria of the functional requirement]
+        }}
+    ],
+    "non_functional": [
+        {{
+            "category": [performance|security|usability|reliability|scalability|accessibility|maintainability],
+            "description": [clear description of the quality requirement],
+            "original_phrase": [exact quote from response],
+            "confidence": [0.0-1.0 how confident you are this is a valid requirement],
+            "measurable_criteria": [clear measurable criteria of the non functional requirement],
+            "acceptance_criteria": [clear acceptance criteria of the non functional requirement]
+        }}
+    ]
+}}
 """,
         }
 

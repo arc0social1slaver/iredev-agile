@@ -1,0 +1,89 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── BASE ──────────────────────────────────────────────────────────── */
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html, body, #root {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    /* Claude's warm parchment background */
+    background-color: #F4F0E6;
+    color: #1A1410;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Barely-there warm scrollbar */
+  ::-webkit-scrollbar       { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #D4CBC0; border-radius: 99px; }
+  ::-webkit-scrollbar-thumb:hover { background: #BBAFA4; }
+
+  pre, code, kbd {
+    font-family: "Fira Code", "Cascadia Code", Menlo, Monaco, Consolas, monospace;
+  }
+
+  textarea { resize: none; }
+}
+
+/* ─── COMPONENTS ────────────────────────────────────────────────────── */
+@layer components {
+
+  /* Inline `code` chip inside assistant prose */
+  .inline-code {
+    background: #EDEAD4;
+    color: #2D2820;
+    padding: 0.1em 0.38em;
+    border-radius: 0.3em;
+    font-size: 0.83em;
+    font-family: "Fira Code", "Cascadia Code", Menlo, Consolas, monospace;
+    border: 1px solid #DDD8C8;
+  }
+}
+
+/* ─── ANIMATIONS ─────────────────────────────────────────────────────── */
+
+/* Message bubble: fade-in + float up */
+@keyframes msgIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.msg-enter { animation: msgIn 0.18s cubic-bezier(0.16,1,0.3,1) both; }
+
+/* Blinking text cursor during streaming */
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+.cursor {
+  display: inline-block;
+  width: 2px; height: 0.9em;
+  background: #1A1410;
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  animation: blink 1s step-end infinite;
+  margin-left: 1px;
+}
+
+/* Artifact panel slides in from right */
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.panel-enter { animation: slideInRight 0.2s cubic-bezier(0.16,1,0.3,1) both; }
+
+/* Staggered fade-up for home screen chips */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.chip-1 { animation: fadeUp 0.28s 0.04s cubic-bezier(0.16,1,0.3,1) both; }
+.chip-2 { animation: fadeUp 0.28s 0.08s cubic-bezier(0.16,1,0.3,1) both; }
+.chip-3 { animation: fadeUp 0.28s 0.12s cubic-bezier(0.16,1,0.3,1) both; }
+.chip-4 { animation: fadeUp 0.28s 0.16s cubic-bezier(0.16,1,0.3,1) both; }

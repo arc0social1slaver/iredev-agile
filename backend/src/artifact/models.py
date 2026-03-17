@@ -27,6 +27,8 @@ class ArtifactType(Enum):
     REVIEW_REPORT = "review_report"
     PAIN_POINTS = "pain_points"
     NON_FUNCTIONAL_REQUIREMENTS = "non_functional_requirements"
+    PRODUCT_BACKLOG = "product_backlog"
+    SPRINT_BACKLOG = "sprint_backlog"
 
 
 class ArtifactStatus(Enum):

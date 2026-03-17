@@ -19,6 +19,7 @@ from ..agent.coordination import AgentCoordinator, Task, TaskPriority, TaskStatu
 from ..agent.communication import CommunicationProtocol, Message, MessageType
 from ..agent.interviewer import InterviewerAgent
 from ..agent.enduser import EndUserAgent
+from ..agent.sprint_manager import SprintManagerAgent
 from ..artifact.events import EventBus, Event, EventType
 from ..artifact.pool import ArtifactPool
 from ..artifact.models import Artifact, ArtifactType, ArtifactStatus, ArtifactMetadata
@@ -32,6 +33,7 @@ class ProcessPhase(Enum):
 
     INITIALIZATION = "initialization"
     INTERVIEW = "interview"
+    INTERVIEW_REVIEW = "interview_review"
     USER_MODELING = "user_modeling"
     DEPLOYMENT_ANALYSIS = "deployment_analysis"
     REQUIREMENT_ANALYSIS = "requirement_analysis"
@@ -146,6 +148,7 @@ class RequirementOrchestrator:
         artifact_pool: ArtifactPool,
         event_bus: EventBus,
         human_review_manager=None,
+        human_queue: Optional[asyncio.Queue] = None,
     ):
         """
         Initialize the requirement orchestrator.
@@ -181,11 +184,13 @@ class RequirementOrchestrator:
         self._lock = threading.RLock()
         self._running = False
         self._orchestration_task: Optional[asyncio.Task] = None
+        self.human_queue: Optional[asyncio.Queue] = human_queue
 
         # Phase definitions and transitions
         self.phase_transitions = {
             ProcessPhase.INITIALIZATION: ProcessPhase.INTERVIEW,
-            ProcessPhase.INTERVIEW: ProcessPhase.USER_MODELING,
+            ProcessPhase.INTERVIEW: ProcessPhase.INTERVIEW_REVIEW,
+            ProcessPhase.INTERVIEW_REVIEW: ProcessPhase.USER_MODELING,
             ProcessPhase.USER_MODELING: ProcessPhase.DEPLOYMENT_ANALYSIS,
             ProcessPhase.DEPLOYMENT_ANALYSIS: ProcessPhase.REQUIREMENT_ANALYSIS,
             ProcessPhase.REQUIREMENT_ANALYSIS: ProcessPhase.URL_REVIEW,
@@ -200,6 +205,7 @@ class RequirementOrchestrator:
         # Agent assignments for each phase
         self.phase_agents = {
             ProcessPhase.INTERVIEW: ["interviewer", "enduser"],
+            ProcessPhase.INTERVIEW_REVIEW: ["sprint_manager"],
             ProcessPhase.USER_MODELING: ["enduser"],
             ProcessPhase.DEPLOYMENT_ANALYSIS: ["deployer"],
             ProcessPhase.REQUIREMENT_ANALYSIS: ["analyst"],
@@ -210,7 +216,7 @@ class RequirementOrchestrator:
 
         # Review points that require human intervention
         self.review_phases = {
-            # ProcessPhase.INTERVIEW,  # For testing only
+            ProcessPhase.INTERVIEW_REVIEW,
             ProcessPhase.URL_REVIEW,
             ProcessPhase.MODEL_REVIEW,
             ProcessPhase.SRS_REVIEW,
@@ -237,6 +243,11 @@ class RequirementOrchestrator:
     def _initialize_agents(self):
         self.agents["interviewer"] = InterviewerAgent(artifact_pool=self.artifact_pool)
         self.agents["enduser"] = EndUserAgent()
+        self.agents["sprint_manager"] = SprintManagerAgent(
+            artifact_pool=self.artifact_pool,
+            human_queue=self.human_queue,
+            human_review_manager=self.human_review_manager,
+        )
 
     def _register_agent_instance(self):
         for agent_name, agent_instance in self.agents.items():
@@ -293,7 +304,7 @@ class RequirementOrchestrator:
             self.feedback_processor.communication_protocol = self.communication_protocol
             self._register_agent_instance()
 
-            asyncio.create_task(self.communication_protocol.start_async_processing())
+            # asyncio.create_task(self.communication_protocol.start_async_processing())
 
             # Publish process started event
             self.event_bus.publish(
@@ -341,6 +352,7 @@ class RequirementOrchestrator:
 
             # Review placeholder
             review_descriptions = {
+                ArtifactType.INTERVIEW_RECORD: "Review interview transcript for completeness and quality",
                 ArtifactType.USER_REQUIREMENTS_LIST: "Review User Requirements List for completeness and clarity",
                 ArtifactType.REQUIREMENT_MODEL: "Review Requirement Models for accuracy and traceability",
                 ArtifactType.SRS_DOCUMENT: "Review Software Requirements Specification document",
@@ -370,9 +382,7 @@ class RequirementOrchestrator:
             if self.on_review_required:
                 self.on_review_required(session_id, artifact_type.value, artifact_id)
             else:
-                await self._on_review_required(
-                    session_id, artifact_type.value, artifact_id
-                )
+                await self._on_review_required(session_id, artifact_type, artifact_id)
 
     def resume_after_review(self, session_id: str, feedback, artifact_id) -> None:
         """
@@ -392,7 +402,7 @@ class RequirementOrchestrator:
                 logger.warning(f"Session {session_id} is not paused for review")
                 return
 
-            self._process_feedback(session_id, feedback, artifact_id)
+            # self._process_feedback(session_id, feedback, artifact_id)
             # Record feedback
             session.current_review_point = None
             session.review_history.append(
@@ -631,24 +641,7 @@ class RequirementOrchestrator:
 
         # Find the artifact that needs review
         artifact_type = self._get_review_artifact_type(session.current_phase)
-        # artifacts = self.artifact_pool.query_artifacts_by_type(
-        #     artifact_type, session_id
-        # )
-
-        ## Artifact mockup
-        artifacts = [
-            Artifact(
-                id=str(uuid.uuid4()),
-                type=ArtifactType.INTERVIEW_RECORD,
-                content={},
-                metadata=ArtifactMetadata(source_agent="interviewer"),
-                version="1.0",
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
-                created_by="interviewer",
-                status=ArtifactStatus.DRAFT,
-            )
-        ]
+        artifacts = self.artifact_pool.query_artifacts_by_type(artifact_type)
 
         if not artifacts:
             logger.error(
@@ -665,6 +658,7 @@ class RequirementOrchestrator:
     def _get_review_artifact_type(self, phase: ProcessPhase) -> ArtifactType:
         """Get the artifact type that needs review for a given phase."""
         review_artifact_map = {
+            ProcessPhase.INTERVIEW_REVIEW: ArtifactType.INTERVIEW_RECORD,
             ProcessPhase.URL_REVIEW: ArtifactType.USER_REQUIREMENTS_LIST,
             ProcessPhase.MODEL_REVIEW: ArtifactType.REQUIREMENT_MODEL,
             ProcessPhase.SRS_REVIEW: ArtifactType.SRS_DOCUMENT,
@@ -855,7 +849,7 @@ class RequirementOrchestrator:
         logger.info(f"Task {task_id} completed by {agent_name} in session {session_id}")
 
     async def _on_review_required(
-        self, session_id: str, artifact_type: str, artifact_id: str
+        self, session_id: str, artifact_type: ArtifactType, artifact_id: str
     ) -> None:
         from .feedback_processor import FeedbackType
 
@@ -874,6 +868,34 @@ class RequirementOrchestrator:
             if not review_point_id:
                 logger.error(f"No active review point for session {session_id}")
                 return
+
+            # Get agents for review phase
+            agents = self.phase_agents.get(session.current_phase, [])
+            if not agents:
+                logger.warning(
+                    f"No agents defined for phase {session.current_phase.value}"
+                )
+                return
+
+            agent_instances = []
+            for agent_tag in agents:
+                if not agent_tag in self.agents:
+                    logger.warning(
+                        f"Undefined agent for phase {session.current_phase.value}: {agent_tag}"
+                    )
+                    return
+                agent_instances.append(self.agents.get(agent_tag))
+
+            agent_executes = []
+            for agent_instance in agent_instances:
+                agent_executes.append(
+                    asyncio.create_task(
+                        agent_instance.process(session, review_point_id)
+                    )
+                )
+
+            for agent_execute in agent_executes:
+                await agent_execute
 
             # Mock feedback
             feedback_data = {}

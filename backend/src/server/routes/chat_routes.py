@@ -14,8 +14,8 @@
 
 import uuid
 from flask import Blueprint, request, jsonify
-import mock_db
-from auth_utils import require_auth
+import data.mock_db as mock_db
+from auth.auth_utils import require_auth
 
 chat_bp = Blueprint("chat", __name__)
 

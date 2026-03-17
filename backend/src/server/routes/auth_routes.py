@@ -20,8 +20,8 @@ import time
 import logging
 from flask import Blueprint, request, jsonify, make_response
 
-import mock_db
-from auth_utils import (
+import data.mock_db as mock_db
+from auth.auth_utils import (
     create_access_token,
     create_refresh_token,
     verify_refresh_token,
@@ -30,7 +30,7 @@ from auth_utils import (
     get_refresh_token_from_cookie,
     require_auth,
 )
-from config import (
+from config.config import (
     COOKIE_NAME,
     COOKIE_SECURE,
     COOKIE_SAMESITE,

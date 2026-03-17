@@ -22,15 +22,15 @@ import logging
 from functools import wraps
 from flask import request, jsonify
 
-from config import (
+from config.config import (
     ACCESS_TOKEN_SECRET,
     REFRESH_TOKEN_SECRET,
     ACCESS_TOKEN_TTL_SECONDS,
     REFRESH_TOKEN_TTL_SECONDS,
     COOKIE_NAME,
 )
-import mock_db
-import token_blacklist
+import data.mock_db as mock_db
+import auth.token_blacklist as token_blacklist
 
 log = logging.getLogger(__name__)
 

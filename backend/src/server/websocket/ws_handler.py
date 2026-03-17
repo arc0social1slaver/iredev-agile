@@ -44,9 +44,9 @@ import threading
 import uuid
 import logging
 
-import mock_db
-from ai_engine  import generate_response, generate_revision, stream_tokens
-from auth_utils import get_user_id_for_token_ws
+from data.mock_db import get_chat, get_chats_for_user, get_messages, add_message, save_artifact, update_message_artifact, MESSAGES
+from data.ai_engine  import generate_response, generate_revision, stream_tokens
+from auth.auth_utils import get_user_id_for_token_ws
 
 log = logging.getLogger(__name__)
 
@@ -331,8 +331,8 @@ def _replay_pending_artifacts(ws, lock, user_id: str):
         return
 
     # Find messages belonging to this user whose artifact is in the pending set
-    for chat_id, messages in mock_db.MESSAGES.items():
-        chat = mock_db.get_chat(chat_id)
+    for chat_id, messages in MESSAGES.items():
+        chat = get_chat(chat_id)
         if not chat or chat["userId"] != user_id:
             continue
 
@@ -370,7 +370,7 @@ def _stream_reply(ws, lock, ws_id, user_id, chat_id, message_id, content):
       - Stays alive even while the user switches to a different chat
       - Wakes when any artifact_feedback frame arrives with the right artifact_id
     """
-    chat = mock_db.get_chat(chat_id)
+    chat = get_chat(chat_id)
     if not chat or chat["userId"] != user_id:
         _send(ws, lock, {"type": "error", "chatId": chat_id,
                          "messageId": message_id,
@@ -406,7 +406,7 @@ def _stream_reply(ws, lock, ws_id, user_id, chat_id, message_id, content):
 
     if not artifact:
         if accum.strip():
-            mock_db.add_message(chat_id=chat_id, role="assistant", content=accum)
+            add_message(chat_id=chat_id, role="assistant", content=accum)
         log.info(f"[WS] Done (no artifact)  chat={chat_id}")
         return
 
@@ -416,7 +416,7 @@ def _stream_reply(ws, lock, ws_id, user_id, chat_id, message_id, content):
     # (message_id here is the frontend placeholder — NOT what mock_db stores)
     stored_msg_id = None
     if accum.strip():
-        saved = mock_db.add_message(
+        saved = add_message(
             chat_id=chat_id, role="assistant", content=accum,
             artifact={**artifact, "awaitingFeedback": True},
         )
@@ -475,8 +475,8 @@ def _stream_reply(ws, lock, ws_id, user_id, chat_id, message_id, content):
             # Timeout (only reachable if FEEDBACK_TIMEOUT > 0)
             accepted_artifact = {**artifact, "content": current_content,
                                  "accepted": True, "awaitingFeedback": False}
-            mock_db.save_artifact(chat_id, stored_msg_id or message_id, accepted_artifact)
-            mock_db.update_message_artifact(stored_msg_id or message_id, accepted_artifact)
+            save_artifact(chat_id, stored_msg_id or message_id, accepted_artifact)
+            update_message_artifact(stored_msg_id or message_id, accepted_artifact)
             _send(ws, lock, {"type": "artifact_timeout", "chatId": chat_id,
                              "messageId": message_id, "artifactId": art_id})
             return
@@ -493,8 +493,8 @@ def _stream_reply(ws, lock, ws_id, user_id, chat_id, message_id, content):
             log.info(f"[WS] Accepted  artifact={art_id}")
             accepted_artifact = {**artifact, "content": current_content,
                                  "accepted": True, "awaitingFeedback": False}
-            mock_db.save_artifact(chat_id, stored_msg_id or message_id, accepted_artifact)
-            mock_db.update_message_artifact(stored_msg_id or message_id, accepted_artifact)
+            save_artifact(chat_id, stored_msg_id or message_id, accepted_artifact)
+            update_message_artifact(stored_msg_id or message_id, accepted_artifact)
             _send(ws, lock, {"type": "artifact_accepted", "chatId": chat_id,
                              "messageId": message_id, "artifactId": art_id})
             return
@@ -530,12 +530,11 @@ def _stream_reply(ws, lock, ws_id, user_id, chat_id, message_id, content):
         _send(ws, lock, {"type": "done", "chatId": chat_id,
                          "messageId": rev_msg_id})
         if rev_accum.strip():
-            mock_db.add_message(chat_id=chat_id, role="assistant",
-                                content=rev_accum)
+            add_message(chat_id=chat_id, role="assistant", content=rev_accum)
 
         # Update stored message artifact so a reload during revision shows
         # the latest content + still-pending state
-        mock_db.update_message_artifact(stored_msg_id or message_id, {
+        update_message_artifact(stored_msg_id or message_id, {
             **artifact, "content": current_content,
             "awaitingFeedback": True, "accepted": False,
         })
@@ -544,8 +543,8 @@ def _stream_reply(ws, lock, ws_id, user_id, chat_id, message_id, content):
     artifact["content"]         = current_content
     artifact["accepted"]         = True
     artifact["awaitingFeedback"] = False
-    mock_db.save_artifact(chat_id, stored_msg_id or message_id, artifact)
-    mock_db.update_message_artifact(stored_msg_id or message_id, artifact)
+    save_artifact(chat_id, stored_msg_id or message_id, artifact)
+    update_message_artifact(stored_msg_id or message_id, artifact)
     _send(ws, lock, {"type": "artifact_accepted", "chatId": chat_id,
                      "messageId": message_id, "artifactId": artifact["id"],
                      "autoAccepted": True})

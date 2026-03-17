@@ -191,24 +191,9 @@ class HumanReviewManager:
         """
         with self._lock:
             # Get artifact to determine type
-            # artifact = self.artifact_pool.get_artifact(artifact_id)
-            # if not artifact:
-            #     raise ValueError(f"Artifact {artifact_id} not found")
-
-            ## Artifact mockup
-            from .orchestrator import ArtifactMetadata
-
-            artifact = Artifact(
-                id=str(uuid.uuid4()),
-                type=ArtifactType.INTERVIEW_RECORD,
-                content={},
-                metadata=ArtifactMetadata(source_agent="interviewer"),
-                version="1.0",
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
-                created_by="interviewer",
-                status=ArtifactStatus.DRAFT,
-            )
+            artifact = self.artifact_pool.get_artifact(artifact_id)
+            if not artifact:
+                raise ValueError(f"Artifact {artifact_id} not found")
 
             # Create review point
             timeout_minutes = timeout_minutes or self.default_timeout_minutes

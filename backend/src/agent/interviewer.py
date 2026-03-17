@@ -424,9 +424,9 @@ Return a JSON object with exactly this structure:
 
         return question, reasoning, methodology, end_conversation
 
-    def _extract_requirements_from_answer(
-        self, answer: str, question: str
-    ) -> List[Dict[str, Any]]:
+    async def _extract_requirements_from_answer(
+        self, answer: str, question: str, stakeholder_type: Optional[str] = None
+    ) -> Tuple[Dict[str, Any], Any]:
         """
         Extract potential requirements from stakeholder's answer.
 
@@ -437,45 +437,86 @@ Return a JSON object with exactly this structure:
         Returns:
             List of extracted requirement dictionaries
         """
-        requirements = []
 
-        # Simple keyword-based extraction (can be enhanced with NLP)
-        requirement_indicators = [
-            "need",
-            "require",
-            "must",
-            "should",
-            "want",
-            "expect",
-            "system should",
-            "application must",
-            "user needs",
-            "business requires",
-            "compliance",
-            "regulation",
-        ]
+        extraction_prompt = self._get_action_prompt(
+            "create_functional_and_non_functional_requirements",
+            context={
+                "answer": answer,
+                "question": question,
+                "stakeholder_type": stakeholder_type,
+            },
+        )
 
-        answer_lower = answer.lower()
+        cot_result = await asyncio.to_thread(
+            self.generate_with_cot,
+            prompt=extraction_prompt,
+            context={
+                "answer": answer,
+                "question": question,
+                "stakeholder_type": stakeholder_type,
+            },
+            reasoning_template="requirements_extraction",
+            profile_prompt=self.profile_prompt,
+        )
 
-        for indicator in requirement_indicators:
-            if indicator in answer_lower:
-                # Extract the sentence containing the requirement
-                sentences = answer.split(".")
-                for sentence in sentences:
-                    if indicator in sentence.lower():
-                        requirements.append(
-                            {
-                                "id": str(uuid.uuid4()),
-                                "text": sentence.strip(),
-                                "source_question": question,
-                                "type": "functional",  # Default, can be refined
-                                "priority": "medium",  # Default
-                                "extracted_at": datetime.now(),
-                                "confidence": 0.7,  # Default confidence
-                            }
-                        )
+        response_text = cot_result["response"].strip()
+        # logger.info(f"[Interviewer Requirements]: {response_text}")
 
-        return requirements
+        json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
+        if json_match:
+            extracted_data = json.loads(json_match.group())
+        else:
+            logger.warning("No JSON found in extraction response, using empty data")
+            extracted_data = {"functional": [], "non_functional": []}
+
+        # Process functional requirements
+        functional_reqs = []
+        for func in extracted_data.get("functional", []):
+            req = {
+                "id": str(uuid.uuid4()),
+                "type": "functional",
+                "text": func.get("description", ""),
+                "measurable_criteria": func.get("measurable_criteria", ""),
+                "acceptance_criteria": func.get("acceptance_criteria", ""),
+                "source_question": question,
+                "original_phrase": func.get("original_phrase", ""),
+                "priority": "medium",  # Default
+                "confidence": func.get("confidence", 0.7),
+                "extracted_at": datetime.now().isoformat(),
+            }
+            functional_reqs.append(req)
+            # logger.info(f"⚙️ Functional: {req['description'][:100]}...")
+
+        # Process non-functional requirements
+        non_functional_reqs = []
+        for nfr in extracted_data.get("non_functional", []):
+            category = nfr.get("category", "other")
+            description = nfr.get("description", "")
+
+            req = {
+                "id": str(uuid.uuid4()),
+                "type": "non_functional",
+                "category": category,
+                "text": description,
+                "measurable_criteria": nfr.get("measurable_criteria", ""),
+                "acceptance_criteria": nfr.get("acceptance_criteria", ""),
+                "source_question": question,
+                "original_phrase": nfr.get("original_phrase", ""),
+                "priority": "medium",  # Default
+                "confidence": nfr.get("confidence", 0.7),
+                "extracted_at": datetime.now().isoformat(),
+            }
+            non_functional_reqs.append(req)
+            # logger.info(f"🔧 NFR [{category}]: {description[:100]}...")
+
+        logger.info(
+            f"📊 Extracted: {len(functional_reqs)} functional, {len(non_functional_reqs)} non-functional"
+        )
+
+        return {
+            "functional": functional_reqs,
+            "non_functional": non_functional_reqs,
+        }, response_text
 
     def _should_end_conversation(self, interview_record: Dict[str, Any]) -> bool:
         """

@@ -1802,10 +1802,17 @@ Remember: Just respond - don't label your response or add markers. You are not a
                         "msg": msg,
                     },
                     reasoning_template="enduser_response",
+                    profile_prompt=self.profile_prompt,
                 )
-                question = cot_result["response"].replace("RESPOND:", "").strip()
+                question = cot_result["response"].strip()
                 logger.info(f"[EndUser]: {question}")
+
+                self.add_to_memory("system", msg)
+                self.add_to_memory("user", question)
+
                 await out_queue_mess.put(question)
+                await asyncio.sleep(1)
+
                 in_queue_mess.task_done()
 
         return {

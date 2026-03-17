@@ -234,6 +234,68 @@ Return a JSON object with exactly this structure:
                 return base_prompt
         return base_prompt
 
+    async def _extract_user_stories_with_prompt(
+        self,
+        answer: str,
+        question: str,
+        stakeholder_type: str,
+        requirement: Any,
+    ) -> List[Dict[str, Any]]:
+
+        extraction_prompt = self._get_action_prompt(
+            "conduct_user_story",
+            context={
+                "answer": answer,
+                "question": question,
+                "stakeholder_type": stakeholder_type,
+                "requirement": requirement,
+            },
+        )
+
+        cot_result = await asyncio.to_thread(
+            self.generate_with_cot,
+            prompt=extraction_prompt,
+            context={
+                "answer": answer,
+                "question": question,
+                "stakeholder_type": stakeholder_type,
+            },
+            reasoning_template="story_extraction",
+            profile_prompt=self.profile_prompt,
+        )
+
+        response_text = cot_result["response"].strip()
+
+        # Parse JSON from response
+        # Find JSON array in the response (in case there's extra text)
+
+        json_match = re.search(r"\[.*\]", response_text, re.DOTALL)
+        if json_match:
+            stories_data = json.loads(json_match.group())
+        else:
+            stories_data = []
+
+        # Convert to your internal format
+        user_stories = []
+        for story_data in stories_data:
+            story = {
+                "id": str(uuid.uuid4()),
+                "type": "user_story",
+                "role": story_data.get("role", "user"),
+                "goal": story_data.get("goal", ""),
+                "benefit": story_data.get("benefit", ""),
+                "text": f"As a {story_data.get('role', 'user')}, I want {story_data.get('goal', '')} so that {story_data.get('benefit', '')}",
+                "source_question": question,
+                "original_response": answer,
+                "priority": "medium",  # Default, can be refined
+                "confidence": story_data.get("confidence", 0.7),
+                "extracted_at": datetime.now().isoformat(),
+            }
+            user_stories.append(story)
+            logger.info(f"📖 Extracted user story via prompt: {story['text'][:100]}...")
+
+        return user_stories
+
     async def chat_with_stakeholder(
         self,
         in_queue_mess: Optional[asyncio.Queue] = None,
@@ -262,6 +324,7 @@ Return a JSON object with exactly this structure:
             "start_time": datetime.now(),
             "turns": [],
             "requirements_identified": [],
+            "user_stories": [],
             "gaps_identified": [],
             "completeness_score": 0.0,
             "status": "in_progress",
@@ -340,6 +403,7 @@ Return a JSON object with exactly this structure:
             logger.info(f"[Interviewer]: {question}")
 
             await in_queue_mess.put(question)
+            await asyncio.sleep(1)
 
             # Get stakeholder response
             answer = await out_queue_mess.get()
@@ -351,10 +415,25 @@ Return a JSON object with exactly this structure:
             interview_record["turns"].append(turn_data)
 
             # Extract requirements from the answer
-            extracted_requirements = self._extract_requirements_from_answer(
-                answer, question
+            extracted_requirements, raw_requirements = (
+                await self._extract_requirements_from_answer(
+                    answer, question, stakeholder_type
+                )
             )
-            interview_record["requirements_identified"].extend(extracted_requirements)
+            interview_record["requirements_identified"].extend(
+                extracted_requirements.get("functional", [])
+            )
+            interview_record["requirements_identified"].extend(
+                extracted_requirements.get("non_functional", [])
+            )
+
+            prompt_extracted_stories = await self._extract_user_stories_with_prompt(
+                answer=answer,
+                question=question,
+                stakeholder_type=stakeholder_type,
+                requirement=raw_requirements,
+            )
+            interview_record["user_stories"].extend(prompt_extracted_stories)
 
             # Check if conversation should end
             if end_conversation and self._should_end_conversation(interview_record):
@@ -938,7 +1017,13 @@ Return a JSON object with exactly this structure:
 class InterviewerAgent(BaseInterviewerAgent):
     """Backward compatibility wrapper for InterviewerAgent."""
 
-    def __init__(self, config_path: Optional[str] = None, artifact_pool: Optional[ArtifactPool] = None, *args, **kwargs):
+    def __init__(
+        self,
+        config_path: Optional[str] = None,
+        artifact_pool: Optional[ArtifactPool] = None,
+        *args,
+        **kwargs,
+    ):
         # Convert old config format if needed
         if isinstance(config_path, dict):
             config = config_path
@@ -1440,10 +1525,21 @@ class InterviewerAgent(BaseInterviewerAgent):
             ],
             source_agent="interviewer",
             related_artifacts=[],
-            quality_score=None,
+            quality_score=interview_record.get("completeness_score"),
             review_comments=[],
-            custom_properties=[]
+            custom_properties={},
         )
+
+        all_functional_req = [
+            req
+            for req in interview_record.get("requirements_identified", "")
+            if req.get("type", "") == "functional"
+        ]
+        all_non_functional_req = [
+            req
+            for req in interview_record.get("requirements_identified", "")
+            if req.get("type", "") == "non_functional"
+        ]
 
         # Structure the artifact content
         artifact_content = {
@@ -1475,6 +1571,9 @@ class InterviewerAgent(BaseInterviewerAgent):
                     else None
                 ),
             },
+            "functional_requirements": all_functional_req,
+            "non_functional_requirements": all_non_functional_req,
+            "raw_user_stories": interview_record.get("user_stories", []),
         }
 
         # Create the artifact
@@ -2055,13 +2154,9 @@ class InterviewerAgent(BaseInterviewerAgent):
                 in_queue_mess, out_queue_mess, "enduser"
             )
 
-            interview_artifact = self.create_interview_artifact(
-                interview_record
-            )
+            interview_artifact = self.create_interview_artifact(interview_record)
 
-            self.artifact_pool.store_artifact(
-                interview_artifact, self.name
-            )
+            self.artifact_pool.store_artifact(interview_artifact, self.name)
 
         return {
             "artifact_type": "interview_transcript",

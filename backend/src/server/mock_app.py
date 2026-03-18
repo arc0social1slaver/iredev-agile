@@ -14,12 +14,14 @@ import logging
 from flask      import Flask, jsonify
 from flask_cors import CORS
 from flask_sock import Sock
+from dotenv     import load_dotenv
+load_dotenv()
 
-from config             import PORT, CORS_ORIGINS
+from config.config      import PORT, CORS_ORIGINS
 from routes.auth_routes import auth_bp
 from routes.chat_routes import chat_bp
-from ws_handler         import handle_connection
-import token_blacklist
+from websocket.ws_handler         import handle_connection
+from auth.token_blacklist import start_sweep_thread, size
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -41,7 +43,7 @@ app.register_blueprint(auth_bp, url_prefix="/api/auth")
 app.register_blueprint(chat_bp, url_prefix="/api/chats")
 
 # Start the blacklist sweep background thread
-token_blacklist.start_sweep_thread()
+start_sweep_thread()
 
 # ── WebSocket endpoint ────────────────────────────────────────────────────────
 @sock.route("/ws")
@@ -53,7 +55,7 @@ def websocket(ws):
 def health():
     return jsonify({
         "status":         "ok",
-        "blacklist_size": token_blacklist.size(),
+        "blacklist_size": size(),
     }), 200
 
 # ── Error handlers ────────────────────────────────────────────────────────────

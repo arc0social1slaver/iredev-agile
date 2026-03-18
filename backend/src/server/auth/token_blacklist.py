@@ -34,7 +34,7 @@ import time
 import threading
 import logging
 
-from config import BLACKLIST_SWEEP_INTERVAL_SECONDS
+from config.config import BLACKLIST_SWEEP_INTERVAL_SECONDS
 
 log = logging.getLogger(__name__)
 

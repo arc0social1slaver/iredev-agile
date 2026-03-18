@@ -187,6 +187,7 @@ class KnowledgeDrivenAgent(BaseAgent, EventHandler):
         prompt: str,
         context: Dict[str, Any],
         reasoning_template: str = "requirements_analysis",
+        profile_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate response using Chain-of-Thought reasoning.
@@ -212,6 +213,11 @@ class KnowledgeDrivenAgent(BaseAgent, EventHandler):
             return {
                 "response": self.generate_response(
                     [self.llm.format_messages("user", prompt)]
+                    if not profile_prompt or profile_prompt == ""
+                    else [
+                        self.llm.format_messages("system", profile_prompt),
+                        self.llm.format_messages("user", prompt),
+                    ]
                 ),
                 "reasoning_process": None,
             }

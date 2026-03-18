@@ -9,6 +9,8 @@ from datetime import datetime
 import logging
 import uuid
 import asyncio
+import json
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -68,9 +70,7 @@ Neutral, empathetic, and inquisitive; fluent in both business and technical term
 Workflow:
 1. Conduct multi-round dialogue with end users.
 2. Produce interview records immediately after dialogues.
-3. Write a consolidated user requirements list.
-4. Conduct multi-round dialogue with system deployers.
-5. Write an operation environment list.
+3. Write a consolidated user stories after every dialogues with end users.
 
 Experience & Preferred Practices:
 1. Follow ISO/IEC/IEEE 29148 and BABOK v3 guidance.
@@ -130,6 +130,100 @@ Instructions:
 3. Prioritize requirements.
 4. Structure as traceable, sortable list with source, priority, and description.
 """,
+            "conduct_user_story": """You are a requirements analyst tasked with extracting user stories from stakeholder interviews.
+
+STAKEHOLDER TYPE: {stakeholder_type}
+
+INTERVIEWER'S QUESTION: "{question}"
+
+STAKEHOLDER'S RESPONSE: "{answer}"
+
+REQUIREMENT_IDENTIFIED: {requirement}
+
+TASK: Analyze requirements identifed, the stakeholder's response and extract any user stories you find. A user story follows the format:
+"As a [role], I want [goal] so that [benefit]"
+
+Look for natural language that implies:
+- Who the user is (role)
+- What they want to accomplish (goal)
+- Why they want it (benefit)
+
+EXTRACTION GUIDELINES:
+1. If you find explicit "As a... I want... so that..." statements, extract them directly
+2. If you find implied needs, convert them to proper user story format
+3. If you find pain points, convert them to stories about what would solve them
+4. If you find multiple stories in one response, extract all of them
+5. If no clear story is found, return an empty list
+6. After extraction, remove duplicates and merge similar user stories.
+
+RESPONSE FORMAT:
+Return a JSON array of user stories. Each story should have:
+- role: the user role
+- goal: what they want to accomplish  
+- benefit: why they want it
+- confidence: 0.0-1.0 how confident you are this is a valid story
+
+If no stories are found, return an empty array: []
+
+Return ONLY the JSON array, no other text.
+""",
+            "create_functional_and_non_functional_requirements": """You are a requirements analyst extracting ONLY functional and non-functional requirements from stakeholder interviews.
+
+CONTEXT:
+- Stakeholder Type: {stakeholder_type}
+- Interviewer's Question: "{question}"
+- Stakeholder's Response: "{answer}"
+
+TASK: Analyze the stakeholder's response, extract ONLY functional requirements and non-functional requirements from the response.
+
+## FUNCTIONAL REQUIREMENTS
+What the system MUST DO - specific behaviors, features, or capabilities.
+
+## NON-FUNCTIONAL REQUIREMENTS
+Quality attributes - HOW WELL the system performs.
+Categories:
+- Performance: speed, response time, throughput, ...
+- Security: authentication, encryption, access control, ...
+- Usability: ease of use, learnability, ...
+- Reliability: uptime, availability, fault tolerance, ...
+- Scalability: handle growth, concurrent users, ...
+- Accessibility: screen readers, keyboard navigation, ...
+- Maintainability: easy to update, configure, ...
+
+EXTRACTION RULES:
+1. Extract ONLY what is explicitly stated or clearly implied
+2. Do NOT extract user stories, epics, pain points, or other artifact types
+3. If the same requirement is mentioned multiple times, include it only once
+4. For NFRs, identify the correct category
+5. Preserve the original phrasing
+6. If no clear functional requirement is found, return empty array: []
+7. If no clear non-functional requirement is found, return empty array: []
+8. After extraction, remove duplicates and merge similar requirements
+
+RESPONSE FORMAT:
+Return a JSON object with exactly this structure:
+{{
+    "functional": [
+        {{
+            "description": [clear description of the functional requirement],
+            "original_phrase": [exact quote from response],
+            "confidence": [0.0-1.0 how confident you are this is a valid requirement],
+            "measurable_criteria": [clear measurable criteria of the functional requirement],
+            "acceptance_criteria": [clear acceptance criteria of the functional requirement]
+        }}
+    ],
+    "non_functional": [
+        {{
+            "category": [performance|security|usability|reliability|scalability|accessibility|maintainability],
+            "description": [clear description of the quality requirement],
+            "original_phrase": [exact quote from response],
+            "confidence": [0.0-1.0 how confident you are this is a valid requirement],
+            "measurable_criteria": [clear measurable criteria of the non functional requirement],
+            "acceptance_criteria": [clear acceptance criteria of the non functional requirement]
+        }}
+    ]
+}}
+""",
         }
 
         base_prompt = action_prompts.get(action, f"Action: {action}")
@@ -139,6 +233,68 @@ Instructions:
             except:
                 return base_prompt
         return base_prompt
+
+    async def _extract_user_stories_with_prompt(
+        self,
+        answer: str,
+        question: str,
+        stakeholder_type: str,
+        requirement: Any,
+    ) -> List[Dict[str, Any]]:
+
+        extraction_prompt = self._get_action_prompt(
+            "conduct_user_story",
+            context={
+                "answer": answer,
+                "question": question,
+                "stakeholder_type": stakeholder_type,
+                "requirement": requirement,
+            },
+        )
+
+        cot_result = await asyncio.to_thread(
+            self.generate_with_cot,
+            prompt=extraction_prompt,
+            context={
+                "answer": answer,
+                "question": question,
+                "stakeholder_type": stakeholder_type,
+            },
+            reasoning_template="story_extraction",
+            profile_prompt=self.profile_prompt,
+        )
+
+        response_text = cot_result["response"].strip()
+
+        # Parse JSON from response
+        # Find JSON array in the response (in case there's extra text)
+
+        json_match = re.search(r"\[.*\]", response_text, re.DOTALL)
+        if json_match:
+            stories_data = json.loads(json_match.group())
+        else:
+            stories_data = []
+
+        # Convert to your internal format
+        user_stories = []
+        for story_data in stories_data:
+            story = {
+                "id": str(uuid.uuid4()),
+                "type": "user_story",
+                "role": story_data.get("role", "user"),
+                "goal": story_data.get("goal", ""),
+                "benefit": story_data.get("benefit", ""),
+                "text": f"As a {story_data.get('role', 'user')}, I want {story_data.get('goal', '')} so that {story_data.get('benefit', '')}",
+                "source_question": question,
+                "original_response": answer,
+                "priority": "medium",  # Default, can be refined
+                "confidence": story_data.get("confidence", 0.7),
+                "extracted_at": datetime.now().isoformat(),
+            }
+            user_stories.append(story)
+            logger.info(f"📖 Extracted user story via prompt: {story['text'][:100]}...")
+
+        return user_stories
 
     async def chat_with_stakeholder(
         self,
@@ -168,6 +324,7 @@ Instructions:
             "start_time": datetime.now(),
             "turns": [],
             "requirements_identified": [],
+            "user_stories": [],
             "gaps_identified": [],
             "completeness_score": 0.0,
             "status": "in_progress",
@@ -246,6 +403,7 @@ Instructions:
             logger.info(f"[Interviewer]: {question}")
 
             await in_queue_mess.put(question)
+            await asyncio.sleep(1)
 
             # Get stakeholder response
             answer = await out_queue_mess.get()
@@ -257,10 +415,25 @@ Instructions:
             interview_record["turns"].append(turn_data)
 
             # Extract requirements from the answer
-            extracted_requirements = self._extract_requirements_from_answer(
-                answer, question
+            extracted_requirements, raw_requirements = (
+                await self._extract_requirements_from_answer(
+                    answer, question, stakeholder_type
+                )
             )
-            interview_record["requirements_identified"].extend(extracted_requirements)
+            interview_record["requirements_identified"].extend(
+                extracted_requirements.get("functional", [])
+            )
+            interview_record["requirements_identified"].extend(
+                extracted_requirements.get("non_functional", [])
+            )
+
+            prompt_extracted_stories = await self._extract_user_stories_with_prompt(
+                answer=answer,
+                question=question,
+                stakeholder_type=stakeholder_type,
+                requirement=raw_requirements,
+            )
+            interview_record["user_stories"].extend(prompt_extracted_stories)
 
             # Check if conversation should end
             if end_conversation and self._should_end_conversation(interview_record):
@@ -330,9 +503,9 @@ Instructions:
 
         return question, reasoning, methodology, end_conversation
 
-    def _extract_requirements_from_answer(
-        self, answer: str, question: str
-    ) -> List[Dict[str, Any]]:
+    async def _extract_requirements_from_answer(
+        self, answer: str, question: str, stakeholder_type: Optional[str] = None
+    ) -> Tuple[Dict[str, Any], Any]:
         """
         Extract potential requirements from stakeholder's answer.
 
@@ -343,45 +516,86 @@ Instructions:
         Returns:
             List of extracted requirement dictionaries
         """
-        requirements = []
 
-        # Simple keyword-based extraction (can be enhanced with NLP)
-        requirement_indicators = [
-            "need",
-            "require",
-            "must",
-            "should",
-            "want",
-            "expect",
-            "system should",
-            "application must",
-            "user needs",
-            "business requires",
-            "compliance",
-            "regulation",
-        ]
+        extraction_prompt = self._get_action_prompt(
+            "create_functional_and_non_functional_requirements",
+            context={
+                "answer": answer,
+                "question": question,
+                "stakeholder_type": stakeholder_type,
+            },
+        )
 
-        answer_lower = answer.lower()
+        cot_result = await asyncio.to_thread(
+            self.generate_with_cot,
+            prompt=extraction_prompt,
+            context={
+                "answer": answer,
+                "question": question,
+                "stakeholder_type": stakeholder_type,
+            },
+            reasoning_template="requirements_extraction",
+            profile_prompt=self.profile_prompt,
+        )
 
-        for indicator in requirement_indicators:
-            if indicator in answer_lower:
-                # Extract the sentence containing the requirement
-                sentences = answer.split(".")
-                for sentence in sentences:
-                    if indicator in sentence.lower():
-                        requirements.append(
-                            {
-                                "id": str(uuid.uuid4()),
-                                "text": sentence.strip(),
-                                "source_question": question,
-                                "type": "functional",  # Default, can be refined
-                                "priority": "medium",  # Default
-                                "extracted_at": datetime.now(),
-                                "confidence": 0.7,  # Default confidence
-                            }
-                        )
+        response_text = cot_result["response"].strip()
+        # logger.info(f"[Interviewer Requirements]: {response_text}")
 
-        return requirements
+        json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
+        if json_match:
+            extracted_data = json.loads(json_match.group())
+        else:
+            logger.warning("No JSON found in extraction response, using empty data")
+            extracted_data = {"functional": [], "non_functional": []}
+
+        # Process functional requirements
+        functional_reqs = []
+        for func in extracted_data.get("functional", []):
+            req = {
+                "id": str(uuid.uuid4()),
+                "type": "functional",
+                "text": func.get("description", ""),
+                "measurable_criteria": func.get("measurable_criteria", ""),
+                "acceptance_criteria": func.get("acceptance_criteria", ""),
+                "source_question": question,
+                "original_phrase": func.get("original_phrase", ""),
+                "priority": "medium",  # Default
+                "confidence": func.get("confidence", 0.7),
+                "extracted_at": datetime.now().isoformat(),
+            }
+            functional_reqs.append(req)
+            # logger.info(f"⚙️ Functional: {req['description'][:100]}...")
+
+        # Process non-functional requirements
+        non_functional_reqs = []
+        for nfr in extracted_data.get("non_functional", []):
+            category = nfr.get("category", "other")
+            description = nfr.get("description", "")
+
+            req = {
+                "id": str(uuid.uuid4()),
+                "type": "non_functional",
+                "category": category,
+                "text": description,
+                "measurable_criteria": nfr.get("measurable_criteria", ""),
+                "acceptance_criteria": nfr.get("acceptance_criteria", ""),
+                "source_question": question,
+                "original_phrase": nfr.get("original_phrase", ""),
+                "priority": "medium",  # Default
+                "confidence": nfr.get("confidence", 0.7),
+                "extracted_at": datetime.now().isoformat(),
+            }
+            non_functional_reqs.append(req)
+            # logger.info(f"🔧 NFR [{category}]: {description[:100]}...")
+
+        logger.info(
+            f"📊 Extracted: {len(functional_reqs)} functional, {len(non_functional_reqs)} non-functional"
+        )
+
+        return {
+            "functional": functional_reqs,
+            "non_functional": non_functional_reqs,
+        }, response_text
 
     def _should_end_conversation(self, interview_record: Dict[str, Any]) -> bool:
         """
@@ -803,7 +1017,13 @@ Instructions:
 class InterviewerAgent(BaseInterviewerAgent):
     """Backward compatibility wrapper for InterviewerAgent."""
 
-    def __init__(self, config_path: Optional[str] = None, artifact_pool: Optional[ArtifactPool] = None, *args, **kwargs):
+    def __init__(
+        self,
+        config_path: Optional[str] = None,
+        artifact_pool: Optional[ArtifactPool] = None,
+        *args,
+        **kwargs,
+    ):
         # Convert old config format if needed
         if isinstance(config_path, dict):
             config = config_path
@@ -1305,10 +1525,21 @@ class InterviewerAgent(BaseInterviewerAgent):
             ],
             source_agent="interviewer",
             related_artifacts=[],
-            quality_score=None,
+            quality_score=interview_record.get("completeness_score"),
             review_comments=[],
-            custom_properties=[]
+            custom_properties={},
         )
+
+        all_functional_req = [
+            req
+            for req in interview_record.get("requirements_identified", "")
+            if req.get("type", "") == "functional"
+        ]
+        all_non_functional_req = [
+            req
+            for req in interview_record.get("requirements_identified", "")
+            if req.get("type", "") == "non_functional"
+        ]
 
         # Structure the artifact content
         artifact_content = {
@@ -1340,6 +1571,9 @@ class InterviewerAgent(BaseInterviewerAgent):
                     else None
                 ),
             },
+            "functional_requirements": all_functional_req,
+            "non_functional_requirements": all_non_functional_req,
+            "raw_user_stories": interview_record.get("user_stories", []),
         }
 
         # Create the artifact
@@ -1920,13 +2154,9 @@ class InterviewerAgent(BaseInterviewerAgent):
                 in_queue_mess, out_queue_mess, "enduser"
             )
 
-            interview_artifact = self.create_interview_artifact(
-                interview_record
-            )
+            interview_artifact = self.create_interview_artifact(interview_record)
 
-            self.artifact_pool.store_artifact(
-                interview_artifact, self.name
-            )
+            self.artifact_pool.store_artifact(interview_artifact, self.name)
 
         return {
             "artifact_type": "interview_transcript",

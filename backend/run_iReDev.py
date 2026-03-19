@@ -69,6 +69,7 @@ class iReDevCLI:
             # Initialize core components
             self.event_bus = EventBus()
             self.artifact_pool = ArtifactPool(event_bus=self.event_bus)
+            self.human_queue = asyncio.Queue()
 
             # Initialize review manager
             self.review_manager = HumanReviewManager(
@@ -81,6 +82,7 @@ class iReDevCLI:
                 artifact_pool=self.artifact_pool,
                 event_bus=self.event_bus,
                 human_review_manager=self.review_manager,
+                human_queue=self.human_queue,
             )
 
             return True
@@ -195,9 +197,32 @@ class iReDevCLI:
 
         try:
             # Start the process
-            session = await self.orchestrator.start_requirement_process(
-                project_config=project_config, created_by=args.user or "cli_user"
+            session_task = asyncio.create_task(
+                self.orchestrator.start_requirement_process(
+                    project_config=project_config, created_by=args.user or "cli_user"
+                )
             )
+
+            is_stopped = 0
+
+            while True:
+                msg = await self.human_queue.get()
+                if msg == "START":
+                    user_resp = ""
+                    while user_resp != "STOP":
+                        user_resp = await asyncio.to_thread(
+                            input, "Waiting for human input:"
+                        )
+                        await self.human_queue.put(user_resp)
+                        await asyncio.sleep(1)
+                    is_stopped += 1
+                    if is_stopped == 2:
+                        break
+                else:
+                    await asyncio.sleep(1)
+                self.human_queue.task_done()
+
+            session = await session_task
 
             self.print_success(f"Started requirement development process")
             self.print_info(f"Session ID: {session.session_id}")

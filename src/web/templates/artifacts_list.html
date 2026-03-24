@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}Artifacts - iReDev Framework{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1 class="mb-4">
+            <i class="fas fa-file-alt text-info"></i> Artifacts
+        </h1>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-list"></i> All Artifacts
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="text-center py-5">
+                    <i class="fas fa-file fa-3x text-muted mb-3"></i>
+                    <h5 class="text-muted">Artifact Management</h5>
+                    <p class="text-muted">Artifact listing functionality will be implemented here.</p>
+                    <a href="{{ url_for('index') }}" class="btn btn-primary">
+                        <i class="fas fa-arrow-left"></i> Back to Dashboard
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

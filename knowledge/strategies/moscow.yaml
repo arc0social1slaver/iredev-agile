@@ -1,0 +1,169 @@
+name: "MoSCoW Prioritization Strategy"
+version: "1.0.0"
+description: "MoSCoW prioritization method for requirements management"
+type: "strategies"
+created_at: "2024-01-01T00:00:00"
+
+content:
+  description: "Prioritization technique using Must have, Should have, Could have, Won't have categories"
+  
+  categories:
+    must_have:
+      description: "Critical requirements without which the system will fail"
+      criteria:
+        - "System cannot function without this requirement"
+        - "Legal or regulatory requirement"
+        - "Safety-critical requirement"
+        - "Fundamental to business success"
+      
+      characteristics:
+        - "Non-negotiable"
+        - "Delivery deadline cannot be moved"
+        - "No workaround available"
+        - "Business case fails without it"
+      
+      examples:
+        - "User authentication system"
+        - "Data backup functionality"
+        - "Regulatory compliance features"
+    
+    should_have:
+      description: "Important requirements that add significant value"
+      criteria:
+        - "Important but not critical"
+        - "Significant impact on user satisfaction"
+        - "Competitive advantage"
+        - "Efficiency improvement"
+      
+      characteristics:
+        - "Can be delayed if necessary"
+        - "Workaround may be available"
+        - "High business value"
+        - "User expectation"
+      
+      examples:
+        - "Advanced search functionality"
+        - "Reporting dashboard"
+        - "Email notifications"
+    
+    could_have:
+      description: "Nice-to-have requirements that would be included if time permits"
+      criteria:
+        - "Desirable but not necessary"
+        - "Low impact if omitted"
+        - "Enhancement to user experience"
+        - "Future consideration"
+      
+      characteristics:
+        - "Can be easily removed"
+        - "Minimal impact on core functionality"
+        - "Enhancement feature"
+        - "Time and resource permitting"
+      
+      examples:
+        - "Customizable themes"
+        - "Advanced analytics"
+        - "Social media integration"
+    
+    wont_have:
+      description: "Requirements that will not be implemented in current release"
+      criteria:
+        - "Out of scope for current release"
+        - "Future release consideration"
+        - "Resource constraints"
+        - "Low priority"
+      
+      characteristics:
+        - "Explicitly excluded"
+        - "May be reconsidered later"
+        - "Clear boundary setting"
+        - "Scope management"
+      
+      examples:
+        - "Mobile application (if web-only)"
+        - "Multi-language support (if English-only)"
+        - "Advanced AI features"
+
+  application_process:
+    preparation:
+      steps:
+        - "Gather all requirements"
+        - "Identify stakeholders"
+        - "Understand business objectives"
+        - "Define success criteria"
+    
+    categorization:
+      steps:
+        - "Start with Must Have identification"
+        - "Identify Should Have requirements"
+        - "Classify Could Have features"
+        - "Explicitly list Won't Have items"
+    
+    validation:
+      steps:
+        - "Review with stakeholders"
+        - "Validate business impact"
+        - "Check resource constraints"
+        - "Confirm timeline feasibility"
+    
+    documentation:
+      format: |
+        REQ-[ID]: [Requirement Description]
+        Priority: [Must/Should/Could/Won't] Have
+        Rationale: [Justification for priority]
+        Impact: [Business impact if not delivered]
+
+  benefits:
+    clarity:
+      - "Clear prioritization framework"
+      - "Shared understanding among stakeholders"
+      - "Explicit scope boundaries"
+    
+    flexibility:
+      - "Allows for scope adjustment"
+      - "Facilitates trade-off decisions"
+      - "Supports iterative development"
+    
+    communication:
+      - "Simple and intuitive categories"
+      - "Easy to explain to stakeholders"
+      - "Reduces ambiguity in priorities"
+
+  best_practices:
+    guidelines:
+      - "Limit Must Have to truly critical items (typically 60% or less)"
+      - "Should Have items should be substantial (typically 20%)"
+      - "Could Have provides flexibility (typically 20%)"
+      - "Won't Have sets clear boundaries"
+    
+    common_mistakes:
+      - "Too many Must Have requirements"
+      - "Unclear rationale for categorization"
+      - "Not involving right stakeholders"
+      - "Changing priorities too frequently"
+    
+    success_factors:
+      - "Strong stakeholder engagement"
+      - "Clear business objectives"
+      - "Regular priority reviews"
+      - "Transparent decision making"
+
+  integration_with_development:
+    agile_development:
+      - "Must Have in early sprints"
+      - "Should Have in subsequent sprints"
+      - "Could Have if time permits"
+      - "Won't Have for future releases"
+    
+    release_planning:
+      - "Must Have defines minimum viable product"
+      - "Should Have enhances product value"
+      - "Could Have provides competitive edge"
+      - "Won't Have manages scope creep"
+
+metadata:
+  author: "iReDev Framework"
+  tags: ["strategy", "prioritization", "moscow", "requirements_management"]
+  references:
+    - "DSDM Consortium MoSCoW Prioritization"
+    - "Agile Requirements Prioritization Techniques"

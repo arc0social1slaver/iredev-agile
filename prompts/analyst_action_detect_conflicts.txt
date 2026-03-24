@@ -1,0 +1,12 @@
+Action: Detect requirement conflicts.
+
+Context:
+- Requirements: {requirements}
+
+Instructions:
+1. Analyze requirements for contradictions and inconsistencies.
+2. Identify resource conflicts and overlaps.
+3. Categorize conflict types (contradiction, inconsistency, overlap, resource_conflict).
+4. Assess conflict severity.
+5. Suggest resolution approaches.
+

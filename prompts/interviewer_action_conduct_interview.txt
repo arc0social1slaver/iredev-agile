@@ -1,0 +1,17 @@
+Action: Conduct structured interview with stakeholder.
+
+Context:
+- Stakeholder type: {stakeholder_type}
+- Current turn: {turn_count}
+- Previous responses: {previous_responses}
+
+Instructions:
+1. Generate the next interview question based on the conversation so far.
+2. Apply 5W1H framework or Socratic questioning as appropriate.
+3. Limit to maximum 2 questions per turn.
+4. Structure response as:
+   QUESTION: [Your question]
+   REASONING: [Why you're asking this]
+   METHODOLOGY: [5W1H/Socratic/Other]
+   END_CONVERSATION: [true/false]
+

@@ -1,0 +1,556 @@
+{% extends "base.html" %}
+
+{% block title %}Monitoring Dashboard - iReDev Framework{% endblock %}
+
+{% block head %}
+<!-- Chart.js for visualizations -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+<style>
+.metric-card {
+    transition: transform 0.2s ease-in-out;
+}
+
+.metric-card:hover {
+    transform: translateY(-2px);
+}
+
+.chart-container {
+    position: relative;
+    height: 300px;
+    margin-bottom: 20px;
+}
+
+.status-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 8px;
+}
+
+.status-healthy { background-color: #28a745; }
+.status-warning { background-color: #ffc107; }
+.status-error { background-color: #dc3545; }
+
+.real-time-badge {
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1>
+                <i class="fas fa-chart-line text-primary"></i> 
+                Monitoring Dashboard
+            </h1>
+            <div>
+                <span class="badge bg-success real-time-badge">
+                    <i class="fas fa-circle"></i> Live
+                </span>
+                <button class="btn btn-outline-primary btn-sm ms-2" onclick="refreshDashboard()">
+                    <i class="fas fa-sync-alt"></i> Refresh
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- System Status Overview -->
+<div class="row mb-4">
+    <div class="col-md-3">
+        <div class="card metric-card bg-primary text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h6 class="card-title">Active Processes</h6>
+                        <h2 class="mb-0" id="active-processes">-</h2>
+                    </div>
+                    <div class="align-self-center">
+                        <i class="fas fa-cogs fa-2x opacity-75"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card metric-card bg-warning text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h6 class="card-title">Pending Reviews</h6>
+                        <h2 class="mb-0" id="pending-reviews">-</h2>
+                    </div>
+                    <div class="align-self-center">
+                        <i class="fas fa-clipboard-check fa-2x opacity-75"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card metric-card bg-info text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h6 class="card-title">Total Artifacts</h6>
+                        <h2 class="mb-0" id="total-artifacts">-</h2>
+                    </div>
+                    <div class="align-self-center">
+                        <i class="fas fa-file-alt fa-2x opacity-75"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-3">
+        <div class="card metric-card bg-success text-white">
+            <div class="card-body">
+                <div class="d-flex justify-content-between">
+                    <div>
+                        <h6 class="card-title">Quality Score</h6>
+                        <h2 class="mb-0" id="quality-score">-</h2>
+                    </div>
+                    <div class="align-self-center">
+                        <i class="fas fa-star fa-2x opacity-75"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- System Health Status -->
+<div class="row mb-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-heartbeat"></i> System Health
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="d-flex align-items-center mb-2">
+                            <span class="status-indicator status-healthy"></span>
+                            <strong>Overall Status:</strong>
+                            <span class="ms-2" id="system-status">Healthy</span>
+                        </div>
+                        <div class="d-flex align-items-center mb-2">
+                            <span class="status-indicator status-healthy"></span>
+                            <strong>Response Time:</strong>
+                            <span class="ms-2" id="avg-response-time">- ms</span>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="d-flex align-items-center mb-2">
+                            <span class="status-indicator status-healthy"></span>
+                            <strong>Throughput:</strong>
+                            <span class="ms-2" id="system-throughput">- req/min</span>
+                        </div>
+                        <div class="d-flex align-items-center mb-2">
+                            <span class="status-indicator status-healthy"></span>
+                            <strong>Error Rate:</strong>
+                            <span class="ms-2" id="error-rate">0%</span>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="d-flex align-items-center mb-2">
+                            <strong>Uptime:</strong>
+                            <span class="ms-2" id="system-uptime">- hours</span>
+                        </div>
+                        <div class="d-flex align-items-center mb-2">
+                            <strong>Last Updated:</strong>
+                            <span class="ms-2" id="last-updated">-</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Charts Row -->
+<div class="row mb-4">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-chart-line"></i> Process Activity
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="chart-container">
+                    <canvas id="processChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-tachometer-alt"></i> Response Time
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="chart-container">
+                    <canvas id="responseTimeChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Agent Utilization -->
+<div class="row mb-4">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-robot"></i> Agent Utilization
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="chart-container">
+                    <canvas id="agentUtilizationChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-4">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-star"></i> Quality Distribution
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="chart-container">
+                    <canvas id="qualityDistributionChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Activity -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">
+                    <i class="fas fa-history"></i> Recent Activity
+                </h5>
+            </div>
+            <div class="card-body">
+                <div id="recent-activity" class="list-group list-group-flush">
+                    <div class="text-center py-3">
+                        <i class="fas fa-spinner fa-spin"></i> Loading recent activity...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+class MonitoringDashboard {
+    constructor() {
+        this.socket = io();
+        this.charts = {};
+        this.refreshInterval = 30000; // 30 seconds
+        this.init();
+    }
+
+    init() {
+        this.setupWebSocket();
+        this.initializeCharts();
+        this.loadInitialData();
+        this.startAutoRefresh();
+    }
+
+    setupWebSocket() {
+        this.socket.on('connect', () => {
+            console.log('Connected to monitoring WebSocket');
+            this.socket.emit('join_monitoring', { room: 'general_monitoring' });
+        });
+
+        this.socket.on('dashboard_update', (data) => {
+            this.updateDashboard(data);
+        });
+
+        this.socket.on('metric_update', (data) => {
+            this.updateMetricChart(data);
+        });
+
+        this.socket.on('system_alert', (data) => {
+            this.showAlert(data);
+        });
+    }
+
+    initializeCharts() {
+        // Process Activity Chart
+        const processCtx = document.getElementById('processChart').getContext('2d');
+        this.charts.process = new Chart(processCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Active Processes',
+                    data: [],
+                    borderColor: '#007bff',
+                    backgroundColor: 'rgba(0, 123, 255, 0.1)',
+                    tension: 0.4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            stepSize: 1
+                        }
+                    }
+                }
+            }
+        });
+
+        // Response Time Chart
+        const responseCtx = document.getElementById('responseTimeChart').getContext('2d');
+        this.charts.responseTime = new Chart(responseCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Response Time (ms)',
+                    data: [],
+                    borderColor: '#28a745',
+                    backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                    tension: 0.4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+
+        // Agent Utilization Chart
+        const agentCtx = document.getElementById('agentUtilizationChart').getContext('2d');
+        this.charts.agentUtilization = new Chart(agentCtx, {
+            type: 'bar',
+            data: {
+                labels: ['Interviewer', 'EndUser', 'Deployer', 'Analyst', 'Archivist', 'Reviewer'],
+                datasets: [{
+                    label: 'Utilization %',
+                    data: [0, 0, 0, 0, 0, 0],
+                    backgroundColor: [
+                        '#007bff', '#6c757d', '#28a745', '#ffc107', '#17a2b8', '#dc3545'
+                    ]
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 1,
+                        ticks: {
+                            callback: function(value) {
+                                return (value * 100).toFixed(0) + '%';
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // Quality Distribution Chart
+        const qualityCtx = document.getElementById('qualityDistributionChart').getContext('2d');
+        this.charts.qualityDistribution = new Chart(qualityCtx, {
+            type: 'doughnut',
+            data: {
+                labels: ['Excellent', 'Good', 'Fair', 'Poor'],
+                datasets: [{
+                    data: [0, 0, 0, 0],
+                    backgroundColor: ['#28a745', '#17a2b8', '#ffc107', '#dc3545']
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: {
+                        position: 'bottom'
+                    }
+                }
+            }
+        });
+    }
+
+    async loadInitialData() {
+        try {
+            const response = await fetch('/monitoring/api/dashboard');
+            const data = await response.json();
+            this.updateDashboard(data);
+        } catch (error) {
+            console.error('Error loading dashboard data:', error);
+            this.showError('Failed to load dashboard data');
+        }
+    }
+
+    updateDashboard(data) {
+        // Update metric cards
+        if (data.system_metrics) {
+            document.getElementById('active-processes').textContent = data.system_metrics.active_processes;
+            document.getElementById('pending-reviews').textContent = data.system_metrics.pending_reviews;
+            document.getElementById('total-artifacts').textContent = data.system_metrics.total_artifacts;
+            document.getElementById('quality-score').textContent = 
+                (data.system_metrics.overall_quality_score * 100).toFixed(1) + '%';
+        }
+
+        // Update system health
+        if (data.performance_summary) {
+            document.getElementById('avg-response-time').textContent = 
+                data.performance_summary.average_response_time.toFixed(1) + ' ms';
+            document.getElementById('system-throughput').textContent = 
+                data.performance_summary.average_throughput.toFixed(1) + ' req/min';
+        }
+
+        // Update agent utilization chart
+        if (data.agent_utilization && data.agent_utilization.current_utilization) {
+            const utilization = data.agent_utilization.current_utilization;
+            const agentNames = Object.keys(utilization);
+            const utilizationValues = Object.values(utilization);
+            
+            this.charts.agentUtilization.data.labels = agentNames.map(name => 
+                name.charAt(0).toUpperCase() + name.slice(1)
+            );
+            this.charts.agentUtilization.data.datasets[0].data = utilizationValues;
+            this.charts.agentUtilization.update();
+        }
+
+        // Update quality distribution
+        if (data.quality_dashboard && data.quality_dashboard.quality_distribution) {
+            const distribution = data.quality_dashboard.quality_distribution;
+            this.charts.qualityDistribution.data.datasets[0].data = [
+                distribution.excellent || 0,
+                distribution.good || 0,
+                distribution.fair || 0,
+                distribution.poor || 0
+            ];
+            this.charts.qualityDistribution.update();
+        }
+
+        // Update timestamp
+        document.getElementById('last-updated').textContent = 
+            new Date(data.timestamp).toLocaleTimeString();
+
+        // Load time series data
+        this.loadTimeSeriesData();
+    }
+
+    async loadTimeSeriesData() {
+        try {
+            // Load process count data
+            const processResponse = await fetch('/monitoring/api/metrics/process_count?hours=6');
+            const processData = await processResponse.json();
+            this.updateChart('process', processData);
+
+            // Load response time data
+            const responseResponse = await fetch('/monitoring/api/metrics/response_time?hours=6');
+            const responseData = await responseResponse.json();
+            this.updateChart('responseTime', responseData);
+
+        } catch (error) {
+            console.error('Error loading time series data:', error);
+        }
+    }
+
+    updateChart(chartName, data) {
+        if (!this.charts[chartName] || !data.labels || !data.values) return;
+
+        this.charts[chartName].data.labels = data.labels;
+        this.charts[chartName].data.datasets[0].data = data.values;
+        this.charts[chartName].update();
+    }
+
+    updateMetricChart(data) {
+        const metricType = data.metric_type;
+        
+        if (metricType === 'process_count' && this.charts.process) {
+            this.updateChart('process', data.data);
+        } else if (metricType === 'response_time' && this.charts.responseTime) {
+            this.updateChart('responseTime', data.data);
+        }
+    }
+
+    showAlert(alertData) {
+        const alertClass = alertData.type === 'error' ? 'alert-danger' : 
+                          alertData.type === 'warning' ? 'alert-warning' : 'alert-info';
+        
+        const alertHtml = `
+            <div class="alert ${alertClass} alert-dismissible fade show" role="alert">
+                <i class="fas fa-exclamation-triangle"></i>
+                <strong>${alertData.type.toUpperCase()}:</strong> ${alertData.message}
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+            </div>
+        `;
+        
+        const container = document.querySelector('.container');
+        container.insertAdjacentHTML('afterbegin', alertHtml);
+    }
+
+    showError(message) {
+        this.showAlert({
+            type: 'error',
+            message: message
+        });
+    }
+
+    startAutoRefresh() {
+        setInterval(() => {
+            this.socket.emit('request_dashboard_update');
+        }, this.refreshInterval);
+    }
+}
+
+// Initialize dashboard when page loads
+document.addEventListener('DOMContentLoaded', () => {
+    window.monitoringDashboard = new MonitoringDashboard();
+});
+
+// Global refresh function
+function refreshDashboard() {
+    if (window.monitoringDashboard) {
+        window.monitoringDashboard.loadInitialData();
+    }
+}
+</script>
+{% endblock %}

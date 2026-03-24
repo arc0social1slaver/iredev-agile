@@ -1,0 +1,90 @@
+name: "5W1H Methodology"
+version: "1.0.0"
+description: "5W1H questioning methodology for requirements elicitation"
+type: "methodology"
+created_at: "2024-01-01T00:00:00"
+
+content:
+  description: "Systematic questioning approach using Who, What, When, Where, Why, and How"
+  
+  framework:
+    who:
+      description: "Identify stakeholders and users"
+      questions:
+        - "Who are the primary users of the system?"
+        - "Who are the secondary stakeholders?"
+        - "Who will be responsible for system maintenance?"
+        - "Who has decision-making authority?"
+      
+    what:
+      description: "Define system functionality and features"
+      questions:
+        - "What functions should the system perform?"
+        - "What data will the system process?"
+        - "What outputs should the system produce?"
+        - "What are the system boundaries?"
+    
+    when:
+      description: "Determine timing and scheduling requirements"
+      questions:
+        - "When should the system be available?"
+        - "When do specific functions need to execute?"
+        - "When are peak usage periods?"
+        - "When should data be updated?"
+    
+    where:
+      description: "Identify location and environment constraints"
+      questions:
+        - "Where will the system be deployed?"
+        - "Where will users access the system?"
+        - "Where is data stored and processed?"
+        - "Where are the integration points?"
+    
+    why:
+      description: "Understand business rationale and objectives"
+      questions:
+        - "Why is this system needed?"
+        - "Why are specific features required?"
+        - "Why are certain constraints imposed?"
+        - "Why is this the preferred solution?"
+    
+    how:
+      description: "Explore implementation approaches and methods"
+      questions:
+        - "How will users interact with the system?"
+        - "How will the system integrate with existing systems?"
+        - "How will data be processed and stored?"
+        - "How will security be implemented?"
+
+  application_guidelines:
+    preparation:
+      - "Review existing documentation"
+      - "Identify key stakeholders"
+      - "Prepare question templates"
+      - "Plan interview structure"
+    
+    execution:
+      - "Start with high-level questions"
+      - "Drill down into specifics"
+      - "Allow for follow-up questions"
+      - "Document responses systematically"
+    
+    follow_up:
+      - "Validate understanding with stakeholders"
+      - "Identify gaps and inconsistencies"
+      - "Prioritize additional investigation"
+      - "Update requirements documentation"
+
+  benefits:
+    - "Comprehensive coverage of requirements aspects"
+    - "Systematic and structured approach"
+    - "Easy to understand and apply"
+    - "Helps identify missing requirements"
+    - "Facilitates stakeholder communication"
+
+metadata:
+  author: "iReDev Framework"
+  tags: ["methodology", "requirements_elicitation", "questioning", "5w1h"]
+  references:
+    - "Root Cause Analysis techniques"
+    - "Requirements Engineering practices"

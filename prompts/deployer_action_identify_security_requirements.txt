@@ -1,0 +1,13 @@
+Action: Identify security requirements based on threat model.
+
+Context:
+- System type: {system_type}
+- Threat model: {threat_model}
+- Compliance context: {compliance_context}
+
+Instructions:
+1. Map threats to security requirements (authentication, authorization, encryption, audit, etc.).
+2. Define security level (basic, standard, high, critical).
+3. Provide implementation guidance.
+4. Link to compliance standards where applicable.
+

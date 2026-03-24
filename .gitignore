@@ -2,7 +2,6 @@
 __pycache__/
 *.py[codz]
 *$py.class
-*.DS_Store
 
 # C extensions
 *.so
@@ -217,8 +216,8 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Config file
-backend/config/agent_config.yaml
-backend/config/iredev_config.yaml
+config/agent_config.yaml
+config/iredev_config.yaml
 
 # Artifacts
 artifacts

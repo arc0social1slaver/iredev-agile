@@ -1,0 +1,13 @@
+Action: Prioritize system requirements.
+
+Context:
+- Requirements: {requirements}
+- Criteria: {criteria}
+- Business context: {business_context}
+
+Instructions:
+1. Apply prioritization method (MoSCoW, value vs effort, risk-based).
+2. Assess business value, implementation risk, and user impact.
+3. Sort requirements by priority.
+4. Document prioritization rationale.
+

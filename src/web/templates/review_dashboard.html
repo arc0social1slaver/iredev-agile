@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+
+{% block title %}Review Dashboard - iReDev Framework{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <h1 class="mb-4">
+            <i class="fas fa-clipboard-check text-warning"></i> Review Dashboard
+        </h1>
+    </div>
+</div>
+
+<!-- Pending Reviews -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="fas fa-hourglass-half"></i> Pending Reviews ({{ pending_reviews|length }})
+                </h5>
+                <div>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="location.reload()">
+                        <i class="fas fa-sync-alt"></i> Refresh
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                {% if pending_reviews %}
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Priority</th>
+                                    <th>Description</th>
+                                    <th>Phase</th>
+                                    <th>Artifact Type</th>
+                                    <th>Session</th>
+                                    <th>Created</th>
+                                    <th>Time Remaining</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for review in pending_reviews %}
+                                <tr class="{{ 'table-danger' if review.timeout_at < now() else 'table-warning' if (review.timeout_at - now()).total_seconds() < 3600 else '' }}">
+                                    <td>
+                                        <span class="badge bg-{{ 'danger' if review.priority >= 4 else 'warning' if review.priority >= 3 else 'info' }}">
+                                            {{ 'High' if review.priority >= 4 else 'Medium' if review.priority >= 3 else 'Low' }}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <strong>{{ review.description }}</strong>
+                                        {% if review.assigned_reviewer %}
+                                            <br><small class="text-muted">Assigned to: {{ review.assigned_reviewer }}</small>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-secondary">
+                                            {{ review.phase.replace('_', ' ').title() }}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <span class="badge bg-info">
+                                            {{ review.artifact_type.value.replace('_', ' ').title() }}
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <a href="{{ url_for('process_detail', session_id=review.session_id) }}" 
+                                           class="text-decoration-none">
+                                            <code>{{ review.session_id[:8] }}...</code>
+                                        </a>
+                                    </td>
+                                    <td>{{ review.created_at|datetime }}</td>
+                                    <td>
+                                        <div data-countdown="{{ review.timeout_at.isoformat() }}" 
+                                             class="countdown-timer {{ 'text-danger' if review.timeout_at < now() else 'text-warning' if (review.timeout_at - now()).total_seconds() < 3600 else 'text-muted' }}">
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <a href="{{ url_for('review_detail', review_id=review.id) }}" 
+                                           class="btn btn-warning btn-sm">
+                                            <i class="fas fa-clipboard-check"></i> Review
+                                        </a>
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <div class="text-center py-5">
+                        <i class="fas fa-check-circle fa-4x text-success mb-3"></i>
+                        <h4 class="text-muted">All caught up!</h4>
+                        <p class="text-muted">No pending reviews at the moment.</p>
+                        <a href="{{ url_for('index') }}" class="btn btn-primary">
+                            <i class="fas fa-tachometer-alt"></i> Back to Dashboard
+                        </a>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Initialize countdown timers
+document.addEventListener('DOMContentLoaded', function() {
+    const countdownElements = document.querySelectorAll('.countdown-timer');
+    
+    countdownElements.forEach(element => {
+        const targetDate = new Date(element.dataset.countdown);
+        updateCountdown(element, targetDate);
+        setInterval(() => updateCountdown(element, targetDate), 1000);
+    });
+});
+
+function updateCountdown(element, targetDate) {
+    const now = new Date();
+    const diff = targetDate - now;
+    
+    if (diff <= 0) {
+        element.innerHTML = '<span class="text-danger fw-bold">EXPIRED</span>';
+        element.parentElement.classList.add('table-danger');
+        return;
+    }
+    
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    
+    let timeString = '';
+    if (days > 0) {
+        timeString = `${days}d ${hours}h ${minutes}m`;
+    } else if (hours > 0) {
+        timeString = `${hours}h ${minutes}m`;
+    } else {
+        timeString = `${minutes}m`;
+    }
+    
+    element.textContent = timeString;
+    
+    // Update styling based on time remaining
+    if (diff < 3600000) { // Less than 1 hour
+        element.className = 'countdown-timer text-danger fw-bold';
+    } else if (diff < 7200000) { // Less than 2 hours
+        element.className = 'countdown-timer text-warning fw-bold';
+    } else {
+        element.className = 'countdown-timer text-muted';
+    }
+}
+
+// Auto-refresh every 30 seconds
+setInterval(() => {
+    location.reload();
+}, 30000);
+</script>
+{% endblock %}

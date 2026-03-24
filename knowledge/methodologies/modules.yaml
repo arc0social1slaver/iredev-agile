@@ -1,0 +1,42 @@
+version: "1.0.0"
+description: "Configuration for methodology knowledge modules"
+
+modules:
+  requirements_elicitation:
+    file: "requirements_elicitation.yaml"
+    version: "1.0.0"
+    enabled: false  # Not created yet
+    cache_enabled: true
+    auto_update: false
+    dependencies: []
+    load_priority: 0
+    metadata:
+      name: "Requirements Elicitation Methodologies"
+      description: "Various techniques for gathering requirements"
+      tags: ["elicitation", "methodology", "requirements"]
+  
+  5w1h_methodology:
+    file: "5w1h.yaml"
+    version: "1.0.0"
+    enabled: true
+    cache_enabled: true
+    auto_update: false
+    dependencies: []
+    load_priority: 1
+    metadata:
+      name: "5W1H Methodology"
+      description: "5W1H questioning methodology"
+      tags: ["5w1h", "questioning", "methodology"]
+  
+  socratic_questioning:
+    file: "socratic_questioning.yaml"
+    version: "1.0.0"
+    enabled: false  # Not created yet
+    cache_enabled: true
+    auto_update: false
+    dependencies: ["5w1h_methodology"]
+    load_priority: 2
+    metadata:
+      name: "Socratic Questioning"
+      description: "Socratic questioning techniques"
+      tags: ["socratic", "questioning", "methodology"]

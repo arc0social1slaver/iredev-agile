@@ -1,0 +1,53 @@
+[2026-03-22T15:09:53.264147+00:00] Interviewer / user
+  I need a web system where students can register for courses, view their timetable, and get notified when a seat opens up.
+
+[2026-03-22T15:09:55.349398+00:00] Interviewer / assistant
+  Thank you for sharing your initial requirements. Let's delve deeper to ensure we capture all necessary details for the web system you're envisioning.
+
+1. **Who**: Could you tell me more about the primary users of this system? Are there any secondary stakeholders involved?
+2. **What**: What specific functionalities do you envision for the registration process and notification system?
+
+[2026-03-22T15:09:57.389985+00:00] Interviewer / user
+  I need a web system where students can register for courses, view their timetable, and get notified when a seat opens up.
+
+[2026-03-22T15:09:57.389995+00:00] Interviewer / assistant
+  Thank you for sharing your initial requirements. Let's delve deeper to ensure we capture all necessary details for the web system you're envisioning.
+
+1. **Who**: Could you tell me more about the primary users of this system? Are there any secondary stakeholders involved?
+2. **What**: What specific functionalities do you envision for the registration process and notification system?
+
+[2026-03-22T15:09:57.389999+00:00] Interviewer / user
+  The main users are undergraduate students and academic advisors. Advisors need to approve or reject registrations manually.
+
+[2026-03-22T15:09:58.897996+00:00] Interviewer / assistant
+  Thank you for clarifying the primary users. Let's explore this further:
+
+1. **How**: How do you envision the approval process working for academic advisors? Would they need any specific tools or interfaces to facilitate this?
+2. **What**: What kind of notifications should students receive, and through which channels (e.g., email, SMS, in-app notifications)?
+
+[2026-03-22T15:10:00.925672+00:00] Interviewer / user
+  I need a web system where students can register for courses, view their timetable, and get notified when a seat opens up.
+
+[2026-03-22T15:10:00.925682+00:00] Interviewer / assistant
+  Thank you for sharing your initial requirements. Let's delve deeper to ensure we capture all necessary details for the web system you're envisioning.
+
+1. **Who**: Could you tell me more about the primary users of this system? Are there any secondary stakeholders involved?
+2. **What**: What specific functionalities do you envision for the registration process and notification system?
+
+[2026-03-22T15:10:00.925686+00:00] Interviewer / user
+  The main users are undergraduate students and academic advisors. Advisors need to approve or reject registrations manually.
+
+[2026-03-22T15:10:00.925690+00:00] Interviewer / assistant
+  Thank you for clarifying the primary users. Let's explore this further:
+
+1. **How**: How do you envision the approval process working for academic advisors? Would they need any specific tools or interfaces to facilitate this?
+2. **What**: What kind of notifications should students receive, and through which channels (e.g., email, SMS, in-app notifications)?
+
+[2026-03-22T15:10:00.925693+00:00] Interviewer / user
+  We use Microsoft SSO for login. The system has to integrate with our existing student information system via REST API.
+
+[2026-03-22T15:10:02.891443+00:00] Interviewer / assistant
+  Thank you for providing those details. Let's ensure we capture the integration and notification aspects accurately:
+
+1. **How**: How should the integration with the existing student information system via REST API function? Are there specific data points or actions that need to be synchronized?
+2. **What**: Regarding notifications, should students receive alerts for all registration-related updates, or only for specific events like seat availability?

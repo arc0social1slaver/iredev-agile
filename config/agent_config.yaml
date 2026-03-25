@@ -1,0 +1,105 @@
+# =============================================================================
+# agent_config.yaml  –  DocAgent / iReDev agent configuration
+#
+# Secrets (API keys, connection strings) are NOT stored here.
+# Set them in your .env file (see .env.example).
+# Every ${VAR} placeholder is expanded at load time via os.path.expandvars().
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# LLM configuration
+# Uncomment exactly ONE provider block.
+# ---------------------------------------------------------------------------
+llm:
+
+  # ── Option 1: Claude (Anthropic) ─────────────────────────────────────────
+  # type: "claude"
+  # api_key: ${ANTHROPIC_API_KEY}
+  # model: "claude-3-5-haiku-latest"   # claude-3-5-sonnet, claude-3-opus, …
+  # temperature: 0.1
+  # max_output_tokens: 4096
+  # max_input_tokens: 100000
+
+  # ── Option 2: OpenAI ─────────────────────────────────────────────────────
+  type: "openai"
+  api_key: ${OPENAI_API_KEY}
+  model: "gpt-4o-mini"                # gpt-4o, gpt-4-turbo, gpt-3.5-turbo, …
+  base_url: ${OPENAI_BASE_URL}
+  temperature: 0.1
+  max_output_tokens: 4096
+  max_input_tokens: 100000
+
+  # ── Option 3: Gemini ─────────────────────────────────────────────────────
+  # type: "gemini"
+  # api_key: ${GEMINI_API_KEY}
+  # model: "gemini-flash-latest"
+  # temperature: 0.1
+  # max_output_tokens: 4096
+  # max_input_tokens: 100000
+
+  # ── Option 4: HuggingFace / Ollama (local) ───────────────────────────────
+  # type: "huggingface"
+  # model: "phi3.5"
+  # api_base: ${OLLAMA_BASE_URL}       # e.g. http://localhost:11434/v1
+  # api_key: ${HUGGINGFACE_API_KEY}    # "EMPTY" for local Ollama
+  # device: "cuda"                     # cuda | cpu
+  # torch_dtype: "float16"
+  # temperature: 0.1
+  # max_output_tokens: 4096
+  # max_input_tokens: 32000
+
+# ---------------------------------------------------------------------------
+# Rate limits  (adjust to your API tier)
+# ---------------------------------------------------------------------------
+rate_limits:
+
+  claude:
+    requests_per_minute: 50
+    input_tokens_per_minute: 20000
+    output_tokens_per_minute: 8000
+    input_token_price_per_million: 3.0
+    output_token_price_per_million: 15.0
+
+  openai:
+    requests_per_minute: 500
+    input_tokens_per_minute: 200000
+    output_tokens_per_minute: 100000
+    input_token_price_per_million: 0.15
+    output_token_price_per_million: 0.60
+
+  gemini:
+    requests_per_minute: 60
+    input_tokens_per_minute: 30000
+    output_tokens_per_minute: 10000
+    input_token_price_per_million: 0.125
+    output_token_price_per_million: 0.375
+
+  huggingface:
+    requests_per_minute: 100
+    input_tokens_per_minute: 100000
+    output_tokens_per_minute: 50000
+    input_token_price_per_million: 0.0
+    output_token_price_per_million: 0.0
+
+# ---------------------------------------------------------------------------
+# Flow control
+# ---------------------------------------------------------------------------
+flow_control:
+  max_reader_search_attempts: 2
+  max_verifier_rejections: 1
+  status_sleep_time: 1
+
+# ---------------------------------------------------------------------------
+# Docstring generation
+# ---------------------------------------------------------------------------
+docstring_options:
+  overwrite_docstrings: false
+
+# ---------------------------------------------------------------------------
+# Perplexity (web-search capability)
+# ---------------------------------------------------------------------------
+perplexity:
+  api_key: ${PERPLEXITY_API_KEY}
+  model: "sonar"
+  temperature: 0.1
+  max_output_tokens: 250

@@ -129,6 +129,13 @@ def _create_embeddings(embed_cfg: Dict[str, Any]):
     if not model:
         raise ValueError("knowledge_base.embedding.model must be specified.")
 
+    if provider in ("google", "gemini"):
+        from langchain_google_genai import GoogleGenerativeAIEmbeddings
+        return GoogleGenerativeAIEmbeddings(
+            model=model,
+            api_key=embed_cfg.get("api_key")
+        )
+
     if provider == "openai":
         from langchain_openai import OpenAIEmbeddings
         kwargs: Dict[str, Any] = {
@@ -205,9 +212,11 @@ class KnowledgeModule:
 
         # pg_conn_str can be supplied explicitly (e.g. from the orchestrator)
         # or read from the config; explicit argument always wins.
+
+        logger.info("[KnowledgeModule] Initializing with config: %s", self._config.get("pg_connection"))
         self._pg_conn_str = pg_conn_str or self._config.get(
             "pg_connection",
-            "postgresql+psycopg://iredev:iredev@localhost:5432/iredev",
+            "postgresql+psycopg://postgres:postgres@localhost:5432/iredev",
         )
 
         # Resolve project root: this file lives at src/knowledge/knowledge_module.py

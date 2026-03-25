@@ -1,22 +1,24 @@
 """
-Orchestrator module for the iReDev framework.
+Orchestrator package.
 
-This module provides the core orchestration functionality for managing
-the requirement development process, including human-in-the-loop mechanisms.
+Public surface
+──────────────
+ProcessPhase   – used by ThinkModule / KnowledgeModule (backward-compat re-export)
+WorkflowState  – LangGraph state
+build_graph()  – factory for the compiled workflow graph
 """
 
-from .orchestrator import RequirementOrchestrator, ProcessSession, ProcessStatus
-from .human_in_loop import HumanReviewManager, ReviewPoint, HumanFeedback
-from .feedback_processor import FeedbackProcessor, FeedbackType, FeedbackAction
+from .state import ProcessPhase, WorkflowState  # noqa: F401
+from .flow import WORKFLOW_PHASES, PhaseDefinition  # noqa: F401
+from .supervisor import supervisor_node, supervisor_router  # noqa: F401
+from .graph import build_graph  # noqa: F401
 
 __all__ = [
-    'RequirementOrchestrator',
-    'ProcessSession', 
-    'ProcessStatus',
-    'HumanReviewManager',
-    'ReviewPoint',
-    'HumanFeedback',
-    'FeedbackProcessor',
-    'FeedbackType',
-    'FeedbackAction'
+    "ProcessPhase",
+    "WorkflowState",
+    "WORKFLOW_PHASES",
+    "PhaseDefinition",
+    "supervisor_node",
+    "supervisor_router",
+    "build_graph",
 ]

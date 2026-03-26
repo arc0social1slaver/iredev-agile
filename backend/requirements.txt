@@ -25,6 +25,7 @@ langchain-community
 langchain-google-genai
 langchain-huggingface
 langchain-openai
+langchain-anthropic
 langchain-postgres
 langgraph
 langgraph-checkpoint-postgres

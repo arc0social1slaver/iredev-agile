@@ -13,6 +13,24 @@ Phases advance strictly in sequence (hard flow):
 Within each phase, routing is artifact-driven:
   The supervisor inspects (system_phase, artifacts) and selects the next
   ArtifactStep whose prerequisites are met but whose output is absent.
+
+Requirements elicitation sub-state
+───────────────────────────────────
+``requirements_draft`` is the live, incrementally-updated requirement list
+maintained by InterviewerAgent throughout the interview loop.
+  • Populated by: InterviewerAgent._tool_update_requirements  (per turn)
+  • Finalised by: InterviewerAgent._tool_write_interview_record
+    (copies draft → interview_record artifact; does NOT clear the draft)
+
+Each item follows the schema:
+  {
+    "id":          "FR-001" | "NFR-001" | "CON-001",
+    "type":        "functional" | "non_functional" | "constraint",
+    "description": "<precise, testable statement>",
+    "priority":    "high" | "medium" | "low",
+    "source_turn": <int, 0-based index in conversation list>,
+    "status":      "confirmed" | "inferred" | "ambiguous",
+  }
 """
 
 from enum import Enum
@@ -67,16 +85,16 @@ class ConversationTurn(TypedDict):
 
 class WorkflowState(TypedDict, total=False):
 
-    # ── session ──────────────────────────────────────────────────────────
+    # ── Session ───────────────────────────────────────────────────────────
     session_id:          str
     project_description: str   # raw brief provided by the user / caller
 
-    # ── phase management (hard sequential flow) ───────────────────────────
+    # ── Phase management (hard sequential flow) ───────────────────────────
     # Stores a SystemPhase value (string).  Defaults to SPRINT_ZERO_PLANNING
     # when absent.  Updated by the supervisor when the phase advances.
     system_phase: str
 
-    # ── artifact store (artifact-driven intra-phase routing) ──────────────
+    # ── Artifact store (artifact-driven intra-phase routing) ──────────────
     # All produced artifacts live here, keyed by their logical name.
     # e.g. {"interview_record": {...}, "product_backlog": {...}}
     artifacts:    Dict[str, Any]
@@ -84,20 +102,27 @@ class WorkflowState(TypedDict, total=False):
     # Optional parallel store of LangGraph store IDs for cross-session lookup.
     artifact_ids: Dict[str, str]
 
-    # ── supervisor routing signal ─────────────────────────────────────────
+    # ── Supervisor routing signal ─────────────────────────────────────────
     # Set by supervisor_node; read by supervisor_router to pick the next edge.
     next_node: str
 
-    # ── interview sub-state (Sprint Zero – step 1) ────────────────────────
+    # ── Interview sub-state (Sprint Zero – step 1) ────────────────────────
     conversation:       List[ConversationTurn]
     turn_count:         int
     max_turns:          int
     interview_complete: bool   # set True by InterviewerAgent._tool_write_interview_record
 
-    # ── human-review gate ─────────────────────────────────────────────────
+    # ── Live requirements draft (Sprint Zero – step 1) ────────────────────
+    # Incrementally built by InterviewerAgent._tool_update_requirements.
+    # Each entry: {id, type, description, priority, source_turn, status}
+    # Copied into interview_record["requirements_identified"] when finalised.
+    # Persists in state for downstream inspection (e.g. SprintAgent).
+    requirements_draft: List[Dict[str, Any]]
+
+    # ── Human-review gate ─────────────────────────────────────────────────
     awaiting_review: bool
     review_approved: bool
     review_feedback: Optional[str]
 
-    # ── error accumulation ────────────────────────────────────────────────
+    # ── Error accumulation ────────────────────────────────────────────────
     errors: List[str]

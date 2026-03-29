@@ -20,11 +20,12 @@ from __future__ import annotations
 import json
 import logging
 import re
-from langchain_core.messages import HumanMessage
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+from langchain_core.messages import HumanMessage
 
 logger = logging.getLogger(__name__)
 
@@ -116,11 +117,19 @@ class BaseAgent(ABC):
     def __init__(self, name: str, config_path: Optional[str] = None):
         self.name = name
 
-        # ── LLM ─────────────────────────────────────────────────
+        # ── Config ──────────────────────────────────────────────────────
+        # All config loading goes through ConfigManager so that ${ENV_VAR}
+        # placeholders are expanded consistently and .env is loaded first.
+        from ..config.config_manager import get_config_manager, get_raw
         from .llm.factory import LLMFactory
 
         cfg_path = config_path or "config/agent_config.yaml"
-        raw_config = LLMFactory.load_config(cfg_path)
+
+        # Initialise the singleton with the explicit path (no-op if already
+        # set to the same path).
+        get_config_manager(cfg_path)
+
+        raw_config = get_raw(cfg_path)
         self._raw_config = raw_config
 
         agent_section = (
@@ -132,6 +141,7 @@ class BaseAgent(ABC):
             "llm", {}
         )
 
+        # ── LLM ─────────────────────────────────────────────────────────
         self.llm = LLMFactory.create_llm(llm_cfg)
 
         self.llm_params = {
@@ -139,7 +149,7 @@ class BaseAgent(ABC):
             "max_tokens": llm_cfg.get("max_tokens", 4096),
         }
 
-        # ── Module 1: Profile ─────────────────────────────────────────────
+        # ── Module 1: Profile ────────────────────────────────────────────
         from ..profile.profile_module import ProfileModule
 
         prompt_path = agent_section.get(
@@ -147,7 +157,7 @@ class BaseAgent(ABC):
         )
         self.profile = ProfileModule(prompt_path)
 
-        # ── Module 2: Memory ──────────────────────────────────────────────
+        # ── Module 2: Memory ─────────────────────────────────────────────
         from ..memory.memory_module import MemoryModule
         from ..memory.types import MemoryType
 
@@ -156,7 +166,7 @@ class BaseAgent(ABC):
             system_prompt=self.profile.prompt,
         )
 
-        # ── Module 3: Knowledge ───────────────────────────────────────────
+        # ── Module 3: Knowledge ──────────────────────────────────────────
         self.knowledge = None
         try:
             from ..knowledge.knowledge_module import KnowledgeModule
@@ -167,7 +177,7 @@ class BaseAgent(ABC):
                 "Agent '%s': knowledge module unavailable (%s). Skipping.", name, exc
             )
 
-        # ── Module 4: Think ───────────────────────────────────────────────
+        # ── Module 4: Think ──────────────────────────────────────────────
         self.think = None
         if self.knowledge is not None:
             try:
@@ -179,7 +189,7 @@ class BaseAgent(ABC):
                     "Agent '%s': ThinkModule failed to init (%s).", name, exc
                 )
 
-        # ── Module 6: Action (ReAct) ──────────────────────────────────────
+        # ── Module 6: Action (ReAct) ─────────────────────────────────────
         self.tools: Dict[str, Tool] = {}
         self.max_react_iterations: int = agent_section.get("max_react_iterations", 10)
 
@@ -207,28 +217,51 @@ class BaseAgent(ABC):
     def _tools_text(self) -> str:
         return "\n".join(t.describe() for t in self.tools.values())
 
-    # ── ReAct core ─────────────────────────────────────────────────────────
+    # ── ReAct core ────────────────────────────────────────────────────────
 
     @staticmethod
     def _parse_react_output(text: str):
-        """Return (thought, action, action_input_dict) from raw LLM output."""
+        """Parse raw LLM ReAct output into (thought, action, action_input).
+
+        Uses brace-depth counting instead of a non-greedy regex so that
+        arbitrarily nested JSON objects and arrays are captured correctly.
+        A non-greedy r'{.*?}' stops at the first closing brace, which silently
+        truncates inputs like {"extracted": [{...}, {...}]}.
+        """
         thought_m = re.search(r"Thought:\s*(.*?)(?=\nAction:|\Z)", text, re.DOTALL)
         action_m = re.search(r"Action:\s*(\S+)", text)
-        input_m = re.search(r"Action Input:\s*(\{.*?\})", text, re.DOTALL)
 
         thought = thought_m.group(1).strip() if thought_m else ""
         action = action_m.group(1).strip() if action_m else "FINISH"
-        try:
-            action_input = json.loads(input_m.group(1)) if input_m else {}
-        except json.JSONDecodeError:
-            action_input = {}
+
+        action_input: Dict[str, Any] = {}
+        ai_pos = re.search(r"Action Input:\s*", text)
+        if ai_pos:
+            start = ai_pos.end()
+            # Skip any leading whitespace / newlines before the opening brace
+            while start < len(text) and text[start] in " \t\n\r":
+                start += 1
+            if start < len(text) and text[start] == "{":
+                depth, end = 0, start
+                for i in range(start, len(text)):
+                    if text[i] == "{":
+                        depth += 1
+                    elif text[i] == "}":
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+                try:
+                    action_input = json.loads(text[start:end])
+                except json.JSONDecodeError:
+                    action_input = {}
+
         return thought, action, action_input
 
     def _call_llm(self, prompt: str) -> str:
-        """Calls the LangChain chat model with the formatted prompt."""
+        """Call the LangChain chat model with the formatted prompt."""
         messages = [HumanMessage(content=prompt)]
         response = self.llm.invoke(messages)
-
         content = response.content
 
         # Normalize: some providers (e.g. Gemini) return a list of content blocks
@@ -238,7 +271,6 @@ class BaseAgent(ABC):
                 if isinstance(block, str):
                     parts.append(block)
                 elif isinstance(block, dict):
-                    # e.g. {"type": "text", "text": "..."} or {"type": "thinking", ...}
                     parts.append(block.get("text") or block.get("thinking") or "")
             content = "".join(parts)
 
@@ -261,8 +293,7 @@ class BaseAgent(ABC):
             return ""
 
     def react(self, state: Dict[str, Any], task: str) -> Dict[str, Any]:
-        """
-        Run the ReAct loop for one agent turn.
+        """Run the ReAct loop for one agent turn.
 
         Parameters
         ----------
@@ -292,6 +323,10 @@ class BaseAgent(ABC):
         scratchpad: List[str] = []
         state_updates: Dict[str, Any] = {}
 
+        # Track how many times each (action, message) pair has been emitted
+        # to detect infinite loops before they exhaust max_react_iterations.
+        action_repeat_counts: Dict[str, int] = {}
+
         for step in range(self.max_react_iterations):
             full_prompt = prompt + (
                 "\n\n" + "\n".join(scratchpad) if scratchpad else ""
@@ -306,13 +341,43 @@ class BaseAgent(ABC):
                 logger.debug("[%s] ReAct FINISH at step %d.", self.name, step + 1)
                 break
 
+            # ── Loop detection ────────────────────────────────────────────
+            # Build a short fingerprint from the action and the first 80 chars
+            # of its most meaningful input field so that minor LLM paraphrasing
+            # does not mask a genuine repeat.
+            _msg_field = (
+                action_input.get("message")
+                or action_input.get("query")
+                or str(action_input)
+            )
+            loop_key = f"{action}::{str(_msg_field)[:80]}"
+            action_repeat_counts[loop_key] = action_repeat_counts.get(loop_key, 0) + 1
+
+            if action_repeat_counts[loop_key] >= 3:
+                logger.warning(
+                    "[%s] Loop detected: action='%s' repeated %d times at step %d. "
+                    "Breaking ReAct loop to prevent infinite cycle.",
+                    self.name,
+                    action,
+                    action_repeat_counts[loop_key],
+                    step + 1,
+                )
+                # Append a visible hint to the scratchpad so the next LLM call
+                # (if any) is aware that this path was already exhausted.
+                scratchpad.append(
+                    f"Observation: [LOOP GUARD] Action '{action}' with the same "
+                    "input has been repeated 3 times without progress. "
+                    "You MUST choose a different action or call FINISH."
+                )
+                break
+            # ─────────────────────────────────────────────────────────────
+
             if action not in self.tools:
                 obs = f"Unknown tool '{action}'. Available: {list(self.tools)}"
                 scratchpad.append(f"Action: {action}")
                 scratchpad.append(f"Observation: {obs}")
                 continue
 
-            # Merge accumulated updates into a view of state for the tool
             tool_state = {**state, **state_updates}
             result: ToolResult = self.tools[action](state=tool_state, **action_input)
 
@@ -320,7 +385,6 @@ class BaseAgent(ABC):
             scratchpad.append(f"Action Input: {json.dumps(action_input)}")
             scratchpad.append(f"Observation: {result.observation}")
 
-            # Persist step in short-term memory
             self.memory.add(
                 f"Thought: {thought}\nAction: {action}\nObs: {result.observation}",
                 role="assistant",
@@ -336,11 +400,11 @@ class BaseAgent(ABC):
 
         return state_updates
 
-    # ── abstract interface ─────────────────────────────────────────────────
+    # ── abstract interface ────────────────────────────────────────────────
 
     @abstractmethod
     def _register_tools(self) -> None:
-        """Populate self.tools.  Called once at the end of __init__."""
+        """Populate self.tools. Called once at the end of __init__."""
 
     @abstractmethod
     def process(self, state: Dict[str, Any]) -> Dict[str, Any]:

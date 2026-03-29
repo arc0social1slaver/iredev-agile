@@ -1,106 +1,50 @@
-import os
-import yaml
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from langchain_core.language_models import BaseChatModel
-from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.embeddings import Embeddings
 
 from .rate_limiter import AdvancedTokenRateLimiter
 from .callback_handler import TokenTrackingCallback
+from ...config.config_manager import get_raw
 
 
 class LLMFactory:
-    """Creates LangChain chat-model instances from agent_config.yaml."""
+    """Creates LangChain chat-model and embeddings instances from config.
 
-    @staticmethod
-    def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
-        """Load YAML config and expand ${ENV_VAR} placeholders.
+    Config loading is fully delegated to ConfigManager (via ``get_raw``).
+    All ${ENV_VAR} placeholders in the YAML have already been expanded by
+    the time any method here is called.
+    """
 
-        Resolution order for config_path:
-          1. Explicit argument.
-          2. <project_root>/config/agent_config.yaml (default).
-
-        ${VAR} placeholders in the YAML are replaced with the corresponding
-        environment variable values via ``os.path.expandvars``.  Unset
-        variables are left as-is (the string ``${VAR}``), so missing keys
-        will surface as obvious values rather than silent None lookups.
-
-        Args:
-            config_path: Path to the YAML config file. Uses default if None.
-
-        Returns:
-            Parsed config as a dictionary with env-var placeholders expanded.
-
-        Raises:
-            FileNotFoundError: If the config file does not exist.
-        """
-        if config_path is None:
-            config_path = str(
-                Path(__file__).parent.parent.parent.parent
-                / "config"
-                / "agent_config.yaml"
-            )
-        path = Path(config_path)
-        if not path.exists():
-            raise FileNotFoundError(f"Config not found: {config_path}")
-
-        raw_text = path.read_text(encoding="utf-8")
-        # Expand ${VAR} and $VAR placeholders using current environment
-        expanded_text = os.path.expandvars(raw_text)
-        return yaml.safe_load(expanded_text)
+    # ------------------------------------------------------------------ #
+    #  LLM factory                                                         #
+    # ------------------------------------------------------------------ #
 
     @staticmethod
     def create_llm(config: Dict[str, Any]) -> BaseChatModel:
-        """Build a LangChain BaseChatModel from a provider config block.
+        """Build a LangChain BaseChatModel from a provider config block."""
+        from langchain_openai import ChatOpenAI
+        from langchain_anthropic import ChatAnthropic
+        from langchain_google_genai import ChatGoogleGenerativeAI
 
-        Rate limit resolution order:
-          1. Inline 'rate_limits' block inside the LLM config.
-          2. Global rate_limits[<provider>] section in the same YAML.
-
-        API key resolution order (per key field):
-          1. Value in config (already expanded from ${ENV_VAR} by load_config).
-          2. Provider-specific environment variable fallback (so LangChain's
-             own env-var auto-detection still works when the field is absent).
-
-        Args:
-            config: LLM config dict (the 'llm' block from agent_config.yaml).
-
-        Returns:
-            A configured LangChain BaseChatModel instance.
-
-        Raises:
-            ValueError: If 'model' is missing or the provider is unsupported.
-        """
         provider = config.get("type", "").lower()
         model = config.get("model")
+
         if not model:
             raise ValueError("'model' must be specified in the LLM config block.")
 
         # Resolve rate limits: inline first, then global fallback
-        rate_limits = config.get("rate_limits") or {}
+        rate_limits: Dict[str, Any] = config.get("rate_limits") or {}
         if not rate_limits:
             try:
-                global_cfg = LLMFactory.load_config()
-                rate_limits = global_cfg.get("rate_limits", {}).get(provider, {})
-            except FileNotFoundError:
+                rate_limits = get_raw().get("rate_limits", {}).get(provider, {})
+            except Exception:
                 pass
 
         limiter = AdvancedTokenRateLimiter.from_config(
             provider=provider, config=rate_limits
         )
         callback = TokenTrackingCallback(limiter)
-
-        # Helper: return the config value if non-empty, else fall back to an
-        # env var so that keys omitted from YAML still resolve correctly.
-        def _key(config_value: Optional[str], env_var: str) -> Optional[str]:
-            v = config_value or ""
-            # Treat unexpanded placeholders as missing
-            if v and not v.startswith("${"):
-                return v
-            return os.environ.get(env_var) or None
 
         common = {
             "model": model,
@@ -111,21 +55,21 @@ class LLMFactory:
 
         if provider == "openai":
             return ChatOpenAI(
-                api_key=_key(config.get("api_key"), "OPENAI_API_KEY"),
-                base_url=config.get("base_url") or os.environ.get("OPENAI_BASE_URL"),
+                api_key=config.get("api_key"),
+                base_url=config.get("base_url"),
                 **common,
             )
 
         if provider in ("claude", "anthropic"):
             return ChatAnthropic(
-                api_key=_key(config.get("api_key"), "ANTHROPIC_API_KEY"),
+                api_key=config.get("api_key"),
                 **common,
             )
 
         if provider == "gemini":
             return ChatGoogleGenerativeAI(
                 model=model,
-                google_api_key=_key(config.get("api_key"), "GEMINI_API_KEY"),
+                google_api_key=config.get("api_key"),
                 max_output_tokens=config.get("max_output_tokens"),
                 temperature=config.get("temperature", 0.1),
                 rate_limiter=limiter,
@@ -136,11 +80,59 @@ class LLMFactory:
             # Local servers (Ollama) use the OpenAI-compatible wrapper.
             return ChatOpenAI(
                 model=model,
-                api_key=_key(config.get("api_key"), "HUGGINGFACE_API_KEY"),
-                base_url=config.get("api_base") or os.environ.get("OLLAMA_BASE_URL"),
+                api_key=config.get("api_key"),
+                base_url=config.get("api_base") or config.get("base_url"),
                 temperature=config.get("temperature", 0.1),
                 rate_limiter=limiter,
                 callbacks=[callback],
             )
 
-        raise ValueError(f"Unsupported provider: '{provider}'")
+        raise ValueError(f"Unsupported LLM provider: '{provider}'")
+
+    # ------------------------------------------------------------------ #
+    #  Embeddings factory                                                  #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def create_embeddings(config: Dict[str, Any]) -> Embeddings:
+        """Build a LangChain Embeddings instance from an embedding config block."""
+        provider = config.get("type", "openai").lower()
+        model = config.get("model")
+
+        if not model:
+            raise ValueError(
+                "knowledge_base.embedding.model must be specified. "
+                "Check your config YAML or the default_knowledge_base() in config_manager.py."
+            )
+
+        if provider in ("google", "gemini"):
+            from langchain_google_genai import GoogleGenerativeAIEmbeddings
+
+            return GoogleGenerativeAIEmbeddings(
+                model=model,
+                api_key=config.get("api_key"),
+            )
+
+        if provider == "openai":
+            from langchain_openai import OpenAIEmbeddings
+
+            kwargs: Dict[str, Any] = {
+                "model": model,
+                "api_key": config.get("api_key"),
+                # Ollama and most local servers only accept plain text strings,
+                # so disable LangChain's tokenization pre-processing step.
+                "check_embedding_ctx_length": False,
+            }
+
+            base_url = config.get("base_url")
+            if base_url:
+                kwargs["base_url"] = base_url
+
+            return OpenAIEmbeddings(**kwargs)
+
+        if provider == "huggingface":
+            from langchain_huggingface import HuggingFaceEmbeddings
+
+            return HuggingFaceEmbeddings(model_name=model)
+
+        raise ValueError(f"Unsupported embedding provider: '{provider}'")

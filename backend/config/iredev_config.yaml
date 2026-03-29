@@ -162,7 +162,7 @@ iredev:
       type: "openai"
       model: "text-embedding-3-small"
       api_key: ${OPENAI_API_KEY}
-      base_url: "https://api.openai.com/v1"
+      base_url: ${OPENAI_BASE_URL}
       dims: 768
 
     # ── Embedding: local Ollama (uncomment to use) ───────────────────────

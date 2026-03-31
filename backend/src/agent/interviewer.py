@@ -1,2170 +1,755 @@
-from .knowledge_driven_agent import KnowledgeDrivenAgent
-from typing import List, Dict, Any, Optional, Tuple
-from .customer import Customer
-from ..knowledge.base_types import KnowledgeType
-from ..artifact.models import Artifact, ArtifactType, ArtifactStatus, ArtifactMetadata
-from ..artifact.pool import ArtifactPool
-from ..orchestrator.orchestrator import Task
-from datetime import datetime
+"""
+interviewer.py – InterviewerAgent  (LangGraph edition)
+
+Role
+────
+Conduct a multi-turn requirements interview with a simulated stakeholder
+(EndUserAgent) while maintaining a LIVE, incrementally-updated requirements
+draft.  Every turn the agent:
+
+  1. Reads the latest stakeholder utterance.
+  2. Calls ``update_requirements`` → extracts new requirements from that
+     utterance, merges them into the running ``requirements_draft`` in state,
+     detects conflicts / overlaps, and returns a completeness score.
+  3. Decides its next move inside the SAME ReAct loop:
+       • conflict detected  → ``send_message`` a targeted Socratic probe.
+       • completeness low   → ``send_message`` the next 5W1H question.
+       • completeness ≥ θ   → ``write_interview_record`` (finalise & exit).
+
+Stopping design (two-tier, matches graph.py)
+────────────────────────────────────────────
+TIER 1 – semantic (primary):
+  The agent itself decides when it has enough information.
+  It calls ``write_interview_record``, which sets interview_complete=True.
+  The completeness heuristic (threshold = 0.8 by default) and the LLM's own
+  judgment are the governing signals.
+
+TIER 2 – structural (safety net, graph layer):
+  after_interviewer() in graph.py forces a supervisor return when
+  turn_count >= max_turns. This is a loop-guard, NOT a depth dial.
+
+ReAct tools
+───────────
+  search_knowledge       – retrieve elicitation methodology snippets
+  update_requirements    – extract new reqs from latest stakeholder turn,
+                           merge into draft, detect conflicts → NO should_return
+  send_message           – post ONE question and yield to EndUser → should_return
+  write_interview_record – finalise the record from the accumulated draft → should_return
+
+Methodology
+───────────
+ISO/IEC/IEEE 29148 · BABOK v3 · 5W1H · Socratic Questioning
+〈Role | Goal | Behaviour | Constraint〉 tuples
+"""
+
+from __future__ import annotations
+
 import logging
 import uuid
-import asyncio
-import json
-import re
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from .base import BaseAgent, Tool, ToolResult
 
 logger = logging.getLogger(__name__)
 
 
-class BaseInterviewerAgent(KnowledgeDrivenAgent):
+# ── Requirement schema (reference) ────────────────────────────────────────────
+#
+# {
+#   "id":          "FR-001",
+#   "type":        "functional" | "non_functional" | "constraint",
+#   "description": "<precise, testable statement>",
+#   "priority":    "high" | "medium" | "low",
+#   "source_turn": <int, 0-based index in conversation list>,
+#   "status":      "confirmed" | "inferred" | "ambiguous",
+# }
+
+
+# ── Completeness weights (mirrors old BaseInterviewerAgent logic) ──────────────
+_W_FUNCTIONAL = 0.40
+_W_NON_FUNCTIONAL = 0.30
+_W_QUANTITY = 0.30  # min(0.30, count / 30)
+
+# Vague words that make a requirement untestable
+_VAGUE_WORDS: Set[str] = {
+    "quickly",
+    "fast",
+    "easy",
+    "good",
+    "nice",
+    "some",
+    "many",
+    "appropriate",
+    "sufficient",
+    "reasonable",
+}
+
+# Contradiction markers (simple heuristic; LLM does deep analysis)
+_NEGATION_PAIRS = [
+    ({"must", "shall", "should", "will"}, {"not", "never", "no"}),
+]
+
+
+class InterviewerAgent(BaseAgent):
     """
-    Knowledge-driven interviewer agent for requirements elicitation.
+    Drives the requirements interview.
 
-    Integrates 5W1H methodology, Socratic Questioning, and other elicitation techniques
-    to conduct structured interviews with stakeholders.
+    Key design invariant
+    ─────────────────────
+    ``requirements_draft`` in WorkflowState is the single source of truth for
+    the evolving requirements list.  Every call to ``update_requirements``
+    appends to it and checks consistency.  ``write_interview_record`` reads
+    from it directly — the LLM never needs to re-extract from the full
+    transcript at the end.
     """
 
-    def __init__(self, config_path: Optional[str] = None, **kwargs):
-        # Define required knowledge modules for interviewer
-        knowledge_modules = [
-            "5w1h_methodology",
-            "socratic_questioning",
-            "requirements_elicitation",
-            "interview_techniques",
-            "stakeholder_analysis",
-        ]
+    # ── Persona / profile (from old BaseInterviewerAgent) ─────────────────
 
-        super().__init__(
-            name="interviewer",
-            knowledge_modules=knowledge_modules,
-            config_path=config_path,
-            **kwargs,
-        )
-        interview_config = self.config.get("custom_params", {})
-
-        # Interview configuration
-        self.max_customer_turns = interview_config.get("max_customer_turns", 50)
-        self.max_enduser_turns = interview_config.get("max_enduser_turns", 50)
-        self.completeness_threshold = interview_config.get(
-            "completeness_threshold", 0.8
-        )
-
-        # Interview state
-        self.current_interview_session: Optional[str] = None
-        self.interview_records: Dict[str, Dict[str, Any]] = {}
-        self.stakeholder_profiles: Dict[str, Dict[str, Any]] = {}
-
-        # Initialize profile prompt
-        self.profile_prompt = self._create_profile_prompt()
-        self.add_to_memory("system", self.profile_prompt)
-
-    def _create_profile_prompt(self) -> str:
-        """Create profile prompt for the interviewer agent."""
-        return """You are an experienced requirements interviewer.
+    PROFILE = """You are an experienced requirements interviewer.
 
 Mission:
-Elicit, clarify, and document stakeholder requirements with maximum completeness and accuracy.
+Elicit, clarify, and document stakeholder requirements with maximum
+completeness and accuracy.
 
 Personality:
-Neutral, empathetic, and inquisitive; fluent in both business and technical terminology.
-
-Workflow:
-1. Conduct multi-round dialogue with end users.
-2. Produce interview records immediately after dialogues.
-3. Write a consolidated user stories after every dialogues with end users.
+Neutral, empathetic, and inquisitive; fluent in both business and technical
+terminology.
 
 Experience & Preferred Practices:
-1. Follow ISO/IEC/IEEE 29148 and BABOK v3 guidance.
-2. Use open-ended questions, active listening, and iterative paraphrasing.
-3. Apply Socratic Questioning to resolve any ambiguous statements.
-4. Limit each question turn to no more than two questions to maintain a natural conversational flow.
+• Follow ISO/IEC/IEEE 29148 and BABOK v3 guidance.
+• Use open-ended questions, active listening, and iterative paraphrasing.
+• Apply Socratic Questioning to resolve ambiguous statements.
+• Limit each 'send_message' call to ONE question to maintain natural flow.
+• Apply 5W1H (Who / What / When / Where / Why / How) for systematic coverage.
+• Map each stakeholder utterance to 〈Role | Goal | Behaviour | Constraint〉.
 
-Internal Chain of Thought (visible to the agent only):
+Internal Chain of Thought (visible to you only):
 1. Identify stakeholder type and context.
-2. Use 5W1H and targeted probes to surface goals, pain points, and constraints.
-3. Map each utterance to 〈Role|Goal|Behaviour|Constraint〉 tuples.
-4. Paraphrase key findings and request confirmation before proceeding.
-"""
+2. Use 5W1H + targeted probes to surface goals, pain points, constraints.
+3. After EACH stakeholder reply, extract requirements via 'update_requirements'.
+4. Paraphrase key findings; ask for confirmation before proceeding.
+5. When completeness ≥ threshold OR max_turns approached, finalise the record."""
 
-    def _get_action_prompt(self, action: str, context: Dict[str, Any] = None) -> str:
-        """Get action-specific prompt for a given action."""
-        action_prompts = {
-            "conduct_interview": """Action: Conduct structured interview with stakeholder.
+    # ── Init ──────────────────────────────────────────────────────────────
 
-Context:
-- Stakeholder type: {stakeholder_type}
-- Current turn: {turn_count}
-- Previous responses: {previous_responses}
+    def __init__(self, config_path: Optional[str] = None):
+        super().__init__(name="interviewer", config_path=config_path)
 
-Instructions:
-1. Generate the next interview question based on the conversation so far.
-2. Apply 5W1H framework or Socratic questioning as appropriate.
-3. Limit to maximum 2 questions per turn.
-4. Structure response as:
-   QUESTION: [Your question]
-   REASONING: [Why you're asking this]
-   METHODOLOGY: [5W1H/Socratic/Other]
-   END_CONVERSATION: [true/false]
-""",
-            "create_interview_record": """Action: Create structured interview record.
+        agent_cfg = self._raw_config.get("agents", {}).get("interviewer", {})
+        custom = agent_cfg.get("custom_params", {})
 
-Context:
-- Interview session: {session_id}
-- Total turns: {total_turns}
-- Requirements identified: {requirements_count}
+        self._completeness_threshold: float = custom.get("completeness_threshold", 0.8)
+        self._max_turns: int = custom.get("max_turns", 20)
 
-Instructions:
-1. Organize interview data into structured format.
-2. Extract all identified requirements.
-3. Identify gaps and inconsistencies.
-4. Calculate completeness score.
-""",
-            "create_user_requirements_list": """Action: Create consolidated user requirements list.
+    # ── Tool registration ──────────────────────────────────────────────────
 
-Context:
-- Interview records: {interview_records}
-- Requirements identified: {requirements}
+    def _register_tools(self) -> None:
+        self.register_tool(
+            Tool(
+                name="search_knowledge",
+                description=(
+                    "Search the knowledge base for interviewing techniques, "
+                    "requirements-elicitation methodologies, or domain context. "
+                    'Input: {"query": "<text>"}'
+                ),
+                func=self._tool_search_knowledge,
+            )
+        )
+        self.register_tool(
+            Tool(
+                name="update_requirements",
+                description=(
+                    "After the stakeholder replies, extract requirements from their "
+                    "latest utterance and update the running draft.\n"
+                    "This tool DOES NOT end the turn — call it first, then decide "
+                    "whether to 'send_message' or 'write_interview_record'.\n"
+                    "Input: {\n"
+                    '  "extracted": [\n'
+                    "    {\n"
+                    '      "type":        "functional" | "non_functional" | "constraint",\n'
+                    '      "description": "<precise, testable statement>",\n'
+                    '      "priority":    "high" | "medium" | "low",\n'
+                    '      "source_turn": <int — 0-based turn index in conversation>,\n'
+                    '      "status":      "confirmed" | "inferred" | "ambiguous"\n'
+                    "    }, ...\n"
+                    "  ]\n"
+                    "}\n"
+                    "Returns: updated draft size, completeness score, and any "
+                    "conflicts or ambiguities to resolve."
+                ),
+                func=self._tool_update_requirements,
+            )
+        )
+        self.register_tool(
+            Tool(
+                name="send_message",
+                description=(
+                    "Send ONE interview question to the stakeholder.\n"
+                    "Use after 'update_requirements':\n"
+                    "  • If conflicts were detected → ask a Socratic clarifying question.\n"
+                    "  • If completeness is still low → ask the next 5W1H question.\n"
+                    "This tool ENDS the current turn and yields to the stakeholder.\n"
+                    'Input: {"message": "<your single question>"}'
+                ),
+                func=self._tool_send_message,
+            )
+        )
+        self.register_tool(
+            Tool(
+                name="write_interview_record",
+                description=(
+                    "Finalise the interview: reads the accumulated requirements_draft "
+                    "from state, writes the interview_record artifact, and marks the "
+                    "interview complete.\n"
+                    "Call this when completeness ≥ threshold or max_turns approached.\n"
+                    "Input: {\n"
+                    '  "gaps":  ["<unclear area>", ...],\n'
+                    '  "notes": "<2-3 sentence summary of the interview>"\n'
+                    "}\n"
+                    "Do NOT pass a requirements list — it is read automatically from "
+                    "the draft built up by 'update_requirements'."
+                ),
+                func=self._tool_write_interview_record,
+            )
+        )
 
-Instructions:
-1. Consolidate requirements from all interviews.
-2. Remove duplicates and merge similar requirements.
-3. Prioritize requirements.
-4. Structure as traceable, sortable list with source, priority, and description.
-""",
-            "conduct_user_story": """You are a requirements analyst tasked with extracting user stories from stakeholder interviews.
+    # ── Tools ─────────────────────────────────────────────────────────────
 
-STAKEHOLDER TYPE: {stakeholder_type}
+    def _tool_search_knowledge(self, query: str, state: Dict = None, **_) -> ToolResult:
+        if self.knowledge is None:
+            return ToolResult(observation="Knowledge base not available.")
+        try:
+            from ..orchestrator.state import ProcessPhase
 
-INTERVIEWER'S QUESTION: "{question}"
+            docs = self.knowledge.retrieve(query, phase=ProcessPhase.ELICITATION, k=4)
+            if not docs:
+                return ToolResult(observation="No relevant knowledge found.")
+            snippets = "\n\n".join(
+                f"[{d.metadata.get('title', '?')}]\n{d.page_content[:400]}"
+                for d in docs
+            )
+            return ToolResult(observation=f"Knowledge retrieved:\n{snippets}")
+        except Exception as exc:
+            return ToolResult(observation=f"Knowledge search failed: {exc}")
 
-STAKEHOLDER'S RESPONSE: "{answer}"
-
-REQUIREMENT_IDENTIFIED: {requirement}
-
-TASK: Analyze requirements identifed, the stakeholder's response and extract any user stories you find. A user story follows the format:
-"As a [role], I want [goal] so that [benefit]"
-
-Look for natural language that implies:
-- Who the user is (role)
-- What they want to accomplish (goal)
-- Why they want it (benefit)
-
-EXTRACTION GUIDELINES:
-1. If you find explicit "As a... I want... so that..." statements, extract them directly
-2. If you find implied needs, convert them to proper user story format
-3. If you find pain points, convert them to stories about what would solve them
-4. If you find multiple stories in one response, extract all of them
-5. If no clear story is found, return an empty list
-6. After extraction, remove duplicates and merge similar user stories.
-
-RESPONSE FORMAT:
-Return a JSON array of user stories. Each story should have:
-- role: the user role
-- goal: what they want to accomplish  
-- benefit: why they want it
-- confidence: 0.0-1.0 how confident you are this is a valid story
-
-If no stories are found, return an empty array: []
-
-Return ONLY the JSON array, no other text.
-""",
-            "create_functional_and_non_functional_requirements": """You are a requirements analyst extracting ONLY functional and non-functional requirements from stakeholder interviews.
-
-CONTEXT:
-- Stakeholder Type: {stakeholder_type}
-- Interviewer's Question: "{question}"
-- Stakeholder's Response: "{answer}"
-
-TASK: Analyze the stakeholder's response, extract ONLY functional requirements and non-functional requirements from the response.
-
-## FUNCTIONAL REQUIREMENTS
-What the system MUST DO - specific behaviors, features, or capabilities.
-
-## NON-FUNCTIONAL REQUIREMENTS
-Quality attributes - HOW WELL the system performs.
-Categories:
-- Performance: speed, response time, throughput, ...
-- Security: authentication, encryption, access control, ...
-- Usability: ease of use, learnability, ...
-- Reliability: uptime, availability, fault tolerance, ...
-- Scalability: handle growth, concurrent users, ...
-- Accessibility: screen readers, keyboard navigation, ...
-- Maintainability: easy to update, configure, ...
-
-EXTRACTION RULES:
-1. Extract ONLY what is explicitly stated or clearly implied
-2. Do NOT extract user stories, epics, pain points, or other artifact types
-3. If the same requirement is mentioned multiple times, include it only once
-4. For NFRs, identify the correct category
-5. Preserve the original phrasing
-6. If no clear functional requirement is found, return empty array: []
-7. If no clear non-functional requirement is found, return empty array: []
-8. After extraction, remove duplicates and merge similar requirements
-
-RESPONSE FORMAT:
-Return a JSON object with exactly this structure:
-{{
-    "functional": [
-        {{
-            "description": [clear description of the functional requirement],
-            "original_phrase": [exact quote from response],
-            "confidence": [0.0-1.0 how confident you are this is a valid requirement],
-            "measurable_criteria": [clear measurable criteria of the functional requirement],
-            "acceptance_criteria": [clear acceptance criteria of the functional requirement]
-        }}
-    ],
-    "non_functional": [
-        {{
-            "category": [performance|security|usability|reliability|scalability|accessibility|maintainability],
-            "description": [clear description of the quality requirement],
-            "original_phrase": [exact quote from response],
-            "confidence": [0.0-1.0 how confident you are this is a valid requirement],
-            "measurable_criteria": [clear measurable criteria of the non functional requirement],
-            "acceptance_criteria": [clear acceptance criteria of the non functional requirement]
-        }}
-    ]
-}}
-""",
-        }
-
-        base_prompt = action_prompts.get(action, f"Action: {action}")
-        if context:
-            try:
-                return base_prompt.format(**context)
-            except:
-                return base_prompt
-        return base_prompt
-
-    async def _extract_user_stories_with_prompt(
+    # ------------------------------------------------------------------
+    def _tool_update_requirements(
         self,
-        answer: str,
-        question: str,
-        stakeholder_type: str,
-        requirement: Any,
-    ) -> List[Dict[str, Any]]:
+        extracted: List[Dict] = None,
+        state: Dict = None,
+        **_,
+    ) -> ToolResult:
+        """Merge newly extracted requirements into the running draft.
 
-        extraction_prompt = self._get_action_prompt(
-            "conduct_user_story",
-            context={
-                "answer": answer,
-                "question": question,
-                "stakeholder_type": stakeholder_type,
-                "requirement": requirement,
-            },
-        )
+        Steps:
+          1. Return early with a clear message when extracted is empty so the
+             LLM receives an actionable signal rather than a misleading
+             "0 new, continue gathering" observation.
+          2. Auto-assign IDs (FR-xxx / NFR-xxx / CON-xxx).
+          3. For each new requirement, check against the existing draft for:
+               a. Semantic overlap  — Jaccard similarity > 0.55 → skip (not add)
+               b. Logical conflict  — high overlap where one side has negation
+               c. Vague language    — flag for measurable follow-up
+          4. Append only non-duplicate entries to the draft.
+          5. Recompute completeness score.
+          6. Build a gap analysis (missing NFR / constraint categories) so the
+             LLM knows which requirement types still need to be elicited.
+          7. Return a rich observation the LLM uses to pick its next action.
 
-        cot_result = await asyncio.to_thread(
-            self.generate_with_cot,
-            prompt=extraction_prompt,
-            context={
-                "answer": answer,
-                "question": question,
-                "stakeholder_type": stakeholder_type,
-            },
-            reasoning_template="story_extraction",
-            profile_prompt=self.profile_prompt,
-        )
-
-        response_text = cot_result["response"].strip()
-
-        # Parse JSON from response
-        # Find JSON array in the response (in case there's extra text)
-
-        json_match = re.search(r"\[.*\]", response_text, re.DOTALL)
-        if json_match:
-            stories_data = json.loads(json_match.group())
-        else:
-            stories_data = []
-
-        # Convert to your internal format
-        user_stories = []
-        for story_data in stories_data:
-            story = {
-                "id": str(uuid.uuid4()),
-                "type": "user_story",
-                "role": story_data.get("role", "user"),
-                "goal": story_data.get("goal", ""),
-                "benefit": story_data.get("benefit", ""),
-                "text": f"As a {story_data.get('role', 'user')}, I want {story_data.get('goal', '')} so that {story_data.get('benefit', '')}",
-                "source_question": question,
-                "original_response": answer,
-                "priority": "medium",  # Default, can be refined
-                "confidence": story_data.get("confidence", 0.7),
-                "extracted_at": datetime.now().isoformat(),
-            }
-            user_stories.append(story)
-            logger.info(f"📖 Extracted user story via prompt: {story['text'][:100]}...")
-
-        return user_stories
-
-    async def chat_with_stakeholder(
-        self,
-        in_queue_mess: Optional[asyncio.Queue] = None,
-        out_queue_mess: Optional[asyncio.Queue] = None,
-        stakeholder_type: str = "enduser",
-    ) -> Dict[str, Any]:
+        Does NOT set should_return=True — the ReAct loop continues.
         """
-        Conduct a structured interview with a customer using knowledge-driven approach.
+        extracted = extracted or []
 
-        Args:
-            customer: Customer object to interview
-            stakeholder_type: Type of stakeholder being interviewed
-
-        Returns:
-            Interview record dictionary
-        """
-        # Start new interview session
-        session_id = str(uuid.uuid4())
-        is_ended = False
-        self.current_interview_session = session_id
-
-        # Initialize interview record
-        interview_record = {
-            "session_id": session_id,
-            "stakeholder_type": stakeholder_type,
-            "start_time": datetime.now(),
-            "turns": [],
-            "requirements_identified": [],
-            "user_stories": [],
-            "gaps_identified": [],
-            "completeness_score": 0.0,
-            "status": "in_progress",
-        }
-
-        self.interview_records[session_id] = interview_record
-
-        # Apply methodology guidance
-        methodology_guide = self.apply_methodology(f"interview_{stakeholder_type}")
-
-        # Create enhanced task description with CoT reasoning
-        task_description = f"""
-        Conduct a structured requirements interview with a {stakeholder_type}.
-        
-        Apply the following methodologies:
-        - 5W1H Framework for systematic exploration
-        - Socratic Questioning for deep insights
-        - Requirements Elicitation best practices
-        
-        Interview Objectives:
-        1. Understand business context and objectives
-        2. Identify functional and non-functional requirements
-        3. Discover constraints and assumptions
-        4. Validate understanding throughout the process
-        5. Assess requirement completeness
-        
-        Begin with an opening question that establishes context.
-        """
-
-        self.add_to_memory("user", task_description)
-        turn_count = 0
-
-        logger.info(f"Starting interview session {session_id} with {stakeholder_type}")
-
-        while turn_count < self.max_enduser_turns and in_queue_mess and out_queue_mess:
-            # Generate response using CoT reasoning with action prompt
-            action_prompt = self._get_action_prompt(
-                "conduct_interview",
-                context={
-                    "stakeholder_type": stakeholder_type,
-                    "turn_count": turn_count,
-                    "previous_responses": [
-                        turn.get("answer", "")
-                        for turn in interview_record["turns"][-3:]
-                    ],
-                },
+        # Guard: if the LLM called this tool with an empty list, return an
+        # actionable message immediately instead of writing a useless observation.
+        if not extracted:
+            return ToolResult(
+                observation=(
+                    "No requirements were extracted (empty list received). "
+                    "Make sure the 'extracted' field contains at least one item "
+                    "with all required keys (type, description, priority, "
+                    "source_turn, status). "
+                    "Then call 'send_message' to ask the next question."
+                ),
+                state_updates={},
             )
 
-            cot_result = await asyncio.to_thread(
-                self.generate_with_cot,
-                prompt=action_prompt,
-                context={
-                    "stakeholder_type": stakeholder_type,
-                    "turn_count": turn_count,
-                    "methodology_guide": methodology_guide,
-                    "interview_record": interview_record,
-                },
-                reasoning_template="interview_planning",
-            )
+        draft: List[Dict] = list(state.get("requirements_draft") or [])
 
-            response = cot_result["response"]
-            question, reasoning, methodology, end_conversation = self.parse_response(
-                response
-            )
+        # ── ID counters ────────────────────────────────────────────────────
+        fr_count = sum(1 for r in draft if r.get("id", "").startswith("FR-"))
+        nfr_count = sum(1 for r in draft if r.get("id", "").startswith("NFR-"))
+        con_count = sum(1 for r in draft if r.get("id", "").startswith("CON-"))
 
-            # Record the turn
-            turn_data = {
-                "turn": turn_count + 1,
-                "question": question,
-                "reasoning": reasoning,
-                "methodology": methodology,
-                "timestamp": datetime.now().isoformat(),
-            }
+        newly_added: List[str] = []
+        skipped: List[str] = []  # duplicates that were blocked
+        conflicts: List[str] = []
+        warnings: List[str] = []
 
-            self.add_to_memory("assistant", question)
-            logger.info(f"[Interviewer]: {question}")
+        for req in extracted:
+            rtype = req.get("type", "functional")
 
-            await in_queue_mess.put(question)
-            await asyncio.sleep(1)
+            # ── Assign ID ────────────────────────────────────────────────
+            if not req.get("id"):
+                if rtype == "non_functional":
+                    nfr_count += 1
+                    req["id"] = f"NFR-{nfr_count:03d}"
+                elif rtype == "constraint":
+                    con_count += 1
+                    req["id"] = f"CON-{con_count:03d}"
+                else:
+                    fr_count += 1
+                    req["id"] = f"FR-{fr_count:03d}"
 
-            # Get stakeholder response
-            answer = await out_queue_mess.get()
+            rid = req["id"]
+            desc = req.get("description", "").strip()
 
-            turn_data["answer"] = answer
-            turn_data["answer_timestamp"] = datetime.now().isoformat()
+            # ── Conflict / duplicate check ────────────────────────────────
+            duplicate_of, conflict_with = self._check_conflicts(req, draft)
 
-            self.add_to_memory("user", answer)
-            interview_record["turns"].append(turn_data)
-
-            # Extract requirements from the answer
-            extracted_requirements, raw_requirements = (
-                await self._extract_requirements_from_answer(
-                    answer, question, stakeholder_type
+            if conflict_with:
+                # Conflicts are flagged but still added so the LLM can ask
+                # the stakeholder to resolve them explicitly.
+                conflicts.append(
+                    f"⚠ CONFLICT: {rid} contradicts {conflict_with}. "
+                    "Ask the stakeholder to resolve this."
                 )
-            )
-            interview_record["requirements_identified"].extend(
-                extracted_requirements.get("functional", [])
-            )
-            interview_record["requirements_identified"].extend(
-                extracted_requirements.get("non_functional", [])
-            )
+                req["status"] = "ambiguous"
 
-            prompt_extracted_stories = await self._extract_user_stories_with_prompt(
-                answer=answer,
-                question=question,
-                stakeholder_type=stakeholder_type,
-                requirement=raw_requirements,
-            )
-            interview_record["user_stories"].extend(prompt_extracted_stories)
-
-            # Check if conversation should end
-            if end_conversation and self._should_end_conversation(interview_record):
-                logger.info(
-                    "[Interviewer]: Thank you for your time. I have gathered comprehensive information about your requirements."
+            elif duplicate_of:
+                # Duplicates are silently skipped — appending them inflates
+                # the count without adding coverage, which previously caused
+                # the LLM to keep re-asking about the same topic (the count
+                # kept rising but completeness never improved because no new
+                # requirement *types* were added).
+                skipped.append(rid)
+                warnings.append(
+                    f"{rid} is a probable duplicate of {duplicate_of} — skipped. "
+                    "Consider merging or clarifying scope instead of re-asking."
                 )
-                self.add_to_memory(
-                    "assistant",
-                    "Ending conversation - requirements gathering complete.",
+                continue  # do NOT append to draft
+
+            # ── Vague language check ──────────────────────────────────────
+            vague_found = _VAGUE_WORDS & set(desc.lower().split())
+            if vague_found:
+                warnings.append(
+                    f"{rid} uses vague language "
+                    f"({', '.join(sorted(vague_found))}). "
+                    "Add measurable criteria in a follow-up question."
                 )
-                await in_queue_mess.put("STOP")
-                is_ended = True
-                break
 
-            turn_count += 1
-            out_queue_mess.task_done()
+            # ── Append to draft ───────────────────────────────────────────
+            draft.append(req)
+            newly_added.append(rid)
 
-        if not is_ended and in_queue_mess:
-            await in_queue_mess.put("STOP")
+        # ── Completeness ──────────────────────────────────────────────────
+        completeness = self._assess_completeness(draft)
+        enough = completeness >= self._completeness_threshold
 
-        # Finalize interview record
-        interview_record["end_time"] = datetime.now()
-        interview_record["total_turns"] = len(interview_record["turns"])
-        interview_record["completeness_score"] = self.assess_requirement_completeness(
-            interview_record["requirements_identified"]
-        )
-        interview_record["status"] = "completed"
+        # ── Gap analysis ─────────────────────────────────────────────────
+        # Count each requirement type currently in the draft so the LLM
+        # knows exactly which categories are missing, rather than receiving
+        # only a numeric score and having to infer the gap itself.
+        fr_in_draft = sum(1 for r in draft if r.get("type") == "functional")
+        nfr_in_draft = sum(1 for r in draft if r.get("type") == "non_functional")
+        con_in_draft = sum(1 for r in draft if r.get("type") == "constraint")
 
-        logger.info(f"Completed interview session {session_id} with {turn_count} turns")
+        gap_hints: List[str] = []
+        if nfr_in_draft == 0:
+            gap_hints.append(
+                "NO non-functional requirements captured yet — this alone prevents "
+                "reaching the completeness threshold (NFR weight = 0.30). "
+                "Ask about: response time / concurrent users (performance), "
+                "authentication / data privacy (security), uptime / recovery "
+                "(reliability), or cross-device support (usability)."
+            )
+        if con_in_draft == 0:
+            gap_hints.append(
+                "NO constraints captured yet. "
+                "Ask about: technology stack, budget, regulatory requirements, "
+                "delivery deadlines, or integration with existing systems."
+            )
 
-        return interview_record
+        # ── Build observation ─────────────────────────────────────────────
+        parts = [
+            f"Requirements draft: {len(draft)} total "
+            f"(+{len(newly_added)} added: {newly_added or 'none'}"
+            + (f", {len(skipped)} duplicates skipped: {skipped}" if skipped else "")
+            + f"). Breakdown: {fr_in_draft} FR / {nfr_in_draft} NFR / {con_in_draft} CON.",
+            f"Completeness: {completeness:.2f} / {self._completeness_threshold:.2f} "
+            f"→ {'✓ SUFFICIENT — consider calling write_interview_record' if enough else 'continue gathering'}.",
+        ]
 
-    def parse_response(self, response: str) -> Tuple[str, str, str, bool]:
-        """
-        Parse the agent's response to extract question, reasoning, methodology, and end flag.
+        if conflicts:
+            parts.append(
+                "CONFLICTS TO RESOLVE:\n" + "\n".join(f"  {c}" for c in conflicts)
+            )
+        if warnings:
+            parts.append("Warnings:\n" + "\n".join(f"  {w}" for w in warnings))
+        if gap_hints:
+            parts.append(
+                "GAPS TO ADDRESS (required to reach threshold):\n"
+                + "\n".join(f"  • {g}" for g in gap_hints)
+            )
 
-        Args:
-            response: Raw response from the agent
-
-        Returns:
-            Tuple of (question, reasoning, methodology, end_conversation)
-        """
-        question = ""
-        reasoning = ""
-        methodology = ""
-        end_conversation = False
-
-        lines = response.strip().split("\n")
-
-        for line in lines:
-            line = line.strip()
-            if line.startswith("QUESTION:"):
-                question = line.replace("QUESTION:", "").strip()
-            elif line.startswith("REASONING:"):
-                reasoning = line.replace("REASONING:", "").strip()
-            elif line.startswith("METHODOLOGY:"):
-                methodology = line.replace("METHODOLOGY:", "").strip()
-            elif line.startswith("END_CONVERSATION:"):
-                end_value = line.replace("END_CONVERSATION:", "").strip().lower()
-                end_conversation = end_value in ["true", "yes", "1"]
-
-        # Fallback: if no structured format, treat entire response as question
-        if not question:
-            question = response.strip()
-            reasoning = "General requirements elicitation"
-            methodology = "Open-ended questioning"
-
-        return question, reasoning, methodology, end_conversation
-
-    async def _extract_requirements_from_answer(
-        self, answer: str, question: str, stakeholder_type: Optional[str] = None
-    ) -> Tuple[Dict[str, Any], Any]:
-        """
-        Extract potential requirements from stakeholder's answer.
-
-        Args:
-            answer: Stakeholder's response
-            question: The question that prompted this answer
-
-        Returns:
-            List of extracted requirement dictionaries
-        """
-
-        extraction_prompt = self._get_action_prompt(
-            "create_functional_and_non_functional_requirements",
-            context={
-                "answer": answer,
-                "question": question,
-                "stakeholder_type": stakeholder_type,
-            },
-        )
-
-        cot_result = await asyncio.to_thread(
-            self.generate_with_cot,
-            prompt=extraction_prompt,
-            context={
-                "answer": answer,
-                "question": question,
-                "stakeholder_type": stakeholder_type,
-            },
-            reasoning_template="requirements_extraction",
-            profile_prompt=self.profile_prompt,
-        )
-
-        response_text = cot_result["response"].strip()
-        # logger.info(f"[Interviewer Requirements]: {response_text}")
-
-        json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
-        if json_match:
-            extracted_data = json.loads(json_match.group())
-        else:
-            logger.warning("No JSON found in extraction response, using empty data")
-            extracted_data = {"functional": [], "non_functional": []}
-
-        # Process functional requirements
-        functional_reqs = []
-        for func in extracted_data.get("functional", []):
-            req = {
-                "id": str(uuid.uuid4()),
-                "type": "functional",
-                "text": func.get("description", ""),
-                "measurable_criteria": func.get("measurable_criteria", ""),
-                "acceptance_criteria": func.get("acceptance_criteria", ""),
-                "source_question": question,
-                "original_phrase": func.get("original_phrase", ""),
-                "priority": "medium",  # Default
-                "confidence": func.get("confidence", 0.7),
-                "extracted_at": datetime.now().isoformat(),
-            }
-            functional_reqs.append(req)
-            # logger.info(f"⚙️ Functional: {req['description'][:100]}...")
-
-        # Process non-functional requirements
-        non_functional_reqs = []
-        for nfr in extracted_data.get("non_functional", []):
-            category = nfr.get("category", "other")
-            description = nfr.get("description", "")
-
-            req = {
-                "id": str(uuid.uuid4()),
-                "type": "non_functional",
-                "category": category,
-                "text": description,
-                "measurable_criteria": nfr.get("measurable_criteria", ""),
-                "acceptance_criteria": nfr.get("acceptance_criteria", ""),
-                "source_question": question,
-                "original_phrase": nfr.get("original_phrase", ""),
-                "priority": "medium",  # Default
-                "confidence": nfr.get("confidence", 0.7),
-                "extracted_at": datetime.now().isoformat(),
-            }
-            non_functional_reqs.append(req)
-            # logger.info(f"🔧 NFR [{category}]: {description[:100]}...")
+        if not conflicts and not enough:
+            parts.append(
+                "Next: use 'send_message' to ask a question targeting the gaps "
+                "listed above, or 'search_knowledge' for technique guidance."
+            )
+        elif not conflicts and enough:
+            parts.append(
+                "Next: call 'write_interview_record' with gaps and notes, OR "
+                "ask ONE final clarifying question if critical ambiguity remains."
+            )
 
         logger.info(
-            f"📊 Extracted: {len(functional_reqs)} functional, {len(non_functional_reqs)} non-functional"
+            "[Interviewer] update_requirements: +%d new, %d skipped, %d total, "
+            "completeness=%.2f, conflicts=%d",
+            len(newly_added),
+            len(skipped),
+            len(draft),
+            completeness,
+            len(conflicts),
         )
 
-        return {
-            "functional": functional_reqs,
-            "non_functional": non_functional_reqs,
-        }, response_text
+        return ToolResult(
+            observation="\n".join(parts),
+            state_updates={"requirements_draft": draft},
+            # should_return is intentionally False — the ReAct loop continues
+            # so the agent can pick its next action based on this observation.
+        )
 
-    def _should_end_conversation(self, interview_record: Dict[str, Any]) -> bool:
+    # ------------------------------------------------------------------
+    def _tool_send_message(
+        self,
+        message: str,
+        state: Dict = None,
+        **_,
+    ) -> ToolResult:
+        """Post ONE question to the stakeholder and yield the turn."""
+        if not message:
+            logger.warning("send_message called with empty message; defaulting.")
+            message = "Could you tell me more about that?"
+
+        conversation = list(state.get("conversation") or [])
+        conversation.append(
+            {
+                "role": "interviewer",
+                "content": message,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+        logger.info("[Interviewer → Stakeholder] %s", message)
+
+        return ToolResult(
+            observation=f"Question sent: {message}",
+            state_updates={"conversation": conversation},
+            should_return=True,  # yield to EndUser
+        )
+
+    # ------------------------------------------------------------------
+    def _tool_write_interview_record(
+        self,
+        gaps: List[str] = None,
+        notes: str = "",
+        state: Dict = None,
+        **_,
+    ) -> ToolResult:
         """
-        Determine if the conversation should end based on completeness and other factors.
+        Finalise the interview record using the accumulated requirements_draft.
 
-        Args:
-            interview_record: Current interview record
-
-        Returns:
-            True if conversation should end
+        The LLM supplies only ``gaps`` and ``notes``; requirements are read
+        directly from state so no re-extraction is needed.
         """
-        # Check if we have enough requirements
-        num_requirements = len(interview_record["requirements_identified"])
-        if num_requirements < 3:  # Minimum threshold
-            return False
+        conversation: List[Dict] = state.get("conversation") or []
+        requirements: List[Dict] = list(state.get("requirements_draft") or [])
+        gaps = gaps or []
 
-        # Check if recent turns are not yielding new requirements
-        recent_turns = (
-            interview_record["turns"][-3:]
-            if len(interview_record["turns"]) >= 3
-            else []
-        )
-        recent_requirements = [
-            req
-            for req in interview_record["requirements_identified"]
-            if any(
-                req["source_question"] in turn.get("question", "")
-                for turn in recent_turns
-            )
-        ]
-
-        if len(recent_requirements) == 0 and len(interview_record["turns"]) > 10:
-            return True  # No new requirements in recent turns
-
-        # Check completeness score
-        completeness = self.assess_requirement_completeness(
-            interview_record["requirements_identified"]
-        )
-        if completeness >= self.completeness_threshold:
-            return True
-
-        return False
-
-    def generate_follow_up_questions(
-        self, previous_answers: List[str], context: Dict[str, Any]
-    ) -> List[str]:
-        """
-        Generate intelligent follow-up questions based on previous answers.
-
-        Args:
-            previous_answers: List of previous stakeholder responses
-            context: Additional context information
-
-        Returns:
-            List of follow-up questions
-        """
-        # Apply 5W1H methodology for systematic follow-up
-        w5h1_module = self.knowledge_modules.get("5w1h_methodology")
-        follow_up_questions = []
-
-        if w5h1_module:
-            framework = w5h1_module.content.get("framework", {})
-
-            # Generate questions for each W/H dimension
-            for dimension, info in framework.items():
-                if "questions" in info:
-                    # Select relevant questions based on context
-                    relevant_questions = self._select_relevant_questions(
-                        info["questions"], previous_answers, context
-                    )
-                    follow_up_questions.extend(
-                        relevant_questions[:2]
-                    )  # Limit to 2 per dimension
-
-        # Apply Socratic questioning for deeper insights
-        socratic_questions = self._generate_socratic_questions(
-            previous_answers, context
-        )
-        follow_up_questions.extend(socratic_questions)
-
-        # Remove duplicates and limit total number
-        unique_questions = list(dict.fromkeys(follow_up_questions))
-        return unique_questions[:8]  # Limit to 8 questions
-
-    def _select_relevant_questions(
-        self, questions: List[str], previous_answers: List[str], context: Dict[str, Any]
-    ) -> List[str]:
-        """Select relevant questions based on previous answers and context."""
-        relevant_questions = []
-
-        # Simple relevance scoring based on keyword matching
-        answer_text = " ".join(previous_answers).lower()
-
-        for question in questions:
-            # Check if question addresses gaps in previous answers
-            question_keywords = self._extract_keywords(question.lower())
-            if not any(keyword in answer_text for keyword in question_keywords):
-                relevant_questions.append(question)
-
-        return relevant_questions
-
-    def _generate_socratic_questions(
-        self, previous_answers: List[str], context: Dict[str, Any]
-    ) -> List[str]:
-        """Generate Socratic-style probing questions."""
-        socratic_questions = []
-
-        # Analyze previous answers for assumptions and claims
-        for answer in previous_answers:
-            if "because" in answer.lower() or "since" in answer.lower():
-                socratic_questions.append(f"What evidence supports that assumption?")
-
-            if "always" in answer.lower() or "never" in answer.lower():
-                socratic_questions.append(f"Are there any exceptions to that rule?")
-
-            if "should" in answer.lower() or "must" in answer.lower():
-                socratic_questions.append(
-                    f"What would happen if that requirement wasn't met?"
-                )
-
-        # Add general probing questions
-        socratic_questions.extend(
-            [
-                "Can you give me a specific example of that?",
-                "What are the implications of that requirement?",
-                "How does that relate to your overall business objectives?",
-                "What alternatives have you considered?",
-            ]
-        )
-
-        return socratic_questions[:4]  # Limit to 4 questions
-
-    def _extract_keywords(self, text: str) -> List[str]:
-        """Extract keywords from text for relevance matching."""
-        # Simple keyword extraction (can be enhanced with NLP)
-        stop_words = {
-            "the",
-            "a",
-            "an",
-            "and",
-            "or",
-            "but",
-            "in",
-            "on",
-            "at",
-            "to",
-            "for",
-            "of",
-            "with",
-            "by",
+        record: Dict[str, Any] = {
+            "session_id": state.get("session_id", str(uuid.uuid4())),
+            "project_description": state.get("project_description", ""),
+            "conversation": conversation,
+            "total_turns": state.get("turn_count", len(conversation) // 2),
+            "requirements_identified": requirements,
+            "gaps_identified": gaps,
+            "notes": notes,
+            "completeness_score": self._assess_completeness(requirements),
+            "created_at": datetime.now().isoformat(),
+            "status": "completed",
         }
-        words = text.split()
-        keywords = [
-            word.strip(".,!?")
-            for word in words
-            if word.lower() not in stop_words and len(word) > 3
-        ]
-        return keywords
 
-    def assess_requirement_completeness(
-        self, requirements: List[Dict[str, Any]]
-    ) -> float:
+        artifacts = dict(state.get("artifacts") or {})
+        artifacts["interview_record"] = record
+
+        logger.info(
+            "[Interviewer] Interview finalised — %d requirements, "
+            "%d gaps, completeness=%.2f.",
+            len(requirements),
+            len(gaps),
+            record["completeness_score"],
+        )
+
+        return ToolResult(
+            observation=(
+                f"Interview record written. "
+                f"{len(requirements)} requirements "
+                f"({sum(1 for r in requirements if r.get('type') == 'functional')} FR, "
+                f"{sum(1 for r in requirements if r.get('type') == 'non_functional')} NFR, "
+                f"{sum(1 for r in requirements if r.get('type') == 'constraint')} CON), "
+                f"{len(gaps)} gaps."
+            ),
+            state_updates={
+                "artifacts": artifacts,
+                "interview_complete": True,
+            },
+            should_return=True,
+        )
+
+    # ── Helpers ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _assess_completeness(requirements: List[Dict]) -> float:
         """
-        Assess the completeness of gathered requirements.
+        Heuristic completeness score in [0.0, 1.0].
 
-        Args:
-            requirements: List of requirement dictionaries
-
-        Returns:
-            Completeness score between 0.0 and 1.0
+        Mirrors the old BaseInterviewerAgent logic (threshold = 0.8).
+          0.40 — at least one functional requirement
+          0.30 — at least one non-functional requirement
+          0.30 — quantity coverage (capped at count / 30)
         """
         if not requirements:
             return 0.0
-
-        # Define completeness criteria
-        completeness_criteria = {
-            "functional_requirements": 0.3,
-            "non_functional_requirements": 0.2,
-            "constraints": 0.15,
-            "stakeholder_coverage": 0.15,
-            "business_objectives": 0.1,
-            "acceptance_criteria": 0.1,
-        }
-
-        score = 0.0
-
-        # Check functional requirements coverage
-        functional_reqs = [
-            req for req in requirements if req.get("type") == "functional"
-        ]
-        if len(functional_reqs) >= 5:  # Minimum threshold
-            score += completeness_criteria["functional_requirements"]
-        else:
-            score += completeness_criteria["functional_requirements"] * (
-                len(functional_reqs) / 5
-            )
-
-        # Check non-functional requirements
-        nfr_reqs = [req for req in requirements if req.get("type") == "non_functional"]
-        if len(nfr_reqs) >= 3:
-            score += completeness_criteria["non_functional_requirements"]
-        else:
-            score += completeness_criteria["non_functional_requirements"] * (
-                len(nfr_reqs) / 3
-            )
-
-        # Check for constraints
-        constraint_keywords = ["must", "cannot", "limited", "restricted", "compliance"]
-        constraint_reqs = [
-            req
-            for req in requirements
-            if any(
-                keyword in req.get("text", "").lower()
-                for keyword in constraint_keywords
-            )
-        ]
-        if len(constraint_reqs) >= 2:
-            score += completeness_criteria["constraints"]
-        else:
-            score += completeness_criteria["constraints"] * (len(constraint_reqs) / 2)
-
-        # Check stakeholder coverage (simplified)
-        if (
-            len(requirements) >= 10
-        ):  # Assume good stakeholder coverage with many requirements
-            score += completeness_criteria["stakeholder_coverage"]
-        else:
-            score += completeness_criteria["stakeholder_coverage"] * (
-                len(requirements) / 10
-            )
-
-        # Check business objectives coverage
-        business_keywords = ["business", "objective", "goal", "value", "benefit", "roi"]
-        business_reqs = [
-            req
-            for req in requirements
-            if any(
-                keyword in req.get("text", "").lower() for keyword in business_keywords
-            )
-        ]
-        if len(business_reqs) >= 2:
-            score += completeness_criteria["business_objectives"]
-        else:
-            score += completeness_criteria["business_objectives"] * (
-                len(business_reqs) / 2
-            )
-
-        # Check acceptance criteria
-        acceptance_keywords = ["accept", "criteria", "test", "verify", "validate"]
-        acceptance_reqs = [
-            req
-            for req in requirements
-            if any(
-                keyword in req.get("text", "").lower()
-                for keyword in acceptance_keywords
-            )
-        ]
-        if len(acceptance_reqs) >= 1:
-            score += completeness_criteria["acceptance_criteria"]
-
-        return min(score, 1.0)  # Cap at 1.0
-
-    def identify_requirement_gaps(
-        self, requirements: List[Dict[str, Any]]
-    ) -> List[str]:
-        """
-        Identify gaps in the current requirements set.
-
-        Args:
-            requirements: List of current requirements
-
-        Returns:
-            List of identified gaps
-        """
-        gaps = []
-
-        # Check for missing requirement types
-        req_types = [req.get("type", "") for req in requirements]
-
-        if "functional" not in req_types:
-            gaps.append("Missing functional requirements")
-
-        if "non_functional" not in req_types:
-            gaps.append(
-                "Missing non-functional requirements (performance, security, usability)"
-            )
-
-        # Check for missing 5W1H coverage
-        requirement_text = " ".join(
-            [req.get("text", "") for req in requirements]
-        ).lower()
-
-        w5h1_coverage = {
-            "who": ["user", "stakeholder", "actor", "role"],
-            "what": ["function", "feature", "capability", "service"],
-            "when": ["time", "schedule", "deadline", "frequency"],
-            "where": ["location", "environment", "platform", "system"],
-            "why": ["purpose", "reason", "objective", "goal", "benefit"],
-            "how": ["method", "process", "workflow", "integration"],
-        }
-
-        for dimension, keywords in w5h1_coverage.items():
-            if not any(keyword in requirement_text for keyword in keywords):
-                gaps.append(f"Missing {dimension.upper()} dimension coverage")
-
-        # Check for specific requirement categories
-        categories_to_check = [
-            ("security", ["security", "authentication", "authorization", "encryption"]),
-            ("performance", ["performance", "speed", "response", "throughput"]),
-            (
-                "usability",
-                ["usability", "user experience", "interface", "accessibility"],
-            ),
-            ("integration", ["integration", "interface", "api", "external"]),
-            ("compliance", ["compliance", "regulation", "standard", "audit"]),
-        ]
-
-        for category, keywords in categories_to_check:
-            if not any(keyword in requirement_text for keyword in keywords):
-                gaps.append(f"Missing {category} requirements")
-
-        return gaps
-
-    def get_interview_summary(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get a summary of a completed interview session.
-
-        Args:
-            session_id: Interview session identifier
-
-        Returns:
-            Interview summary dictionary or None if not found
-        """
-        if session_id not in self.interview_records:
-            return None
-
-        record = self.interview_records[session_id]
-
-        summary = {
-            "session_id": session_id,
-            "stakeholder_type": record["stakeholder_type"],
-            "duration_minutes": (
-                record["end_time"] - record["start_time"]
-            ).total_seconds()
-            / 60,
-            "total_turns": record["total_turns"],
-            "requirements_count": len(record["requirements_identified"]),
-            "completeness_score": record["completeness_score"],
-            "gaps_identified": self.identify_requirement_gaps(
-                record["requirements_identified"]
-            ),
-            "key_requirements": record["requirements_identified"][
-                :5
-            ],  # Top 5 requirements
-            "status": record["status"],
-        }
-
-        return summary
-
-    def create_stakeholder_profile(
-        self, stakeholder_type: str, interview_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Create a stakeholder profile based on interview data.
-
-        Args:
-            stakeholder_type: Type of stakeholder
-            interview_data: Data from interview session
-
-        Returns:
-            Stakeholder profile dictionary
-        """
-        profile = {
-            "stakeholder_type": stakeholder_type,
-            "profile_id": str(uuid.uuid4()),
-            "created_at": datetime.now(),
-            "characteristics": {},
-            "requirements_focus": [],
-            "communication_style": "",
-            "priority_areas": [],
-        }
-
-        # Analyze interview turns to build profile
-        turns = interview_data.get("turns", [])
-        answers = [turn.get("answer", "") for turn in turns]
-
-        # Determine communication style
-        total_words = sum(len(answer.split()) for answer in answers)
-        avg_words_per_answer = total_words / len(answers) if answers else 0
-
-        if avg_words_per_answer > 50:
-            profile["communication_style"] = "detailed"
-        elif avg_words_per_answer > 20:
-            profile["communication_style"] = "moderate"
-        else:
-            profile["communication_style"] = "concise"
-
-        # Identify priority areas based on requirements
-        requirements = interview_data.get("requirements_identified", [])
-        requirement_types = {}
-
-        for req in requirements:
-            req_type = req.get("type", "unknown")
-            requirement_types[req_type] = requirement_types.get(req_type, 0) + 1
-
-        # Sort by frequency to identify priorities
-        sorted_types = sorted(
-            requirement_types.items(), key=lambda x: x[1], reverse=True
+        has_functional = any(r.get("type") == "functional" for r in requirements)
+        has_non_functional = any(
+            r.get("type") == "non_functional" for r in requirements
         )
-        profile["priority_areas"] = [req_type for req_type, count in sorted_types[:3]]
+        score = (
+            _W_FUNCTIONAL * has_functional
+            + _W_NON_FUNCTIONAL * has_non_functional
+            + min(_W_QUANTITY, len(requirements) / 30)
+        )
+        return round(score, 3)
 
-        # Store profile
-        self.stakeholder_profiles[profile["profile_id"]] = profile
+    @staticmethod
+    def _word_overlap(a: str, b: str) -> float:
+        """Jaccard similarity of non-trivial word sets."""
+        stop = {
+            "the",
+            "a",
+            "an",
+            "is",
+            "are",
+            "be",
+            "to",
+            "of",
+            "and",
+            "or",
+            "that",
+            "it",
+            "for",
+            "in",
+            "on",
+            "with",
+            "as",
+        }
+        wa = set(a.lower().split()) - stop
+        wb = set(b.lower().split()) - stop
+        if not wa or not wb:
+            return 0.0
+        return len(wa & wb) / len(wa | wb)
 
-        return profile
-
-
-# Maintain backward compatibility with existing Interviewer class
-class InterviewerAgent(BaseInterviewerAgent):
-    """Backward compatibility wrapper for InterviewerAgent."""
-
-    def __init__(
+    def _check_conflicts(
         self,
-        config_path: Optional[str] = None,
-        artifact_pool: Optional[ArtifactPool] = None,
-        *args,
-        **kwargs,
-    ):
-        # Convert old config format if needed
-        if isinstance(config_path, dict):
-            config = config_path
+        new_req: Dict,
+        draft: List[Dict],
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Return (duplicate_of_id, conflict_with_id) for the first match found.
+
+        Heuristics (fast; LLM does deep analysis via observation text):
+          • Jaccard overlap > 0.55 → probable duplicate
+          • Same high-overlap pair where one has strong negation → conflict
+        """
+        new_desc = new_req.get("description", "")
+        duplicate_of = None
+        conflict_with = None
+
+        for existing in draft:
+            ex_desc = existing.get("description", "")
+            ex_id = existing.get("id", "?")
+            overlap = InterviewerAgent._word_overlap(new_desc, ex_desc)
+
+            if overlap > 0.55:
+                # Check for negation → likely a conflict
+                new_tokens = set(new_desc.lower().split())
+                ex_tokens = set(ex_desc.lower().split())
+                new_has_neg = bool({"not", "never", "no", "without"} & new_tokens)
+                ex_has_neg = bool({"not", "never", "no", "without"} & ex_tokens)
+
+                if new_has_neg != ex_has_neg:
+                    conflict_with = conflict_with or ex_id
+                else:
+                    duplicate_of = duplicate_of or ex_id
+
+            if duplicate_of and conflict_with:
+                break  # found both; no need to scan further
+
+        return duplicate_of, conflict_with
+
+    # ── LangGraph node entry point ────────────────────────────────────────
+
+    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Called by LangGraph on every interviewer turn.
+
+        Turn structure
+        ──────────────
+        [First turn]  → no stakeholder reply yet → send opening question.
+        [Subsequent]  → MUST call update_requirements first, then decide:
+                         conflict   → Socratic clarifier via send_message
+                         incomplete → next 5W1H question via send_message
+                         complete   → write_interview_record
+
+        Cross-turn loop prevention
+        ──────────────────────────
+        The react() loop guard resets each process() call, so it cannot catch
+        a question that repeats across multiple graph cycles. This method
+        builds an explicit "recent questions sent" block and injects it as a
+        hard constraint so the LLM never re-asks a question already in the
+        conversation history.
+
+        Forced update_requirements
+        ──────────────────────────
+        If a stakeholder reply is present but update_requirements has not been
+        called yet this turn (detected by comparing draft size before/after),
+        the task prompt uses imperative language and places the extraction step
+        before any other instruction to prevent the LLM from skipping it.
+        """
+        conversation = state.get("conversation") or []
+        turn_count = state.get("turn_count", 0)
+        max_turns = state.get("max_turns", self._max_turns)
+        draft = state.get("requirements_draft") or []
+        completeness = self._assess_completeness(draft)
+        enough = completeness >= self._completeness_threshold
+
+        # ── Build transcript ──────────────────────────────────────────────
+        transcript = (
+            "\n".join(
+                f"[{i}] {'Interviewer' if t['role'] == 'interviewer' else 'Stakeholder'}: "
+                f"{t['content']}"
+                for i, t in enumerate(conversation)
+            )
+            or "(interview has not started yet)"
+        )
+
+        # ── Last stakeholder utterance ────────────────────────────────────
+        last_stakeholder = next(
+            (t["content"] for t in reversed(conversation) if t["role"] == "enduser"),
+            None,
+        )
+        last_turn_index = len(conversation) - 1
+
+        # ── Draft summary ─────────────────────────────────────────────────
+        draft_summary = (
+            "\n".join(
+                f"  [{r.get('id', '?')}] ({r.get('type', '?')}, "
+                f"{r.get('status', '?')}) {r.get('description', '')[:80]}"
+                for r in draft[-10:]
+            )
+            or "  (no requirements captured yet)"
+        )
+
+        # ── Stopping hint ─────────────────────────────────────────────────
+        approaching_limit = turn_count >= max(4, max_turns - 3)
+        if approaching_limit:
+            stop_hint = (
+                f"⚠ APPROACHING LIMIT: {turn_count}/{max_turns} turns used. "
+                "If you have reasonable coverage, call 'write_interview_record' now."
+            )
+        elif enough:
+            stop_hint = (
+                f"✓ Completeness ({completeness:.2f}) has reached the threshold "
+                f"({self._completeness_threshold:.2f}). "
+                "You MAY finalise now or ask ONE more clarifying question."
+            )
         else:
-            config = {}
-
-        super().__init__(config_path=config_path, *args, **kwargs)
-        self.artifact_pool: ArtifactPool = artifact_pool
-
-        # Maintain old attribute names for compatibility
-        # self.max_customer_turns = config.get("max_customer_turns", 50)
-        # self.max_enduser_turns = config.get("max_enduser_turns", 50)
-
-    def conduct_stakeholder_interview(
-        self,
-        stakeholder_info: Dict[str, Any],
-        interview_objectives: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        """
-        Conduct a comprehensive stakeholder interview with structured approach.
-
-        Args:
-            stakeholder_info: Information about the stakeholder (type, role, context)
-            interview_objectives: Optional specific objectives for the interview
-
-        Returns:
-            Complete interview record with analysis
-        """
-        stakeholder_type = stakeholder_info.get("type", "stakeholder")
-        stakeholder_role = stakeholder_info.get("role", "user")
-        business_context = stakeholder_info.get("context", "")
-
-        # Initialize interview session
-        session_id = str(uuid.uuid4())
-        self.current_interview_session = session_id
-
-        logger.info(
-            f"Starting structured interview with {stakeholder_type} ({stakeholder_role})"
-        )
-
-        # Create comprehensive interview record
-        interview_record = {
-            "session_id": session_id,
-            "stakeholder_info": stakeholder_info,
-            "interview_objectives": interview_objectives
-            or self._get_default_objectives(),
-            "start_time": datetime.now(),
-            "phases": [],
-            "current_phase": "preparation",
-            "requirements_identified": [],
-            "assumptions_identified": [],
-            "constraints_identified": [],
-            "stakeholder_concerns": [],
-            "business_rules": [],
-            "success_criteria": [],
-            "gaps_identified": [],
-            "completeness_assessment": {},
-            "next_steps": [],
-            "status": "in_progress",
-        }
-
-        self.interview_records[session_id] = interview_record
-
-        # Phase 1: Preparation and Context Setting
-        self._conduct_preparation_phase(interview_record)
-
-        # Phase 2: Business Context Exploration
-        self._conduct_context_exploration_phase(interview_record)
-
-        # Phase 3: Systematic Requirements Elicitation (5W1H)
-        self._conduct_systematic_elicitation_phase(interview_record)
-
-        # Phase 4: Deep Dive with Socratic Questioning
-        self._conduct_deep_dive_phase(interview_record)
-
-        # Phase 5: Validation and Gap Analysis
-        self._conduct_validation_phase(interview_record)
-
-        # Phase 6: Closure and Next Steps
-        self._conduct_closure_phase(interview_record)
-
-        # Finalize interview record
-        interview_record["end_time"] = datetime.now()
-        interview_record["total_duration_minutes"] = (
-            interview_record["end_time"] - interview_record["start_time"]
-        ).total_seconds() / 60
-        interview_record["status"] = "completed"
-
-        # Perform final analysis
-        interview_record["completeness_assessment"] = (
-            self._assess_interview_completeness(interview_record)
-        )
-        interview_record["quality_score"] = self._calculate_interview_quality_score(
-            interview_record
-        )
-
-        logger.info(
-            f"Completed structured interview {session_id} with quality score: {interview_record['quality_score']}"
-        )
-
-        return interview_record
-
-    def _get_default_objectives(self) -> List[str]:
-        """Get default interview objectives."""
-        return [
-            "Understand business context and objectives",
-            "Identify functional requirements",
-            "Discover non-functional requirements",
-            "Uncover constraints and assumptions",
-            "Establish success criteria",
-            "Identify key stakeholders and their concerns",
-            "Validate understanding and identify gaps",
-        ]
-
-    def _conduct_preparation_phase(self, interview_record: Dict[str, Any]) -> None:
-        """Conduct the preparation phase of the interview."""
-        phase_data = {
-            "phase_name": "preparation",
-            "start_time": datetime.now(),
-            "objectives": ["Establish rapport", "Explain process", "Set expectations"],
-            "questions_asked": [],
-            "insights_gathered": [],
-        }
-
-        interview_record["current_phase"] = "preparation"
-
-        # Use CoT reasoning to generate opening
-        opening_context = {
-            "stakeholder_info": interview_record["stakeholder_info"],
-            "interview_objectives": interview_record["interview_objectives"],
-            "phase": "preparation",
-        }
-
-        # Use action prompt for opening
-        action_prompt = self._get_action_prompt(
-            "conduct_interview",
-            context={
-                "stakeholder_type": interview_record.get("stakeholder_type", "unknown"),
-                "turn_count": 0,
-                "previous_responses": [],
-            },
-        )
-
-        opening_result = self.generate_with_cot(
-            prompt=action_prompt,
-            context=opening_context,
-            reasoning_template="interview_opening",
-        )
-
-        opening_question = opening_result["response"]
-        phase_data["questions_asked"].append(
-            {
-                "question": opening_question,
-                "purpose": "Opening and rapport building",
-                "methodology": "Professional communication",
-            }
-        )
-
-        phase_data["end_time"] = datetime.now()
-        interview_record["phases"].append(phase_data)
-
-    def _conduct_context_exploration_phase(
-        self, interview_record: Dict[str, Any]
-    ) -> None:
-        """Conduct business context exploration phase."""
-        phase_data = {
-            "phase_name": "context_exploration",
-            "start_time": datetime.now(),
-            "objectives": [
-                "Understand business domain",
-                "Identify key processes",
-                "Discover pain points",
-            ],
-            "questions_asked": [],
-            "insights_gathered": [],
-        }
-
-        interview_record["current_phase"] = "context_exploration"
-
-        # Generate context exploration questions
-        context_questions = [
-            "Can you describe your current business process or workflow?",
-            "What are the main challenges you're facing with the current system?",
-            "Who are the key stakeholders involved in this process?",
-            "What would success look like for this project?",
-            "Are there any regulatory or compliance requirements we need to consider?",
-        ]
-
-        for question in context_questions:
-            phase_data["questions_asked"].append(
-                {
-                    "question": question,
-                    "purpose": "Business context understanding",
-                    "methodology": "Open-ended exploration",
-                }
+            remaining = max_turns - turn_count
+            stop_hint = (
+                f"Completeness: {completeness:.2f} / {self._completeness_threshold:.2f}. "
+                f"{remaining} turns remaining."
             )
 
-        phase_data["end_time"] = datetime.now()
-        interview_record["phases"].append(phase_data)
+        # ── Cross-turn loop detection ─────────────────────────────────────
+        # Collect the last 5 questions the interviewer has already sent so
+        # the LLM can be explicitly told not to repeat any of them.
+        # This is necessary because react()'s action_repeat_counts resets
+        # on every process() call and cannot track cross-turn repetition.
+        recent_interviewer_questions = [
+            t["content"] for t in conversation if t["role"] == "interviewer"
+        ][-5:]
 
-    def _conduct_systematic_elicitation_phase(
-        self, interview_record: Dict[str, Any]
-    ) -> None:
-        """Conduct systematic requirements elicitation using 5W1H framework."""
-        phase_data = {
-            "phase_name": "systematic_elicitation",
-            "start_time": datetime.now(),
-            "objectives": ["Apply 5W1H framework", "Systematic requirement discovery"],
-            "questions_asked": [],
-            "insights_gathered": [],
-        }
-
-        interview_record["current_phase"] = "systematic_elicitation"
-
-        # Apply 5W1H methodology
-        w5h1_module = self.knowledge_modules.get("5w1h_methodology")
-        if w5h1_module:
-            framework = w5h1_module.content.get("framework", {})
-
-            for dimension, info in framework.items():
-                dimension_questions = info.get("questions", [])[
-                    :3
-                ]  # Limit to 3 per dimension
-
-                for question in dimension_questions:
-                    phase_data["questions_asked"].append(
-                        {
-                            "question": question,
-                            "purpose": f"{dimension.upper()} dimension exploration",
-                            "methodology": "5W1H Framework",
-                        }
-                    )
-
-        phase_data["end_time"] = datetime.now()
-        interview_record["phases"].append(phase_data)
-
-    def _conduct_deep_dive_phase(self, interview_record: Dict[str, Any]) -> None:
-        """Conduct deep dive phase using Socratic questioning."""
-        phase_data = {
-            "phase_name": "deep_dive",
-            "start_time": datetime.now(),
-            "objectives": [
-                "Deep exploration of critical areas",
-                "Challenge assumptions",
-            ],
-            "questions_asked": [],
-            "insights_gathered": [],
-        }
-
-        interview_record["current_phase"] = "deep_dive"
-
-        # Generate Socratic questions based on previous phases
-        previous_insights = []
-        for phase in interview_record["phases"]:
-            previous_insights.extend(phase.get("insights_gathered", []))
-
-        socratic_questions = self._generate_socratic_questions(
-            previous_insights,
-            {"stakeholder_info": interview_record["stakeholder_info"]},
-        )
-
-        for question in socratic_questions[:5]:  # Limit to 5 questions
-            phase_data["questions_asked"].append(
-                {
-                    "question": question,
-                    "purpose": "Deep insight exploration",
-                    "methodology": "Socratic Questioning",
-                }
+        if recent_interviewer_questions:
+            repeat_guard = (
+                "QUESTIONS ALREADY SENT (do NOT ask these again — "
+                "the stakeholder has already answered them):\n"
+                + "\n".join(f"  • {q[:120]}" for q in recent_interviewer_questions)
+                + "\nYou MUST ask about a DIFFERENT topic or aspect."
             )
-
-        phase_data["end_time"] = datetime.now()
-        interview_record["phases"].append(phase_data)
-
-    def _conduct_validation_phase(self, interview_record: Dict[str, Any]) -> None:
-        """Conduct validation and gap analysis phase."""
-        phase_data = {
-            "phase_name": "validation",
-            "start_time": datetime.now(),
-            "objectives": [
-                "Validate understanding",
-                "Identify gaps",
-                "Confirm priorities",
-            ],
-            "questions_asked": [],
-            "insights_gathered": [],
-        }
-
-        interview_record["current_phase"] = "validation"
-
-        # Generate validation questions
-        validation_questions = [
-            "Let me summarize what I've understood so far. Does this accurately reflect your needs?",
-            "Are there any important aspects we haven't discussed yet?",
-            "What would you consider the highest priority requirements?",
-            "Are there any assumptions I've made that might be incorrect?",
-            "What concerns do you have about implementing these requirements?",
-        ]
-
-        for question in validation_questions:
-            phase_data["questions_asked"].append(
-                {
-                    "question": question,
-                    "purpose": "Validation and gap identification",
-                    "methodology": "Validation techniques",
-                }
-            )
-
-        # Identify gaps based on current requirements
-        current_requirements = interview_record.get("requirements_identified", [])
-        gaps = self.identify_requirement_gaps(current_requirements)
-        interview_record["gaps_identified"] = gaps
-
-        phase_data["end_time"] = datetime.now()
-        interview_record["phases"].append(phase_data)
-
-    def _conduct_closure_phase(self, interview_record: Dict[str, Any]) -> None:
-        """Conduct interview closure phase."""
-        phase_data = {
-            "phase_name": "closure",
-            "start_time": datetime.now(),
-            "objectives": [
-                "Summarize findings",
-                "Define next steps",
-                "Thank stakeholder",
-            ],
-            "questions_asked": [],
-            "insights_gathered": [],
-        }
-
-        interview_record["current_phase"] = "closure"
-
-        # Generate closure summary
-        closure_questions = [
-            "Thank you for your time. I'll prepare a summary of our discussion.",
-            "Is there anything else you'd like to add or clarify?",
-            "What would be the best way to follow up with any additional questions?",
-            "When would be a good time for a follow-up session if needed?",
-        ]
-
-        for question in closure_questions:
-            phase_data["questions_asked"].append(
-                {
-                    "question": question,
-                    "purpose": "Interview closure",
-                    "methodology": "Professional closure",
-                }
-            )
-
-        # Define next steps
-        interview_record["next_steps"] = [
-            "Analyze and categorize identified requirements",
-            "Create requirements traceability matrix",
-            "Prepare interview summary report",
-            "Schedule follow-up sessions if needed",
-            "Validate requirements with other stakeholders",
-        ]
-
-        phase_data["end_time"] = datetime.now()
-        interview_record["phases"].append(phase_data)
-
-    def _assess_interview_completeness(
-        self, interview_record: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Assess the completeness of the interview."""
-        assessment = {
-            "overall_score": 0.0,
-            "dimension_scores": {},
-            "strengths": [],
-            "weaknesses": [],
-            "recommendations": [],
-        }
-
-        # Assess different dimensions
-        dimensions = {
-            "functional_requirements": 0.25,
-            "non_functional_requirements": 0.20,
-            "stakeholder_coverage": 0.15,
-            "business_context": 0.15,
-            "constraints_and_assumptions": 0.15,
-            "validation_and_gaps": 0.10,
-        }
-
-        total_score = 0.0
-
-        for dimension, weight in dimensions.items():
-            score = self._assess_dimension_completeness(interview_record, dimension)
-            assessment["dimension_scores"][dimension] = score
-            total_score += score * weight
-
-        assessment["overall_score"] = total_score
-
-        # Generate recommendations
-        if total_score < 0.7:
-            assessment["recommendations"].append(
-                "Consider additional interview sessions"
-            )
-        if assessment["dimension_scores"].get("non_functional_requirements", 0) < 0.5:
-            assessment["recommendations"].append(
-                "Focus more on non-functional requirements"
-            )
-        if assessment["dimension_scores"].get("validation_and_gaps", 0) < 0.6:
-            assessment["recommendations"].append("Conduct more thorough validation")
-
-        return assessment
-
-    def _assess_dimension_completeness(
-        self, interview_record: Dict[str, Any], dimension: str
-    ) -> float:
-        """Assess completeness of a specific dimension."""
-        requirements = interview_record.get("requirements_identified", [])
-        phases = interview_record.get("phases", [])
-
-        if dimension == "functional_requirements":
-            functional_reqs = [
-                req for req in requirements if req.get("type") == "functional"
-            ]
-            return min(
-                len(functional_reqs) / 8.0, 1.0
-            )  # Target: 8 functional requirements
-
-        elif dimension == "non_functional_requirements":
-            nfr_reqs = [
-                req for req in requirements if req.get("type") == "non_functional"
-            ]
-            return min(len(nfr_reqs) / 4.0, 1.0)  # Target: 4 NFRs
-
-        elif dimension == "stakeholder_coverage":
-            stakeholder_mentions = sum(
-                1 for phase in phases if "stakeholder" in str(phase).lower()
-            )
-            return min(
-                stakeholder_mentions / 3.0, 1.0
-            )  # Target: 3 stakeholder discussions
-
-        elif dimension == "business_context":
-            context_phases = [
-                p for p in phases if p.get("phase_name") == "context_exploration"
-            ]
-            return 1.0 if context_phases else 0.0
-
-        elif dimension == "constraints_and_assumptions":
-            constraints = interview_record.get("constraints_identified", [])
-            assumptions = interview_record.get("assumptions_identified", [])
-            return min(
-                (len(constraints) + len(assumptions)) / 4.0, 1.0
-            )  # Target: 4 total
-
-        elif dimension == "validation_and_gaps":
-            validation_phases = [
-                p for p in phases if p.get("phase_name") == "validation"
-            ]
-            gaps = interview_record.get("gaps_identified", [])
-            return 1.0 if validation_phases and gaps else 0.5
-
-        return 0.0
-
-    def _calculate_interview_quality_score(
-        self, interview_record: Dict[str, Any]
-    ) -> float:
-        """Calculate overall interview quality score."""
-        completeness = interview_record.get("completeness_assessment", {}).get(
-            "overall_score", 0.0
-        )
-
-        # Factor in other quality indicators
-        phases_completed = len(interview_record.get("phases", []))
-        expected_phases = 6
-        phase_completion_score = min(phases_completed / expected_phases, 1.0)
-
-        requirements_count = len(interview_record.get("requirements_identified", []))
-        requirements_score = min(
-            requirements_count / 10.0, 1.0
-        )  # Target: 10 requirements
-
-        # Weighted quality score
-        quality_score = (
-            completeness * 0.5 + phase_completion_score * 0.3 + requirements_score * 0.2
-        )
-
-        return round(quality_score, 2)
-
-    def create_interview_artifact(self, interview_record: Dict[str, Any]) -> Artifact:
-        """
-        Create a structured artifact from interview record for the artifact pool.
-
-        Args:
-            interview_record: Complete interview record
-
-        Returns:
-            Artifact object for storage in artifact pool
-        """
-        # Create artifact metadata
-        metadata = ArtifactMetadata(
-            tags=[
-                "interview",
-                "requirements",
-                "elicitation",
-                interview_record["stakeholder_type"],
-            ],
-            source_agent="interviewer",
-            related_artifacts=[],
-            quality_score=interview_record.get("completeness_score"),
-            review_comments=[],
-            custom_properties={},
-        )
-
-        all_functional_req = [
-            req
-            for req in interview_record.get("requirements_identified", "")
-            if req.get("type", "") == "functional"
-        ]
-        all_non_functional_req = [
-            req
-            for req in interview_record.get("requirements_identified", "")
-            if req.get("type", "") == "non_functional"
-        ]
-
-        # Structure the artifact content
-        artifact_content = {
-            "interview_metadata": {
-                "session_id": interview_record["session_id"],
-                "stakeholder_type": interview_record["stakeholder_type"],
-            },
-            "interview_process": {
-                "total_questions_asked": len(interview_record.get("turns", [])),
-                "methodologies_applied": list(
-                    set(
-                        [
-                            turn.get("methodology", "")
-                            for turn in interview_record.get("turns", [])
-                        ]
-                    )
-                ),
-            },
-            "raw_interview_data": {
-                "turns": interview_record.get("turns", []),
-                "start_time": (
-                    interview_record.get("start_time").isoformat()
-                    if interview_record.get("start_time")
-                    else None
-                ),
-                "end_time": (
-                    interview_record.get("end_time").isoformat()
-                    if interview_record.get("end_time")
-                    else None
-                ),
-            },
-            "functional_requirements": all_functional_req,
-            "non_functional_requirements": all_non_functional_req,
-            "raw_user_stories": interview_record.get("user_stories", []),
-        }
-
-        # Create the artifact
-        artifact = Artifact(
-            id=str(uuid.uuid4()),
-            type=ArtifactType.INTERVIEW_RECORD,
-            content=artifact_content,
-            metadata=metadata,
-            version="1.0",
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
-            created_by=self.name,
-            status=ArtifactStatus.DRAFT,
-        )
-
-        logger.info(
-            f"Created interview artifact {artifact.id} for session {interview_record['session_id']}"
-        )
-
-        return artifact
-
-    def extract_initial_requirements(
-        self, interview_record: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        """
-        Extract and structure initial requirements from interview record.
-
-        Args:
-            interview_record: Complete interview record
-
-        Returns:
-            List of structured initial requirements
-        """
-        initial_requirements = []
-
-        # Process identified requirements
-        for req in interview_record.get("requirements_identified", []):
-            structured_req = {
-                "id": req.get("id", str(uuid.uuid4())),
-                "title": self._generate_requirement_title(req.get("text", "")),
-                "description": req.get("text", ""),
-                "type": req.get("type", "functional"),
-                "priority": req.get("priority", "medium"),
-                "source": {
-                    "type": "interview",
-                    "session_id": interview_record["session_id"],
-                    "stakeholder": interview_record["stakeholder_info"].get(
-                        "type", "unknown"
-                    ),
-                    "question": req.get("source_question", ""),
-                    "extracted_at": (
-                        req.get("extracted_at").isoformat()
-                        if req.get("extracted_at")
-                        else None
-                    ),
-                },
-                "acceptance_criteria": self._generate_acceptance_criteria(
-                    req.get("text", "")
-                ),
-                "business_value": self._assess_business_value(req.get("text", "")),
-                "complexity": self._assess_complexity(req.get("text", "")),
-                "dependencies": [],
-                "assumptions": [],
-                "constraints": [],
-                "verification_method": self._suggest_verification_method(
-                    req.get("text", "")
-                ),
-                "status": "draft",
-                "confidence": req.get("confidence", 0.7),
-            }
-
-            initial_requirements.append(structured_req)
-
-        # Add derived requirements from constraints and assumptions
-        for constraint in interview_record.get("constraints_identified", []):
-            constraint_req = {
-                "id": str(uuid.uuid4()),
-                "title": f"Constraint: {constraint.get('title', 'System Constraint')}",
-                "description": constraint.get("description", ""),
-                "type": "constraint",
-                "priority": "high",
-                "source": {
-                    "type": "interview",
-                    "session_id": interview_record["session_id"],
-                    "stakeholder": interview_record["stakeholder_info"].get(
-                        "type", "unknown"
-                    ),
-                    "derived_from": "constraint_analysis",
-                },
-                "acceptance_criteria": [
-                    f"System must comply with: {constraint.get('description', '')}"
-                ],
-                "business_value": "compliance",
-                "complexity": "medium",
-                "verification_method": "inspection",
-                "status": "draft",
-                "confidence": 0.9,
-            }
-
-            initial_requirements.append(constraint_req)
-
-        logger.info(
-            f"Extracted {len(initial_requirements)} initial requirements from interview {interview_record['session_id']}"
-        )
-
-        return initial_requirements
-
-    def _generate_requirement_title(self, requirement_text: str) -> str:
-        """Generate a concise title for a requirement."""
-        # Simple title generation - extract first meaningful phrase
-        words = requirement_text.split()[:8]  # Limit to first 8 words
-        title = " ".join(words)
-
-        # Clean up and capitalize
-        title = title.strip(".,!?").capitalize()
-
-        if len(title) > 50:
-            title = title[:47] + "..."
-
-        return title or "System Requirement"
-
-    def _generate_acceptance_criteria(self, requirement_text: str) -> List[str]:
-        """Generate basic acceptance criteria for a requirement."""
-        criteria = []
-
-        # Look for specific verbs and actions
-        if "login" in requirement_text.lower():
-            criteria.append("User can successfully authenticate with valid credentials")
-            criteria.append("System rejects invalid credentials")
-        elif "search" in requirement_text.lower():
-            criteria.append("User can enter search terms")
-            criteria.append("System returns relevant results")
-            criteria.append("Results are displayed in a clear format")
-        elif "report" in requirement_text.lower():
-            criteria.append("Report contains accurate data")
-            criteria.append("Report is generated within acceptable time")
-            criteria.append("Report can be exported in required formats")
         else:
-            # Generic criteria
-            criteria.append("Requirement is implemented as specified")
-            criteria.append("Functionality works as expected")
-            criteria.append("User interface is intuitive and accessible")
+            repeat_guard = ""
 
-        return criteria
-
-    def _assess_business_value(self, requirement_text: str) -> str:
-        """Assess business value of a requirement."""
-        high_value_keywords = [
-            "revenue",
-            "cost",
-            "efficiency",
-            "compliance",
-            "security",
-            "critical",
-        ]
-        medium_value_keywords = [
-            "user experience",
-            "performance",
-            "quality",
-            "productivity",
-        ]
-
-        text_lower = requirement_text.lower()
-
-        if any(keyword in text_lower for keyword in high_value_keywords):
-            return "high"
-        elif any(keyword in text_lower for keyword in medium_value_keywords):
-            return "medium"
+        # ── Decision context ──────────────────────────────────────────────
+        if last_stakeholder:
+            extraction_guidance = (
+                "STEP 1 — MANDATORY: call 'update_requirements' RIGHT NOW.\n"
+                f"  The stakeholder just replied at conversation index {last_turn_index}:\n"
+                f'  "{last_stakeholder[:200]}"\n'
+                "  Extract EVERY requirement you can find in that reply.\n"
+                "  Include functional AND non-functional requirements "
+                "(performance, security, reliability, usability).\n"
+                "  Do not skip this step — calling 'send_message' without "
+                "first calling 'update_requirements' wastes a turn.\n\n"
+                "STEP 2 — After update_requirements returns, read the observation:\n"
+                "  • CONFLICT detected    → 'send_message' with a Socratic probe\n"
+                "                           to resolve the contradiction.\n"
+                "  • SUFFICIENT coverage  → 'write_interview_record'\n"
+                "  • GAPS listed          → 'send_message' targeting a listed gap\n"
+                "  • More info needed     → 'send_message' with ONE 5W1H question\n"
+                "                           on a topic NOT in the repeat-guard list.\n"
+            )
         else:
-            return "low"
-
-    def _assess_complexity(self, requirement_text: str) -> str:
-        """Assess implementation complexity of a requirement."""
-        high_complexity_keywords = [
-            "integration",
-            "algorithm",
-            "real-time",
-            "distributed",
-            "machine learning",
-        ]
-        medium_complexity_keywords = [
-            "database",
-            "api",
-            "workflow",
-            "calculation",
-            "validation",
-        ]
-
-        text_lower = requirement_text.lower()
-
-        if any(keyword in text_lower for keyword in high_complexity_keywords):
-            return "high"
-        elif any(keyword in text_lower for keyword in medium_complexity_keywords):
-            return "medium"
-        else:
-            return "low"
-
-    def _suggest_verification_method(self, requirement_text: str) -> str:
-        """Suggest appropriate verification method for a requirement."""
-        if (
-            "performance" in requirement_text.lower()
-            or "speed" in requirement_text.lower()
-        ):
-            return "performance_testing"
-        elif (
-            "security" in requirement_text.lower()
-            or "authentication" in requirement_text.lower()
-        ):
-            return "security_testing"
-        elif (
-            "user" in requirement_text.lower()
-            or "interface" in requirement_text.lower()
-        ):
-            return "user_acceptance_testing"
-        elif (
-            "integration" in requirement_text.lower()
-            or "api" in requirement_text.lower()
-        ):
-            return "integration_testing"
-        else:
-            return "functional_testing"
-
-    def _extract_priority_areas(self, interview_record: Dict[str, Any]) -> List[str]:
-        """Extract priority areas from interview record."""
-        priority_areas = []
-
-        # Analyze requirements by type
-        requirements = interview_record.get("requirements_identified", [])
-        req_types = {}
-
-        for req in requirements:
-            req_type = req.get("type", "unknown")
-            req_types[req_type] = req_types.get(req_type, 0) + 1
-
-        # Sort by frequency
-        sorted_types = sorted(req_types.items(), key=lambda x: x[1], reverse=True)
-        priority_areas = [req_type for req_type, count in sorted_types[:3]]
-
-        # Add business-critical areas mentioned in phases
-        phases = interview_record.get("phases", [])
-        for phase in phases:
-            insights = phase.get("insights_gathered", [])
-            for insight in insights:
-                if isinstance(insight, str):
-                    if "critical" in insight.lower() or "important" in insight.lower():
-                        priority_areas.append("business_critical")
-                        break
-
-        return list(set(priority_areas))  # Remove duplicates
-
-    def _identify_risk_factors(
-        self, interview_record: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
-        """Identify potential risk factors from interview."""
-        risk_factors = []
-
-        # Check for complexity indicators
-        requirements = interview_record.get("requirements_identified", [])
-        complex_reqs = [
-            req
-            for req in requirements
-            if self._assess_complexity(req.get("text", "")) == "high"
-        ]
-
-        if len(complex_reqs) > 3:
-            risk_factors.append(
-                {
-                    "type": "technical_complexity",
-                    "description": "High number of complex requirements identified",
-                    "impact": "high",
-                    "mitigation": "Consider phased implementation approach",
-                }
+            extraction_guidance = (
+                "The interview has not started yet.\n"
+                "Skip 'update_requirements' (no stakeholder reply yet).\n"
+                "Call 'send_message' with an open-ended OPENING question that:\n"
+                "  • Introduces yourself briefly.\n"
+                "  • Asks the stakeholder to describe the core problem or goal.\n"
             )
 
-        # Check for integration requirements
-        integration_reqs = [
-            req for req in requirements if "integration" in req.get("text", "").lower()
-        ]
-        if integration_reqs:
-            risk_factors.append(
-                {
-                    "type": "integration_risk",
-                    "description": "Multiple integration requirements identified",
-                    "impact": "medium",
-                    "mitigation": "Early integration testing and API design",
-                }
+        task = (
+            f"{self.PROFILE}\n\n"
+            "━━━━━━━━━━━━━━  PROJECT  ━━━━━━━━━━━━━━\n"
+            f"{state.get('project_description', 'not provided')}\n\n"
+            "━━━━━━━━━━━━━━  CONVERSATION SO FAR  ━━━━━━━━━━━━━━\n"
+            f"{transcript}\n\n"
+            "━━━━━━━━━━━━━━  REQUIREMENTS DRAFT (latest 10)  ━━━━━━━━━━━━━━\n"
+            f"{draft_summary}\n\n"
+            "━━━━━━━━━━━━━━  STATUS  ━━━━━━━━━━━━━━\n"
+            f"{stop_hint}\n\n"
+            + (
+                "━━━━━━━━━━━━━━  REPEAT GUARD  ━━━━━━━━━━━━━━\n" f"{repeat_guard}\n\n"
+                if repeat_guard
+                else ""
             )
-
-        # Check for unclear requirements
-        gaps = interview_record.get("gaps_identified", [])
-        if len(gaps) > 5:
-            risk_factors.append(
-                {
-                    "type": "requirements_clarity",
-                    "description": "Multiple requirement gaps identified",
-                    "impact": "medium",
-                    "mitigation": "Additional stakeholder interviews needed",
-                }
-            )
-
-        return risk_factors
-
-    def integrate_with_artifact_pool(
-        self, interview_record: Dict[str, Any], artifact_pool=None
-    ) -> Dict[str, str]:
-        """
-        Integrate interview results with the artifact pool.
-
-        Args:
-            interview_record: Complete interview record
-            artifact_pool: Artifact pool instance (optional)
-
-        Returns:
-            Dictionary with created artifact IDs
-        """
-        created_artifacts = {}
-
-        # Create main interview artifact
-        interview_artifact = self.create_interview_artifact(interview_record)
-
-        if artifact_pool:
-            interview_artifact_id = artifact_pool.store_artifact(interview_artifact)
-            created_artifacts["interview_record"] = interview_artifact_id
-
-            # Publish artifact created event
-            if self.event_bus and self.session_id:
-                self.event_bus.publish_artifact_created(
-                    artifact_id=interview_artifact_id,
-                    artifact_type=ArtifactType.INTERVIEW_RECORD,
-                    source=self.name,
-                    session_id=self.session_id,
-                )
-
-        # Create initial requirements artifact
-        initial_requirements = self.extract_initial_requirements(interview_record)
-
-        if initial_requirements:
-            requirements_metadata = ArtifactMetadata(
-                title="Initial Requirements from Interview",
-                description=f"Initial requirements extracted from {interview_record['stakeholder_info'].get('type', 'stakeholder')} interview",
-                author=self.name,
-                version="1.0",
-                tags=["requirements", "initial", "extracted"],
-                source="interviewer_agent",
-                confidence_score=0.8,
-            )
-
-            requirements_artifact = Artifact(
-                id=str(uuid.uuid4()),
-                type=ArtifactType.REQUIREMENTS_LIST,
-                content={
-                    "requirements": initial_requirements,
-                    "source_interview": interview_record["session_id"],
-                    "extraction_metadata": {
-                        "total_requirements": len(initial_requirements),
-                        "functional_count": len(
-                            [
-                                r
-                                for r in initial_requirements
-                                if r["type"] == "functional"
-                            ]
-                        ),
-                        "non_functional_count": len(
-                            [
-                                r
-                                for r in initial_requirements
-                                if r["type"] == "non_functional"
-                            ]
-                        ),
-                        "constraint_count": len(
-                            [
-                                r
-                                for r in initial_requirements
-                                if r["type"] == "constraint"
-                            ]
-                        ),
-                        "extraction_date": datetime.now().isoformat(),
-                    },
-                },
-                metadata=requirements_metadata,
-                version="1.0",
-                created_at=datetime.now(),
-                updated_at=datetime.now(),
-                created_by=self.name,
-                status=ArtifactStatus.DRAFT,
-            )
-
-            if artifact_pool:
-                requirements_artifact_id = artifact_pool.store_artifact(
-                    requirements_artifact
-                )
-                created_artifacts["initial_requirements"] = requirements_artifact_id
-
-                # Publish artifact created event
-                if self.event_bus and self.session_id:
-                    self.event_bus.publish_artifact_created(
-                        artifact_id=requirements_artifact_id,
-                        artifact_type=ArtifactType.REQUIREMENTS_LIST,
-                        source=self.name,
-                        session_id=self.session_id,
-                    )
-
-        # Create stakeholder profile artifact
-        stakeholder_profile = self.create_stakeholder_profile(
-            interview_record["stakeholder_info"].get("type", "stakeholder"),
-            interview_record,
+            + "━━━━━━━━━━━━━━  YOUR NEXT ACTION  ━━━━━━━━━━━━━━\n"
+            f"{extraction_guidance}\n"
+            "RULES:\n"
+            "• ONE tool per ReAct step.\n"
+            "• 'send_message': ONE question only. No compound questions.\n"
+            "• 'update_requirements': include source_turn index for traceability.\n"
+            "• 'write_interview_record': do NOT pass a requirements list;\n"
+            "  the draft is read automatically. Pass only gaps and notes.\n"
         )
 
-        profile_metadata = ArtifactMetadata(
-            title=f"Stakeholder Profile - {stakeholder_profile['stakeholder_type']}",
-            description=f"Profile of {stakeholder_profile['stakeholder_type']} based on interview analysis",
-            author=self.name,
-            version="1.0",
-            tags=["stakeholder", "profile", "analysis"],
-            source="interviewer_agent",
-            confidence_score=0.7,
-        )
-
-        profile_artifact = Artifact(
-            id=str(uuid.uuid4()),
-            type=ArtifactType.STAKEHOLDER_PROFILE,
-            content=stakeholder_profile,
-            metadata=profile_metadata,
-            version="1.0",
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
-            created_by=self.name,
-            status=ArtifactStatus.COMPLETED,
-        )
-
-        if artifact_pool:
-            profile_artifact_id = artifact_pool.store_artifact(profile_artifact)
-            created_artifacts["stakeholder_profile"] = profile_artifact_id
-
-            # Publish artifact created event
-            if self.event_bus and self.session_id:
-                self.event_bus.publish_artifact_created(
-                    artifact_id=profile_artifact_id,
-                    artifact_type=ArtifactType.STAKEHOLDER_PROFILE,
-                    source=self.name,
-                    session_id=self.session_id,
-                )
-
-        # Update agent's artifacts created list
-        self.artifacts_created.extend(created_artifacts.values())
-
-        logger.info(
-            f"Integrated interview results with artifact pool: {list(created_artifacts.keys())}"
-        )
-
-        return created_artifacts
-
-    def generate_interview_summary_report(
-        self, interview_record: Dict[str, Any]
-    ) -> str:
-        """
-        Generate a comprehensive summary report of the interview.
-
-        Args:
-            interview_record: Complete interview record
-
-        Returns:
-            Formatted summary report as string
-        """
-        report_lines = []
-
-        # Header
-        report_lines.append("=" * 60)
-        report_lines.append("REQUIREMENTS INTERVIEW SUMMARY REPORT")
-        report_lines.append("=" * 60)
-        report_lines.append("")
-
-        # Interview metadata
-        report_lines.append("INTERVIEW METADATA")
-        report_lines.append("-" * 20)
-        report_lines.append(f"Session ID: {interview_record['session_id']}")
-        report_lines.append(
-            f"Stakeholder Type: {interview_record['stakeholder_info'].get('type', 'Unknown')}"
-        )
-        report_lines.append(
-            f"Stakeholder Role: {interview_record['stakeholder_info'].get('role', 'Unknown')}"
-        )
-        report_lines.append(
-            f"Duration: {interview_record.get('total_duration_minutes', 0):.1f} minutes"
-        )
-        report_lines.append(
-            f"Quality Score: {interview_record.get('quality_score', 0.0):.2f}"
-        )
-        report_lines.append(
-            f"Completeness Score: {interview_record.get('completeness_assessment', {}).get('overall_score', 0.0):.2f}"
-        )
-        report_lines.append("")
-
-        # Interview process
-        report_lines.append("INTERVIEW PROCESS")
-        report_lines.append("-" * 17)
-        phases = interview_record.get("phases", [])
-        report_lines.append(f"Phases Completed: {len(phases)}")
-        for phase in phases:
-            report_lines.append(
-                f"  - {phase['phase_name'].replace('_', ' ').title()}: {len(phase.get('questions_asked', []))} questions"
-            )
-        report_lines.append("")
-
-        # Requirements discovered
-        requirements = interview_record.get("requirements_identified", [])
-        report_lines.append("REQUIREMENTS DISCOVERED")
-        report_lines.append("-" * 22)
-        report_lines.append(f"Total Requirements: {len(requirements)}")
-
-        functional_reqs = [r for r in requirements if r.get("type") == "functional"]
-        nfr_reqs = [r for r in requirements if r.get("type") == "non_functional"]
-
-        report_lines.append(f"  - Functional: {len(functional_reqs)}")
-        report_lines.append(f"  - Non-Functional: {len(nfr_reqs)}")
-        report_lines.append(
-            f"  - Constraints: {len(interview_record.get('constraints_identified', []))}"
-        )
-        report_lines.append(
-            f"  - Assumptions: {len(interview_record.get('assumptions_identified', []))}"
-        )
-        report_lines.append("")
-
-        # Top requirements
-        if requirements:
-            report_lines.append("TOP REQUIREMENTS")
-            report_lines.append("-" * 16)
-            for i, req in enumerate(requirements[:5], 1):
-                report_lines.append(f"{i}. {req.get('text', 'No description')[:80]}...")
-            report_lines.append("")
-
-        # Gaps identified
-        gaps = interview_record.get("gaps_identified", [])
-        if gaps:
-            report_lines.append("GAPS IDENTIFIED")
-            report_lines.append("-" * 15)
-            for gap in gaps:
-                report_lines.append(f"  - {gap}")
-            report_lines.append("")
-
-        # Next steps
-        next_steps = interview_record.get("next_steps", [])
-        if next_steps:
-            report_lines.append("NEXT STEPS")
-            report_lines.append("-" * 10)
-            for i, step in enumerate(next_steps, 1):
-                report_lines.append(f"{i}. {step}")
-            report_lines.append("")
-
-        # Recommendations
-        completeness_assessment = interview_record.get("completeness_assessment", {})
-        recommendations = completeness_assessment.get("recommendations", [])
-        if recommendations:
-            report_lines.append("RECOMMENDATIONS")
-            report_lines.append("-" * 15)
-            for rec in recommendations:
-                report_lines.append(f"  - {rec}")
-            report_lines.append("")
-
-        report_lines.append("=" * 60)
-        report_lines.append(
-            f"Report generated by {self.name} on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        report_lines.append("=" * 60)
-
-        return "\n".join(report_lines)
-
-    async def process(
-        self,
-        task: Task,
-        in_queue_mess: Optional[asyncio.Queue],
-        out_queue_mess: Optional[asyncio.Queue],
-    ) -> Dict:
-        logger.info(f"Interviewer {self.name} executing task: {task.description}")
-
-        if task.metadata.get("phase") == "interview":
-            interview_record = await self.chat_with_stakeholder(
-                in_queue_mess, out_queue_mess, "enduser"
-            )
-
-            interview_artifact = self.create_interview_artifact(interview_record)
-
-            self.artifact_pool.store_artifact(interview_artifact, self.name)
-
-        return {
-            "artifact_type": "interview_transcript",
-            "participants": task.metadata.get("stakeholders", []),
-            "key_requirements": [
-                "User authentication",
-                "Transaction processing",
-                "Reporting",
-            ],
-            "status": "completed",
-        }
+        return self.react(state, task)

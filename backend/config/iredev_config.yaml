@@ -1,0 +1,232 @@
+# =============================================================================
+# iredev_config.yaml  –  iReDev Framework configuration
+#
+# Secrets (API keys, connection strings) are NOT stored here.
+# Set them in your .env file (see .env.example).
+# Every ${VAR} placeholder is expanded at load time via os.path.expandvars().
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Base LLM  (inherited by all agents unless overridden per-agent)
+# ---------------------------------------------------------------------------
+llm:
+  type: "openai"
+  api_key: ${OPENAI_API_KEY}
+  model: "gpt-4o"
+  base_url: ${OPENAI_BASE_URL}
+  temperature: 0.1
+  max_output_tokens: 4096
+  max_input_tokens: 100000
+
+# ---------------------------------------------------------------------------
+# Rate limits
+# ---------------------------------------------------------------------------
+rate_limits:
+  openai:
+    requests_per_minute: 500
+    input_tokens_per_minute: 200000
+    output_tokens_per_minute: 100000
+    input_token_price_per_million: 0.15
+    output_token_price_per_million: 0.60
+
+# ---------------------------------------------------------------------------
+# Flow control
+# ---------------------------------------------------------------------------
+flow_control:
+  max_reader_search_attempts: 2
+  max_verifier_rejections: 1
+  status_sleep_time: 1
+
+# ---------------------------------------------------------------------------
+# iReDev-specific settings
+# ---------------------------------------------------------------------------
+iredev:
+
+  # ── Agent configurations ──────────────────────────────────────────────────
+  agents:
+    interviewer:
+      llm_config: "default"
+      knowledge_modules:
+        - "requirements_elicitation"
+        - "interview_techniques"
+        - "5w1h_methodology"
+        - "socratic_questioning"
+      max_turns: 50
+      timeout_seconds: 600
+      memory_limit_mb: 512
+      enabled: true
+      custom_params:
+        conversation_style: "professional"
+        follow_up_depth: 3
+
+    enduser:
+      llm_config: "default"
+      knowledge_modules:
+        - "user_experience"
+        - "persona_modeling"
+        - "scenario_design"
+        - "pain_point_analysis"
+      max_turns: 30
+      timeout_seconds: 300
+      memory_limit_mb: 256
+      enabled: true
+      custom_params:
+        persona_count: 3
+        scenario_depth: "detailed"
+
+    deployer:
+      llm_config: "default"
+      knowledge_modules:
+        - "system_architecture"
+        - "security_requirements"
+        - "compliance_standards"
+        - "performance_criteria"
+      max_turns: 20
+      timeout_seconds: 300
+      memory_limit_mb: 256
+      enabled: true
+      custom_params:
+        security_level: "high"
+        compliance_regions: ["GDPR", "SOX"]
+
+    analyst:
+      llm_config: "default"
+      knowledge_modules:
+        - "requirements_analysis"
+        - "system_modeling"
+        - "traceability_management"
+        - "moscow_prioritization"
+      max_turns: 40
+      timeout_seconds: 600
+      memory_limit_mb: 512
+      enabled: true
+      custom_params:
+        modeling_notation: "UML"
+        traceability_depth: "full"
+
+    archivist:
+      llm_config: "default"
+      knowledge_modules:
+        - "ieee_830_standard"
+        - "iso_29148_standard"
+        - "technical_writing"
+        - "document_templates"
+      max_turns: 25
+      timeout_seconds: 400
+      memory_limit_mb: 256
+      enabled: true
+      custom_params:
+        document_standard: "IEEE_830"
+        template_style: "formal"
+
+    reviewer:
+      llm_config: "default"
+      knowledge_modules:
+        - "quality_assurance"
+        - "validation_techniques"
+        - "verification_methods"
+        - "defect_identification"
+      max_turns: 35
+      timeout_seconds: 500
+      memory_limit_mb: 256
+      enabled: true
+      custom_params:
+        review_depth: "comprehensive"
+        quality_threshold: 0.85
+
+  # ── Knowledge base ────────────────────────────────────────────────────────
+  knowledge_base:
+    base_path: "knowledge"
+    domain_knowledge_path: "knowledge/domains"
+    methodology_path: "knowledge/methodologies"
+    standards_path: "knowledge/standards"
+    templates_path: "knowledge/templates"
+    strategies_path: "knowledge/strategies"
+    cache_enabled: true
+    auto_reload: true
+    version_control: true
+    backup_enabled: true
+
+    # PostgreSQL / pgvector – connection string comes from .env
+    pg_connection: ${IREDEV_PG_CONNECTION}
+
+    # pgvector collection name
+    collection_name: "iredev_knowledge"
+
+    # Text splitting
+    chunk_size: 800
+    chunk_overlap: 100
+
+    # ── Embedding: OpenAI API (default) ──────────────────────────────────
+    embedding:
+      type: "openai"
+      model: "text-embedding-3-small"
+      api_key: ${OPENAI_API_KEY}
+      base_url: ${OPENAI_BASE_URL}
+      dims: 768
+
+    # ── Embedding: local Ollama (uncomment to use) ───────────────────────
+    # embedding:
+    #   type: "openai"                  # OpenAI-compatible wrapper
+    #   model: "nomic-embed-text"
+    #   api_key: ${OLLAMA_API_KEY}      # Ollama ignores the key; use "EMPTY"
+    #   base_url: ${OLLAMA_BASE_URL}    # e.g. http://localhost:11434/v1
+    #   dims: 768
+
+    # ── Embedding: Google Gemini (uncomment to use) ──────────────────────
+    # embedding:
+    #   type: "google"
+    #   model: "gemini-embedding-001"
+    #   api_key: ${GEMINI_API_KEY}
+    #   dims: 768
+
+    # ── Embedding: Gemini multimodal preview (uncomment to use) ─────────
+    # embedding:
+    #   type: "openai"
+    #   model: "gemini-embedding-2-preview"
+    #   api_key: ${GEMINI_API_KEY}
+    #   dims: 1536
+
+  # ── Human-in-the-loop ─────────────────────────────────────────────────────
+  human_in_loop:
+    enabled: true
+    review_points:
+      - "url_generation"
+      - "model_creation"
+      - "srs_generation"
+    timeout_minutes: 1440           # 24 hours
+    notification_channels:
+      - "console"
+      - "email"
+    auto_approve_after_timeout: false
+    require_explicit_approval: true
+
+  # ── Artifact pool ─────────────────────────────────────────────────────────
+  artifact_pool:
+    storage_backend: "filesystem"
+    storage_path: "artifacts"
+    version_control: true
+    backup_enabled: true
+    backup_interval_minutes: 60
+    max_versions_per_artifact: 10
+    compression_enabled: true
+
+  # ── System ────────────────────────────────────────────────────────────────
+  logging_level: "INFO"
+  debug_mode: false
+  metrics_enabled: true
+
+# ---------------------------------------------------------------------------
+# Backward compatibility
+# ---------------------------------------------------------------------------
+docstring_options:
+  overwrite_docstrings: false
+
+# ---------------------------------------------------------------------------
+# Perplexity (web-search capability)
+# ---------------------------------------------------------------------------
+perplexity:
+  api_key: ${PERPLEXITY_API_KEY}
+  model: "sonar"
+  temperature: 0.1
+  max_output_tokens: 250

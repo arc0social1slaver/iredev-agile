@@ -216,9 +216,5 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Config file
-backend/config/agent_config.yaml
-backend/config/iredev_config.yaml
-
 # Artifacts
 artifacts

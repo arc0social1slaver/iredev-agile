@@ -67,22 +67,14 @@ logger = logging.getLogger(__name__)
 
 
 # ── Completeness weights (mirrors old BaseInterviewerAgent logic) ──────────────
-_W_FUNCTIONAL = 0.40
+_W_FUNCTIONAL    = 0.40
 _W_NON_FUNCTIONAL = 0.30
-_W_QUANTITY = 0.30  # min(0.30, count / 30)
+_W_QUANTITY      = 0.30   # min(0.30, count / 30)
 
 # Vague words that make a requirement untestable
 _VAGUE_WORDS: Set[str] = {
-    "quickly",
-    "fast",
-    "easy",
-    "good",
-    "nice",
-    "some",
-    "many",
-    "appropriate",
-    "sufficient",
-    "reasonable",
+    "quickly", "fast", "easy", "good", "nice", "some", "many",
+    "appropriate", "sufficient", "reasonable",
 }
 
 # Contradiction markers (simple heuristic; LLM does deep analysis)
@@ -134,95 +126,92 @@ Internal Chain of Thought (visible to you only):
     # ── Init ──────────────────────────────────────────────────────────────
 
     def __init__(self, config_path: Optional[str] = None):
-        super().__init__(name="interviewer", config_path=config_path)
+        super().__init__(name="interviewer")
 
         agent_cfg = self._raw_config.get("agents", {}).get("interviewer", {})
-        custom = agent_cfg.get("custom_params", {})
+        custom    = agent_cfg.get("custom_params", {})
 
-        self._completeness_threshold: float = custom.get("completeness_threshold", 0.8)
+        self._completeness_threshold: float = custom.get(
+            "completeness_threshold", 0.8
+        )
         self._max_turns: int = custom.get("max_turns", 20)
 
     # ── Tool registration ──────────────────────────────────────────────────
 
     def _register_tools(self) -> None:
-        self.register_tool(
-            Tool(
-                name="search_knowledge",
-                description=(
-                    "Search the knowledge base for interviewing techniques, "
-                    "requirements-elicitation methodologies, or domain context. "
-                    'Input: {"query": "<text>"}'
-                ),
-                func=self._tool_search_knowledge,
-            )
-        )
-        self.register_tool(
-            Tool(
-                name="update_requirements",
-                description=(
-                    "After the stakeholder replies, extract requirements from their "
-                    "latest utterance and update the running draft.\n"
-                    "This tool DOES NOT end the turn — call it first, then decide "
-                    "whether to 'send_message' or 'write_interview_record'.\n"
-                    "Input: {\n"
-                    '  "extracted": [\n'
-                    "    {\n"
-                    '      "type":        "functional" | "non_functional" | "constraint",\n'
-                    '      "description": "<precise, testable statement>",\n'
-                    '      "priority":    "high" | "medium" | "low",\n'
-                    '      "source_turn": <int — 0-based turn index in conversation>,\n'
-                    '      "status":      "confirmed" | "inferred" | "ambiguous"\n'
-                    "    }, ...\n"
-                    "  ]\n"
-                    "}\n"
-                    "Returns: updated draft size, completeness score, and any "
-                    "conflicts or ambiguities to resolve."
-                ),
-                func=self._tool_update_requirements,
-            )
-        )
-        self.register_tool(
-            Tool(
-                name="send_message",
-                description=(
-                    "Send ONE interview question to the stakeholder.\n"
-                    "Use after 'update_requirements':\n"
-                    "  • If conflicts were detected → ask a Socratic clarifying question.\n"
-                    "  • If completeness is still low → ask the next 5W1H question.\n"
-                    "This tool ENDS the current turn and yields to the stakeholder.\n"
-                    'Input: {"message": "<your single question>"}'
-                ),
-                func=self._tool_send_message,
-            )
-        )
-        self.register_tool(
-            Tool(
-                name="write_interview_record",
-                description=(
-                    "Finalise the interview: reads the accumulated requirements_draft "
-                    "from state, writes the interview_record artifact, and marks the "
-                    "interview complete.\n"
-                    "Call this when completeness ≥ threshold or max_turns approached.\n"
-                    "Input: {\n"
-                    '  "gaps":  ["<unclear area>", ...],\n'
-                    '  "notes": "<2-3 sentence summary of the interview>"\n'
-                    "}\n"
-                    "Do NOT pass a requirements list — it is read automatically from "
-                    "the draft built up by 'update_requirements'."
-                ),
-                func=self._tool_write_interview_record,
-            )
-        )
+        self.register_tool(Tool(
+            name="search_knowledge",
+            description=(
+                "Search the knowledge base for interviewing techniques, "
+                "requirements-elicitation methodologies, or domain context. "
+                "Input: {\"query\": \"<text>\"}"
+            ),
+            func=self._tool_search_knowledge,
+        ))
+        self.register_tool(Tool(
+            name="update_requirements",
+            description=(
+                "After the stakeholder replies, extract requirements from their "
+                "latest utterance and update the running draft.\n"
+                "This tool DOES NOT end the turn — call it first, then decide "
+                "whether to 'send_message' or 'write_interview_record'.\n"
+                "Input: {\n"
+                "  \"extracted\": [\n"
+                "    {\n"
+                "      \"type\":        \"functional\" | \"non_functional\" | \"constraint\",\n"
+                "      \"description\": \"<precise, testable statement>\",\n"
+                "      \"priority\":    \"high\" | \"medium\" | \"low\",\n"
+                "      \"source_turn\": <int — 0-based turn index in conversation>,\n"
+                "      \"status\":      \"confirmed\" | \"inferred\" | \"ambiguous\"\n"
+                "    }, ...\n"
+                "  ]\n"
+                "}\n"
+                "Returns: updated draft size, completeness score, and any "
+                "conflicts or ambiguities to resolve."
+            ),
+            func=self._tool_update_requirements,
+        ))
+        self.register_tool(Tool(
+            name="send_message",
+            description=(
+                "Send ONE interview question to the stakeholder.\n"
+                "Use after 'update_requirements':\n"
+                "  • If conflicts were detected → ask a Socratic clarifying question.\n"
+                "  • If completeness is still low → ask the next 5W1H question.\n"
+                "This tool ENDS the current turn and yields to the stakeholder.\n"
+                "Input: {\"message\": \"<your single question>\"}"
+            ),
+            func=self._tool_send_message,
+        ))
+        self.register_tool(Tool(
+            name="write_interview_record",
+            description=(
+                "Finalise the interview: reads the accumulated requirements_draft "
+                "from state, writes the interview_record artifact, and marks the "
+                "interview complete.\n"
+                "Call this when completeness ≥ threshold or max_turns approached.\n"
+                "Input: {\n"
+                "  \"gaps\":  [\"<unclear area>\", ...],\n"
+                "  \"notes\": \"<2-3 sentence summary of the interview>\"\n"
+                "}\n"
+                "Do NOT pass a requirements list — it is read automatically from "
+                "the draft built up by 'update_requirements'."
+            ),
+            func=self._tool_write_interview_record,
+        ))
 
     # ── Tools ─────────────────────────────────────────────────────────────
 
-    def _tool_search_knowledge(self, query: str, state: Dict = None, **_) -> ToolResult:
+    def _tool_search_knowledge(
+        self, query: str, state: Dict = None, **_
+    ) -> ToolResult:
         if self.knowledge is None:
             return ToolResult(observation="Knowledge base not available.")
         try:
             from ..orchestrator.state import ProcessPhase
-
-            docs = self.knowledge.retrieve(query, phase=ProcessPhase.ELICITATION, k=4)
+            docs = self.knowledge.retrieve(
+                query, phase=ProcessPhase.ELICITATION, k=4
+            )
             if not docs:
                 return ToolResult(observation="No relevant knowledge found.")
             snippets = "\n\n".join(
@@ -235,10 +224,10 @@ Internal Chain of Thought (visible to you only):
 
     # ------------------------------------------------------------------
     def _tool_update_requirements(
-        self,
-        extracted: List[Dict] = None,
-        state: Dict = None,
-        **_,
+            self,
+            extracted: List[Dict] = None,
+            state: Dict = None,
+            **_,
     ) -> ToolResult:
         """Merge newly extracted requirements into the running draft.
 
@@ -377,21 +366,18 @@ Internal Chain of Thought (visible to you only):
             f"(+{len(newly_added)} added: {newly_added or 'none'}"
             + (f", {len(skipped)} duplicates skipped: {skipped}" if skipped else "")
             + f"). Breakdown: {fr_in_draft} FR / {nfr_in_draft} NFR / {con_in_draft} CON.",
+
             f"Completeness: {completeness:.2f} / {self._completeness_threshold:.2f} "
             f"→ {'✓ SUFFICIENT — consider calling write_interview_record' if enough else 'continue gathering'}.",
         ]
 
         if conflicts:
-            parts.append(
-                "CONFLICTS TO RESOLVE:\n" + "\n".join(f"  {c}" for c in conflicts)
-            )
+            parts.append("CONFLICTS TO RESOLVE:\n" + "\n".join(f"  {c}" for c in conflicts))
         if warnings:
             parts.append("Warnings:\n" + "\n".join(f"  {w}" for w in warnings))
         if gap_hints:
-            parts.append(
-                "GAPS TO ADDRESS (required to reach threshold):\n"
-                + "\n".join(f"  • {g}" for g in gap_hints)
-            )
+            parts.append("GAPS TO ADDRESS (required to reach threshold):\n"
+                         + "\n".join(f"  • {g}" for g in gap_hints))
 
         if not conflicts and not enough:
             parts.append(
@@ -407,11 +393,7 @@ Internal Chain of Thought (visible to you only):
         logger.info(
             "[Interviewer] update_requirements: +%d new, %d skipped, %d total, "
             "completeness=%.2f, conflicts=%d",
-            len(newly_added),
-            len(skipped),
-            len(draft),
-            completeness,
-            len(conflicts),
+            len(newly_added), len(skipped), len(draft), completeness, len(conflicts),
         )
 
         return ToolResult(
@@ -430,31 +412,31 @@ Internal Chain of Thought (visible to you only):
     ) -> ToolResult:
         """Post ONE question to the stakeholder and yield the turn."""
         if not message:
-            logger.warning("send_message called with empty message; defaulting.")
+            logger.warning(
+                "send_message called with empty message; defaulting."
+            )
             message = "Could you tell me more about that?"
 
         conversation = list(state.get("conversation") or [])
-        conversation.append(
-            {
-                "role": "interviewer",
-                "content": message,
-                "timestamp": datetime.now().isoformat(),
-            }
-        )
+        conversation.append({
+            "role":      "interviewer",
+            "content":   message,
+            "timestamp": datetime.now().isoformat(),
+        })
         logger.info("[Interviewer → Stakeholder] %s", message)
 
         return ToolResult(
             observation=f"Question sent: {message}",
             state_updates={"conversation": conversation},
-            should_return=True,  # yield to EndUser
+            should_return=True,   # yield to EndUser
         )
 
     # ------------------------------------------------------------------
     def _tool_write_interview_record(
         self,
-        gaps: List[str] = None,
-        notes: str = "",
-        state: Dict = None,
+        gaps:  List[str] = None,
+        notes: str       = "",
+        state: Dict      = None,
         **_,
     ) -> ToolResult:
         """
@@ -468,16 +450,16 @@ Internal Chain of Thought (visible to you only):
         gaps = gaps or []
 
         record: Dict[str, Any] = {
-            "session_id": state.get("session_id", str(uuid.uuid4())),
-            "project_description": state.get("project_description", ""),
-            "conversation": conversation,
-            "total_turns": state.get("turn_count", len(conversation) // 2),
+            "session_id":              state.get("session_id", str(uuid.uuid4())),
+            "project_description":     state.get("project_description", ""),
+            "conversation":            conversation,
+            "total_turns":             state.get("turn_count", len(conversation) // 2),
             "requirements_identified": requirements,
-            "gaps_identified": gaps,
-            "notes": notes,
-            "completeness_score": self._assess_completeness(requirements),
-            "created_at": datetime.now().isoformat(),
-            "status": "completed",
+            "gaps_identified":         gaps,
+            "notes":                   notes,
+            "completeness_score":      self._assess_completeness(requirements),
+            "created_at":              datetime.now().isoformat(),
+            "status":                  "completed",
         }
 
         artifacts = dict(state.get("artifacts") or {})
@@ -486,8 +468,7 @@ Internal Chain of Thought (visible to you only):
         logger.info(
             "[Interviewer] Interview finalised — %d requirements, "
             "%d gaps, completeness=%.2f.",
-            len(requirements),
-            len(gaps),
+            len(requirements), len(gaps),
             record["completeness_score"],
         )
 
@@ -501,7 +482,7 @@ Internal Chain of Thought (visible to you only):
                 f"{len(gaps)} gaps."
             ),
             state_updates={
-                "artifacts": artifacts,
+                "artifacts":          artifacts,
                 "interview_complete": True,
             },
             should_return=True,
@@ -521,12 +502,10 @@ Internal Chain of Thought (visible to you only):
         """
         if not requirements:
             return 0.0
-        has_functional = any(r.get("type") == "functional" for r in requirements)
-        has_non_functional = any(
-            r.get("type") == "non_functional" for r in requirements
-        )
+        has_functional     = any(r.get("type") == "functional"     for r in requirements)
+        has_non_functional = any(r.get("type") == "non_functional"  for r in requirements)
         score = (
-            _W_FUNCTIONAL * has_functional
+            _W_FUNCTIONAL     * has_functional
             + _W_NON_FUNCTIONAL * has_non_functional
             + min(_W_QUANTITY, len(requirements) / 30)
         )
@@ -535,25 +514,8 @@ Internal Chain of Thought (visible to you only):
     @staticmethod
     def _word_overlap(a: str, b: str) -> float:
         """Jaccard similarity of non-trivial word sets."""
-        stop = {
-            "the",
-            "a",
-            "an",
-            "is",
-            "are",
-            "be",
-            "to",
-            "of",
-            "and",
-            "or",
-            "that",
-            "it",
-            "for",
-            "in",
-            "on",
-            "with",
-            "as",
-        }
+        stop = {"the", "a", "an", "is", "are", "be", "to", "of", "and",
+                "or", "that", "it", "for", "in", "on", "with", "as"}
         wa = set(a.lower().split()) - stop
         wb = set(b.lower().split()) - stop
         if not wa or not wb:
@@ -577,16 +539,16 @@ Internal Chain of Thought (visible to you only):
         conflict_with = None
 
         for existing in draft:
-            ex_desc = existing.get("description", "")
-            ex_id = existing.get("id", "?")
-            overlap = InterviewerAgent._word_overlap(new_desc, ex_desc)
+            ex_desc  = existing.get("description", "")
+            ex_id    = existing.get("id", "?")
+            overlap  = InterviewerAgent._word_overlap(new_desc, ex_desc)
 
             if overlap > 0.55:
                 # Check for negation → likely a conflict
                 new_tokens = set(new_desc.lower().split())
-                ex_tokens = set(ex_desc.lower().split())
+                ex_tokens  = set(ex_desc.lower().split())
                 new_has_neg = bool({"not", "never", "no", "without"} & new_tokens)
-                ex_has_neg = bool({"not", "never", "no", "without"} & ex_tokens)
+                ex_has_neg  = bool({"not", "never", "no", "without"} & ex_tokens)
 
                 if new_has_neg != ex_has_neg:
                     conflict_with = conflict_with or ex_id
@@ -594,7 +556,7 @@ Internal Chain of Thought (visible to you only):
                     duplicate_of = duplicate_of or ex_id
 
             if duplicate_of and conflict_with:
-                break  # found both; no need to scan further
+                break   # found both; no need to scan further
 
         return duplicate_of, conflict_with
 
@@ -634,30 +596,27 @@ Internal Chain of Thought (visible to you only):
         enough = completeness >= self._completeness_threshold
 
         # ── Build transcript ──────────────────────────────────────────────
-        transcript = (
-            "\n".join(
-                f"[{i}] {'Interviewer' if t['role'] == 'interviewer' else 'Stakeholder'}: "
-                f"{t['content']}"
-                for i, t in enumerate(conversation)
-            )
-            or "(interview has not started yet)"
-        )
+        transcript = "\n".join(
+            f"[{i}] {'Interviewer' if t['role'] == 'interviewer' else 'Stakeholder'}: "
+            f"{t['content']}"
+            for i, t in enumerate(conversation)
+        ) or "(interview has not started yet)"
 
         # ── Last stakeholder utterance ────────────────────────────────────
         last_stakeholder = next(
-            (t["content"] for t in reversed(conversation) if t["role"] == "enduser"),
+            (t["content"] for t in reversed(conversation)
+             if t["role"] == "enduser"),
             None,
         )
         last_turn_index = len(conversation) - 1
 
         # ── Draft summary ─────────────────────────────────────────────────
         draft_summary = (
-            "\n".join(
-                f"  [{r.get('id', '?')}] ({r.get('type', '?')}, "
-                f"{r.get('status', '?')}) {r.get('description', '')[:80]}"
-                for r in draft[-10:]
-            )
-            or "  (no requirements captured yet)"
+                "\n".join(
+                    f"  [{r.get('id', '?')}] ({r.get('type', '?')}, "
+                    f"{r.get('status', '?')}) {r.get('description', '')[:80]}"
+                    for r in draft[-10:]
+                ) or "  (no requirements captured yet)"
         )
 
         # ── Stopping hint ─────────────────────────────────────────────────
@@ -686,15 +645,17 @@ Internal Chain of Thought (visible to you only):
         # This is necessary because react()'s action_repeat_counts resets
         # on every process() call and cannot track cross-turn repetition.
         recent_interviewer_questions = [
-            t["content"] for t in conversation if t["role"] == "interviewer"
-        ][-5:]
+                                           t["content"]
+                                           for t in conversation
+                                           if t["role"] == "interviewer"
+                                       ][-5:]
 
         if recent_interviewer_questions:
             repeat_guard = (
-                "QUESTIONS ALREADY SENT (do NOT ask these again — "
-                "the stakeholder has already answered them):\n"
-                + "\n".join(f"  • {q[:120]}" for q in recent_interviewer_questions)
-                + "\nYou MUST ask about a DIFFERENT topic or aspect."
+                    "QUESTIONS ALREADY SENT (do NOT ask these again — "
+                    "the stakeholder has already answered them):\n"
+                    + "\n".join(f"  • {q[:120]}" for q in recent_interviewer_questions)
+                    + "\nYou MUST ask about a DIFFERENT topic or aspect."
             )
         else:
             repeat_guard = ""
@@ -704,7 +665,7 @@ Internal Chain of Thought (visible to you only):
             extraction_guidance = (
                 "STEP 1 — MANDATORY: call 'update_requirements' RIGHT NOW.\n"
                 f"  The stakeholder just replied at conversation index {last_turn_index}:\n"
-                f'  "{last_stakeholder[:200]}"\n'
+                f"  \"{last_stakeholder[:200]}\"\n"
                 "  Extract EVERY requirement you can find in that reply.\n"
                 "  Include functional AND non-functional requirements "
                 "(performance, security, reliability, usability).\n"
@@ -728,28 +689,28 @@ Internal Chain of Thought (visible to you only):
             )
 
         task = (
-            f"{self.PROFILE}\n\n"
-            "━━━━━━━━━━━━━━  PROJECT  ━━━━━━━━━━━━━━\n"
-            f"{state.get('project_description', 'not provided')}\n\n"
-            "━━━━━━━━━━━━━━  CONVERSATION SO FAR  ━━━━━━━━━━━━━━\n"
-            f"{transcript}\n\n"
-            "━━━━━━━━━━━━━━  REQUIREMENTS DRAFT (latest 10)  ━━━━━━━━━━━━━━\n"
-            f"{draft_summary}\n\n"
-            "━━━━━━━━━━━━━━  STATUS  ━━━━━━━━━━━━━━\n"
-            f"{stop_hint}\n\n"
-            + (
-                "━━━━━━━━━━━━━━  REPEAT GUARD  ━━━━━━━━━━━━━━\n" f"{repeat_guard}\n\n"
-                if repeat_guard
-                else ""
-            )
-            + "━━━━━━━━━━━━━━  YOUR NEXT ACTION  ━━━━━━━━━━━━━━\n"
-            f"{extraction_guidance}\n"
-            "RULES:\n"
-            "• ONE tool per ReAct step.\n"
-            "• 'send_message': ONE question only. No compound questions.\n"
-            "• 'update_requirements': include source_turn index for traceability.\n"
-            "• 'write_interview_record': do NOT pass a requirements list;\n"
-            "  the draft is read automatically. Pass only gaps and notes.\n"
+                f"{self.PROFILE}\n\n"
+                "━━━━━━━━━━━━━━  PROJECT  ━━━━━━━━━━━━━━\n"
+                f"{state.get('project_description', 'not provided')}\n\n"
+                "━━━━━━━━━━━━━━  CONVERSATION SO FAR  ━━━━━━━━━━━━━━\n"
+                f"{transcript}\n\n"
+                "━━━━━━━━━━━━━━  REQUIREMENTS DRAFT (latest 10)  ━━━━━━━━━━━━━━\n"
+                f"{draft_summary}\n\n"
+                "━━━━━━━━━━━━━━  STATUS  ━━━━━━━━━━━━━━\n"
+                f"{stop_hint}\n\n"
+                + (
+                    "━━━━━━━━━━━━━━  REPEAT GUARD  ━━━━━━━━━━━━━━\n"
+                    f"{repeat_guard}\n\n"
+                    if repeat_guard else ""
+                )
+                + "━━━━━━━━━━━━━━  YOUR NEXT ACTION  ━━━━━━━━━━━━━━\n"
+                  f"{extraction_guidance}\n"
+                  "RULES:\n"
+                  "• ONE tool per ReAct step.\n"
+                  "• 'send_message': ONE question only. No compound questions.\n"
+                  "• 'update_requirements': include source_turn index for traceability.\n"
+                  "• 'write_interview_record': do NOT pass a requirements list;\n"
+                  "  the draft is read automatically. Pass only gaps and notes.\n"
         )
 
         return self.react(state, task)

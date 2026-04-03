@@ -29,7 +29,7 @@ Import-time side effects:
     imported lazily inside the methods that first need them so that a bare
     ``from src.modules.knowledge import KnowledgeModule`` has zero runtime cost.
 """
-import os
+from enum import Enum
 import logging
 import threading
 from pathlib import Path
@@ -37,11 +37,24 @@ from typing import Any, Dict, List, Optional, Set
 
 import yaml
 
-from ..config.config_manager import KnowledgeType, get_config
+from ..config.config_manager import get_config
 from ..agent.llm.factory import LLMFactory
 from ..orchestrator import ProcessPhase
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# KnowledgeType — exported for knowledge_module.py
+# ---------------------------------------------------------------------------
+
+class KnowledgeType(Enum):
+    """Types of knowledge files recognized by KnowledgeModule."""
+    DOMAIN_KNOWLEDGE = "domain_knowledge"
+    METHODOLOGY      = "methodology"
+    STANDARDS        = "standards"
+    TEMPLATES        = "templates"
+    STRATEGIES       = "strategies"
+
 
 # ---------------------------------------------------------------------------
 # Phase -> knowledge-type coverage (iReDev paper, Table 1)
@@ -91,7 +104,7 @@ class KnowledgeModule:
     directly.
 
     On first call to get_instance():
-      1. Loads config from ``get_config().knowledge_base`` (defaults applied).
+      1. Loads config from ``get_config()`` (``iredev.knowledge_base`` section).
       2. Resolves the PostgreSQL connection string (env → config → default).
       3. Calls ``LLMFactory.create_embeddings()`` to build the embeddings model.
       4. Imports and initializes PGVector (lazy).
@@ -111,7 +124,12 @@ class KnowledgeModule:
     _lock = threading.Lock()
 
     def __init__(self, pg_conn_str: Optional[str] = None) -> None:
-        self._config: Dict[str, Any] = get_config().knowledge_base
+        config = get_config()
+        self._config: Dict[str, Any] = (
+            config.get("iredev", {}).get("knowledge_base")
+            or config.get("knowledge_base")
+            or {}
+        )
 
         # pg_conn_str resolution order (see class docstring)
         self._pg_conn_str = (
@@ -130,8 +148,8 @@ class KnowledgeModule:
         _project_root = Path(__file__).resolve().parent.parent.parent
 
         def _resolve_path(cfg_key: str, default: str) -> Path:
-            raw = self._config.get(cfg_key, default)
-            p   = Path(raw)
+            config = self._config.get(cfg_key, default)
+            p   = Path(config)
             return p if p.is_absolute() else _project_root / p
 
         self._type_paths: Dict[KnowledgeType, Path] = {

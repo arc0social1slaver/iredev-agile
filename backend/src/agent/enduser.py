@@ -34,45 +34,42 @@ class EndUserAgent(BaseAgent):
     """
 
     def __init__(self, config_path: Optional[str] = None):
-        super().__init__(name="enduser", config_path=config_path)
+        super().__init__(name="enduser")
 
         agent_cfg = self._raw_config.get("agents", {}).get("enduser", {})
-        custom = agent_cfg.get("custom_params", {})
+        custom    = agent_cfg.get("custom_params", {})
         self._persona: str = custom.get("persona", "product manager")
 
     # -- tool registration -------------------------------------------------
 
     def _register_tools(self) -> None:
-        self.register_tool(
-            Tool(
-                name="search_knowledge",
-                description=(
-                    "Look up domain knowledge or product patterns to enrich your response. "
-                    'Input: {"query": "<text>"}'
-                ),
-                func=self._tool_search_knowledge,
-            )
-        )
-        self.register_tool(
-            Tool(
-                name="respond",
-                description=(
-                    "Post your reply to the interviewer. "
-                    "Be specific, realistic, and in character as the stakeholder. "
-                    'Input: {"message": "<your answer>"}'
-                ),
-                func=self._tool_respond,
-            )
-        )
+        self.register_tool(Tool(
+            name="search_knowledge",
+            description=(
+                "Look up domain knowledge or product patterns to enrich your response. "
+                "Input: {\"query\": \"<text>\"}"
+            ),
+            func=self._tool_search_knowledge,
+        ))
+        self.register_tool(Tool(
+            name="respond",
+            description=(
+                "Post your reply to the interviewer. "
+                "Be specific, realistic, and in character as the stakeholder. "
+                "Input: {\"message\": \"<your answer>\"}"
+            ),
+            func=self._tool_respond,
+        ))
 
     # -- tools -------------------------------------------------------------
 
-    def _tool_search_knowledge(self, query: str, state: Dict = None, **_) -> ToolResult:
+    def _tool_search_knowledge(
+        self, query: str, state: Dict = None, **_
+    ) -> ToolResult:
         if self.knowledge is None:
             return ToolResult(observation="Knowledge base not available.")
         try:
             from ..orchestrator.state import ProcessPhase
-
             docs = self.knowledge.retrieve(query, phase=ProcessPhase.ELICITATION, k=3)
             if not docs:
                 return ToolResult(observation="No relevant knowledge found.")
@@ -86,7 +83,7 @@ class EndUserAgent(BaseAgent):
 
     def _tool_respond(
         self,
-        message: str = "",  # default prevents crash when LLM omits the key
+        message: str = "",   # default prevents crash when LLM omits the key
         state: Dict = None,
         **_,
     ) -> ToolResult:
@@ -99,13 +96,11 @@ class EndUserAgent(BaseAgent):
             message = "(no response provided)"
 
         conversation = list(state.get("conversation") or [])
-        conversation.append(
-            {
-                "role": "enduser",
-                "content": message,
-                "timestamp": datetime.now().isoformat(),
-            }
-        )
+        conversation.append({
+            "role":      "enduser",
+            "content":   message,
+            "timestamp": datetime.now().isoformat(),
+        })
         turn_count = (state.get("turn_count") or 0) + 1
 
         logger.info("[Stakeholder -> Interviewer] %s", message)
@@ -116,7 +111,7 @@ class EndUserAgent(BaseAgent):
             observation=f"Response posted: {message}",
             state_updates={
                 "conversation": conversation,
-                "turn_count": turn_count,
+                "turn_count":   turn_count,
             },
             should_return=True,
         )
@@ -133,26 +128,18 @@ class EndUserAgent(BaseAgent):
         conversation: List[Dict] = state.get("conversation") or []
 
         last_question = next(
-            (
-                t["content"]
-                for t in reversed(conversation)
-                if t["role"] == "interviewer"
-            ),
+            (t["content"] for t in reversed(conversation)
+             if t["role"] == "interviewer"),
             "(no question yet)",
         )
 
-        prior = [
-            t
-            for t in conversation
-            if not (t["role"] == "interviewer" and t["content"] == last_question)
-        ]
-        transcript = (
-            "\n".join(
-                f"{'Interviewer' if t['role'] == 'interviewer' else 'You'}: {t['content']}"
-                for t in prior[-10:]
-            )
-            or "(beginning of conversation)"
-        )
+        prior = [t for t in conversation if not (
+            t["role"] == "interviewer" and t["content"] == last_question
+        )]
+        transcript = "\n".join(
+            f"{'Interviewer' if t['role'] == 'interviewer' else 'You'}: {t['content']}"
+            for t in prior[-10:]
+        ) or "(beginning of conversation)"
 
         task = (
             f"You are playing the role of a {self._persona} being interviewed "
@@ -163,7 +150,7 @@ class EndUserAgent(BaseAgent):
             "Instructions:\n"
             "- You MAY use 'search_knowledge' once if you need domain context.\n"
             "- You MUST call 'respond' with your answer to end this turn.\n"
-            '  The \'respond\' tool requires exactly this JSON: {"message": "<your answer>"}\n'
+            "  The 'respond' tool requires exactly this JSON: {\"message\": \"<your answer>\"}\n"
             "- Be specific, realistic, and consistent with prior answers.\n"
             "- Speak as the stakeholder -- do NOT acknowledge you are an AI."
         )

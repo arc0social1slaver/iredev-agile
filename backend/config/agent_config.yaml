@@ -1,5 +1,11 @@
 # =============================================================================
-# agent_config.yaml  –  DocAgent / iReDev agent configuration
+# agent_config.yaml  –  Deployment / environment configuration
+#
+# PURPOSE: User-managed overrides — keep this file gitignored (or in a
+#          separate secrets store).  It controls which LLM provider and model
+#          to use, API tier limits, flow tuning, and optional web-search.
+#          Framework behaviour (agents, knowledge base, …) lives in
+#          iredev_config.yaml and should not be edited here.
 #
 # Secrets (API keys, connection strings) are NOT stored here.
 # Set them in your .env file (see .env.example).
@@ -7,15 +13,15 @@
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# LLM configuration
-# Uncomment exactly ONE provider block.
+# LLM provider
+# Uncomment exactly ONE option block.
 # ---------------------------------------------------------------------------
 llm:
 
   # ── Option 1: Claude (Anthropic) ─────────────────────────────────────────
   # type: "claude"
   # api_key: ${ANTHROPIC_API_KEY}
-  # model: "claude-3-5-haiku-latest"   # claude-3-5-sonnet, claude-3-opus, …
+  # model: "claude-3-5-haiku-latest"   # claude-3-5-sonnet | claude-3-opus | …
   # temperature: 0.1
   # max_output_tokens: 4096
   # max_input_tokens: 100000
@@ -23,7 +29,7 @@ llm:
   # ── Option 2: OpenAI ─────────────────────────────────────────────────────
   type: "openai"
   api_key: ${OPENAI_API_KEY}
-  model: "gpt-4o-mini"                # gpt-4o, gpt-4-turbo, gpt-3.5-turbo, …
+  model: "gpt-4o-mini"                # gpt-4o | gpt-4-turbo | gpt-3.5-turbo | …
   base_url: ${OPENAI_BASE_URL}
   temperature: 0.1
   max_output_tokens: 4096
@@ -49,7 +55,9 @@ llm:
   # max_input_tokens: 32000
 
 # ---------------------------------------------------------------------------
-# Rate limits  (adjust to your API tier)
+# Rate limits
+# Adjust these to match your API subscription tier.
+# Only the block matching the active llm.type above is used at runtime.
 # ---------------------------------------------------------------------------
 rate_limits:
 
@@ -83,6 +91,7 @@ rate_limits:
 
 # ---------------------------------------------------------------------------
 # Flow control
+# Fine-tune pipeline behaviour without touching framework defaults.
 # ---------------------------------------------------------------------------
 flow_control:
   max_reader_search_attempts: 2
@@ -90,13 +99,8 @@ flow_control:
   status_sleep_time: 1
 
 # ---------------------------------------------------------------------------
-# Docstring generation
-# ---------------------------------------------------------------------------
-docstring_options:
-  overwrite_docstrings: false
-
-# ---------------------------------------------------------------------------
-# Perplexity (web-search capability)
+# Perplexity  (optional web-search capability)
+# Remove or comment out this block to disable web search entirely.
 # ---------------------------------------------------------------------------
 perplexity:
   api_key: ${PERPLEXITY_API_KEY}

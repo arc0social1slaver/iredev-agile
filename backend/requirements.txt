@@ -14,7 +14,7 @@ flask-sock==0.7.0
 # AI integration dependencies
 openai 
 anthropic
-google-generativeai
+google-genai
 huggingface-hub
 torch
 tiktoken
@@ -22,7 +22,7 @@ tiktoken
 # Langchain, Langgraph, and related dependencies
 langchain
 langchain-community
-langchain-google-genai
+langchain-google-genai>=0.2.0
 langchain-huggingface
 langchain-openai
 langchain-anthropic

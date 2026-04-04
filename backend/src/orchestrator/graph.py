@@ -25,7 +25,10 @@ TIER 2 – structural (SAFETY NET only):
 """
 
 from __future__ import annotations
-
+import json
+from pathlib import Path
+import shutil
+from datetime import datetime
 import logging
 from functools import lru_cache
 from typing import Any, Dict, Optional
@@ -96,23 +99,54 @@ def sprint_agent_turn_fn(state: WorkflowState) -> Dict[str, Any]:
 # ── Store sync ────────────────────────────────────────────────────────────────
 
 def _sync_artifacts_to_store(
-    state: WorkflowState,
-    updates: Dict[str, Any],
+        state: WorkflowState,
+        updates: Dict[str, Any],
 ) -> None:
     new_artifacts: Dict[str, Any] = updates.get("artifacts") or {}
     if not new_artifacts:
         return
 
     session_id = state.get("session_id", "default")
-    store      = _default_store()
-    namespace  = ("artifacts", session_id)
-    existing   = {item.key for item in store.search(namespace)}
+    store = _default_store()
+    namespace = ("artifacts", session_id)
+
+    existing_items = {item.key: item.value.get("content") for item in store.search(namespace)}
+
+    base_dir = Path("../artifacts")
+    latest_dir = base_dir / "artifact"
+    versions_dir = base_dir / "versions"
+
+    latest_dir.mkdir(parents=True, exist_ok=True)
+    versions_dir.mkdir(parents=True, exist_ok=True)
 
     for name, content in new_artifacts.items():
-        if name not in existing:
+        is_new_or_updated = False
+        if name not in existing_items:
+            is_new_or_updated = True
+        elif existing_items[name] != content:
+            is_new_or_updated = True
+
+        if is_new_or_updated:
             store.put(namespace, name, {"content": content})
             logger.info("Store: persisted '%s' for session '%s'.", name, session_id)
 
+            file_name = f"{name}_{session_id}.json"
+            latest_file_path = latest_dir / file_name
+
+            if latest_file_path.exists():
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                version_file_name = f"{name}_{session_id}_v{timestamp}.json"
+                version_file_path = versions_dir / version_file_name
+
+                shutil.move(str(latest_file_path), str(version_file_path))
+                logger.info("File: Moved older version of '%s' to versions folder.", name)
+
+            try:
+                with open(latest_file_path, "w", encoding="utf-8") as f:
+                    json.dump(content, f, ensure_ascii=False, indent=2)
+                logger.info("File: Saved latest artifact '%s' to %s", name, latest_file_path)
+            except Exception as e:
+                logger.error("File: Failed to save artifact '%s': %s", name, e)
 
 def get_artifact_from_store(session_id: str, artifact_name: str) -> Optional[Any]:
     store = _default_store()

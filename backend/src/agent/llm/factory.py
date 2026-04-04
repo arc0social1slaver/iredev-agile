@@ -5,13 +5,13 @@ from langchain_core.embeddings import Embeddings
 
 from .rate_limiter import AdvancedTokenRateLimiter
 from .callback_handler import TokenTrackingCallback
-from ...config.config_manager import get_raw
+from ...config.config_manager import get_config
 
 
 class LLMFactory:
     """Creates LangChain chat-model and embeddings instances from config.
 
-    Config loading is fully delegated to ConfigManager (via ``get_raw``).
+    Config loading is fully delegated to ConfigManager (via ``get_config``).
     All ${ENV_VAR} placeholders in the YAML have already been expanded by
     the time any method here is called.
     """
@@ -37,13 +37,11 @@ class LLMFactory:
         rate_limits: Dict[str, Any] = config.get("rate_limits") or {}
         if not rate_limits:
             try:
-                rate_limits = get_raw().get("rate_limits", {}).get(provider, {})
+                rate_limits = get_config().get("rate_limits", {}).get(provider, {})
             except Exception:
                 pass
 
-        limiter = AdvancedTokenRateLimiter.from_config(
-            provider=provider, config=rate_limits
-        )
+        limiter = AdvancedTokenRateLimiter.from_config(provider=provider, config=rate_limits)
         callback = TokenTrackingCallback(limiter)
 
         common = {
@@ -107,7 +105,6 @@ class LLMFactory:
 
         if provider in ("google", "gemini"):
             from langchain_google_genai import GoogleGenerativeAIEmbeddings
-
             return GoogleGenerativeAIEmbeddings(
                 model=model,
                 api_key=config.get("api_key"),
@@ -115,7 +112,6 @@ class LLMFactory:
 
         if provider == "openai":
             from langchain_openai import OpenAIEmbeddings
-
             kwargs: Dict[str, Any] = {
                 "model": model,
                 "api_key": config.get("api_key"),
@@ -132,7 +128,6 @@ class LLMFactory:
 
         if provider == "huggingface":
             from langchain_huggingface import HuggingFaceEmbeddings
-
             return HuggingFaceEmbeddings(model_name=model)
 
         raise ValueError(f"Unsupported embedding provider: '{provider}'")

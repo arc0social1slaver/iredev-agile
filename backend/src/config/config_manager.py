@@ -1,34 +1,34 @@
 """
-config_manager.py — single config hub for iReDev.
+Configuration management system for iReDev framework.
 
-Responsibilities
-----------------
-1. Load the .env file into the process environment exactly once at import time.
-2. Read agent_config.yaml and expand ${ENV_VAR} placeholders.
-3. Provide sensible defaults for knowledge_base (including embedding) so the
-   system works out-of-the-box when the YAML block is absent or incomplete.
-4. Expose three public functions for other modules:
+File responsibilities
+---------------------
+iredev_config.yaml  (base layer, committed to VCS)
+    Framework-level settings that rarely change between deployments:
+    agent definitions, knowledge-base topology, human-in-the-loop gates,
+    artifact storage, and docstring options.
 
-   get_raw(config_path, force_reload)  -> Dict[str, Any]
-       Expanded YAML as a plain dict. Used by LLMFactory and BaseAgent.
+agent_config.yaml  (override layer, gitignored / user-managed)
+    Deployment/environment choices that vary per user or per machine:
+    LLM provider & model, API tier rate limits, flow-control tuning,
+    and optional Perplexity web-search credentials.
 
-   get_config(force_reload)            -> iReDevConfig
-       Typed wrapper with defaults applied. Used by KnowledgeModule.
+Load order (later layer wins)
+------------------------------
+  1. iredev_config.yaml  — framework defaults / fallback
+  2. agent_config.yaml   — user overrides (priority)
 
-   get_config_manager(config_path)     -> ConfigManager
-       Access / create the process-level singleton.
-
-5. Export KnowledgeType enum used by KnowledgeModule.
+Both files are deep-merged so agent_config only needs to specify the keys
+it overrides.  A missing or broken file is treated as {} and the system
+always returns something usable.
 """
 
 import os
 import re
 import logging
 import yaml
-from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -45,70 +45,6 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# KnowledgeType — exported for knowledge_module.py
-# ---------------------------------------------------------------------------
-
-class KnowledgeType(Enum):
-    """Types of knowledge files recognised by KnowledgeModule."""
-    DOMAIN_KNOWLEDGE = "domain_knowledge"
-    METHODOLOGY      = "methodology"
-    STANDARDS        = "standards"
-    TEMPLATES        = "templates"
-    STRATEGIES       = "strategies"
-
-
-# ---------------------------------------------------------------------------
-# Typed config — only the slice KnowledgeModule actually reads
-# ---------------------------------------------------------------------------
-
-@dataclass
-class iReDevConfig:
-    """Typed view over the raw YAML with defaults applied."""
-    knowledge_base: Dict[str, Any] = field(default_factory=dict)
-
-    # ------------------------------------------------------------------
-    # Default knowledge_base block
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def default_knowledge_base() -> Dict[str, Any]:
-        """Return a complete knowledge_base config with sensible defaults.
-
-        Embedding defaults to the OpenAI-compatible Ollama endpoint so the
-        system works with a local model out of the box.  Override any key in
-        the YAML knowledge_base block to customise.
-
-        Env vars consulted (loaded from .env by the time this runs):
-          OLLAMA_BASE_URL   — Ollama API base  (default: http://localhost:11434/v1)
-          OPENAI_API_KEY    — used when type=openai pointing at OpenAI cloud
-          OPENAI_BASE_URL   — alternative OpenAI-compatible base URL
-        """
-        return {
-            # Knowledge file paths (resolved relative to project root)
-            "base_path":              "knowledge",
-            "domain_knowledge_path":  "knowledge/domains",
-            "methodology_path":       "knowledge/methodologies",
-            "standards_path":         "knowledge/standards",
-            "templates_path":         "knowledge/templates",
-            "strategies_path":        "knowledge/strategies",
-            # Chunking
-            "chunk_size":    800,
-            "chunk_overlap": 100,
-            # Vector store
-            "collection_name": "iredev_knowledge",
-            # Embedding — Ollama local by default; override in YAML for cloud
-            "embedding": {
-                "type":     "openai",            # openai-compatible protocol
-                "model":    "nomic-embed-text",  # default local model
-                "api_key":  "EMPTY",             # Ollama ignores the key
-                "base_url": os.environ.get(
-                    "OLLAMA_BASE_URL", "http://localhost:11434/v1"
-                ),
-            },
-        }
-
-
-# ---------------------------------------------------------------------------
 # ConfigurationError
 # ---------------------------------------------------------------------------
 
@@ -121,191 +57,252 @@ class ConfigurationError(Exception):
 # ---------------------------------------------------------------------------
 
 class ConfigManager:
-    """Reads agent_config.yaml, expands env-var placeholders, caches results."""
+    """Loads config by merging two YAML files.
 
-    def __init__(self, config_path: Optional[str] = None) -> None:
-        self.config_path: str = config_path or self._find_config_file()
-        self._raw_cache:  Optional[Dict[str, Any]] = None
-        self._config:     Optional[iReDevConfig]   = None
+    Layer 1 — ``iredev_config.yaml`` (base, committed to VCS)
+        Framework behaviour: agent definitions, knowledge-base topology,
+        human-in-the-loop review gates, artifact storage, docstring options.
+        Edit this when the framework itself changes.
+
+    Layer 2 — ``agent_config.yaml`` (override, user-managed / gitignored)
+        Deployment choices: LLM provider & model, API tier rate limits,
+        flow-control tuning, Perplexity credentials.
+        Edit this when you switch providers or tune for your API tier.
+
+    Deep-merge rules
+    ----------------
+    - Dict values are merged key-by-key (layer 2 wins on conflicts).
+    - Non-dict values (strings, lists, numbers) are replaced wholesale
+      by the layer-2 value.
+    - A missing or unparseable file is treated as ``{}``; the system
+      always returns something usable.
+
+    Env-var placeholders (``${VAR}``) in both files are expanded before
+    parsing.  Unresolved placeholders are replaced with ``None``.
+    """
+
+    _AGENT_CANDIDATES: List[str] = [
+        "config/agent_config.yaml",
+        "agent_config.yaml",
+    ]
+    _IREDEV_CANDIDATES: List[str] = [
+        "config/iredev_config.yaml",
+        "iredev_config.yaml",
+        os.path.expanduser("~/.iredev/config.yaml"),
+    ]
+
+    def __init__(
+        self,
+        agent_config_path:  Optional[str] = None,
+        iredev_config_path: Optional[str] = None,
+        # Legacy single-path arg — treated as agent_config_path
+        config_path:        Optional[str] = None,
+    ) -> None:
+        self._agent_path: Optional[str] = (
+            agent_config_path or config_path
+            or self._find_file(self._AGENT_CANDIDATES)
+        )
+        self._iredev_path: Optional[str] = (
+            iredev_config_path or self._find_file(self._IREDEV_CANDIDATES)
+        )
+        self._cache: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------------ #
     #  Path discovery                                                      #
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _find_config_file() -> str:
-        candidates = [
-            "config/iredev_config.yaml",
-            "config/agent_config.yaml",
-            "iredev_config.yaml",
-            os.path.expanduser("~/.iredev/config.yaml"),
-        ]
+    def _find_file(candidates: List[str]) -> Optional[str]:
+        """Return the first existing path from *candidates*, or ``None``."""
         for path in candidates:
             if os.path.exists(path):
                 return path
-        return "config/iredev_config.yaml"
+        return None
 
     # ------------------------------------------------------------------ #
-    #  Raw YAML — with env-var expansion                                   #
+    #  YAML helpers                                                        #
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _read_and_expand(path: str) -> Dict[str, Any]:
-        """Read *path*, substitute ${VAR}/$VAR placeholders, parse YAML.
+    def _clean_unexpanded_vars(data: Any) -> Any:
+        """Replace unresolved ``${VAR}`` placeholders with ``None``."""
+        if isinstance(data, dict):
+            return {k: ConfigManager._clean_unexpanded_vars(v) for k, v in data.items()}
+        if isinstance(data, list):
+            return [ConfigManager._clean_unexpanded_vars(v) for v in data]
+        if isinstance(data, str) and re.match(r"^\$\{.*\}$", data.strip()):
+            return None
+        return data
 
-        Unset variables are left as the literal string ``${VAR}`` so missing
-        keys surface as obvious sentinel values rather than silent None lookups.
+    @staticmethod
+    def _read_and_expand(path: str) -> Dict[str, Any]:
+        """Read *path*, expand ``${VAR}`` placeholders, parse YAML.
 
         Args:
-            path: Path to the YAML config file.
+            path: Path to the YAML file.
 
         Returns:
-            Parsed dict with all environment-variable placeholders expanded.
+            Parsed dict with env-var placeholders expanded and unresolved
+            placeholders replaced with ``None``.
 
         Raises:
             FileNotFoundError: If *path* does not exist.
+            yaml.YAMLError: If the file cannot be parsed.
         """
         p = Path(path)
         if not p.exists():
             raise FileNotFoundError(f"Config not found: {path}")
         raw_text      = p.read_text(encoding="utf-8")
         expanded_text = os.path.expandvars(raw_text)
-        return yaml.safe_load(expanded_text) or {}
+        raw_dict      = yaml.safe_load(expanded_text) or {}
+        return ConfigManager._clean_unexpanded_vars(raw_dict)
+
+    @staticmethod
+    def _try_load(path: Optional[str], label: str) -> Dict[str, Any]:
+        """Attempt to load *path*; return ``{}`` and log a warning on failure."""
+        if not path:
+            logger.debug("[config_manager] No %s found; skipping.", label)
+            return {}
+        try:
+            data = ConfigManager._read_and_expand(path)
+            logger.debug("[config_manager] Loaded %s from '%s'.", label, path)
+            return data
+        except FileNotFoundError:
+            logger.warning(
+                "[config_manager] %s not found at '%s'; skipping.", label, path
+            )
+        except yaml.YAMLError as exc:
+            logger.warning(
+                "[config_manager] %s at '%s' is invalid YAML (%s); falling back.",
+                label, path, exc,
+            )
+        except Exception as exc:  # pragma: no cover
+            logger.warning(
+                "[config_manager] Failed to load %s at '%s': %s; falling back.",
+                label, path, exc,
+            )
+        return {}
+
+    # ------------------------------------------------------------------ #
+    #  Deep merge                                                          #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+        """Recursively merge *override* into *base* (non-destructive).
+
+        Dict values are merged key-by-key; all other types are replaced
+        wholesale by the override value.
+
+        Args:
+            base:     Framework config layer (iredev_config.yaml).
+            override: User/deployment config layer (agent_config.yaml).
+
+        Returns:
+            New merged dict — neither input is mutated.
+        """
+        result = dict(base)
+        for key, override_val in override.items():
+            base_val = result.get(key)
+            if isinstance(base_val, dict) and isinstance(override_val, dict):
+                result[key] = ConfigManager._deep_merge(base_val, override_val)
+            else:
+                result[key] = override_val
+        return result
+
+    # ------------------------------------------------------------------ #
+    #  Public API                                                          #
+    # ------------------------------------------------------------------ #
 
     def get_raw(self, force_reload: bool = False) -> Dict[str, Any]:
-        """Return the YAML config as a plain dict with env vars expanded.
+        """Return the merged config as a plain dict with env vars expanded.
 
-        The result is cached. Other modules (LLMFactory, BaseAgent) call this
-        to access ``llm``, ``agent_llms``, ``rate_limits``, ``agents``, etc.
-
-        Args:
-            force_reload: Discard cached result and re-read from disk.
-
-        Returns:
-            Expanded YAML dict (empty dict when the file does not exist).
-        """
-        if self._raw_cache is None or force_reload:
-            try:
-                self._raw_cache = self._read_and_expand(self.config_path)
-            except FileNotFoundError:
-                logger.warning(
-                    "[config_manager] Config not found at '%s'. Using empty dict.",
-                    self.config_path,
-                )
-                self._raw_cache = {}
-        return self._raw_cache
-
-    # ------------------------------------------------------------------ #
-    #  Typed config — defaults merged with YAML values                     #
-    # ------------------------------------------------------------------ #
-
-    def load_config(self, force_reload: bool = False) -> iReDevConfig:
-        """Return a typed iReDevConfig with defaults applied.
-
-        Merge strategy: defaults first, then YAML values override them.
-        Nested dicts (e.g. ``embedding``) are merged key-by-key so a partial
-        YAML block only overrides the keys it specifies.
+        Load order:
+          1. ``iredev_config.yaml`` — framework layer (base).
+          2. ``agent_config.yaml``  — deployment layer (priority override).
 
         Args:
-            force_reload: Re-read the file even if already cached.
+            force_reload: Discard cached result and re-read both files.
 
         Returns:
-            iReDevConfig with knowledge_base fully populated.
+            Deep-merged YAML dict (empty dict if both files are unavailable).
         """
-        if self._config is not None and not force_reload:
-            return self._config
+        if self._cache is not None and not force_reload:
+            return self._cache
 
-        raw = self.get_raw(force_reload=force_reload)
+        base     = self._try_load(self._iredev_path, "iredev_config (framework base)")
+        override = self._try_load(self._agent_path,  "agent_config (deployment override)")
 
-        # Start from defaults, then let YAML override key-by-key
-        kb = iReDevConfig.default_knowledge_base()
-        yaml_kb = raw.get("knowledge_base", {})
+        if not base and not override:
+            logger.warning(
+                "[config_manager] Neither iredev_config nor agent_config "
+                "could be loaded. Using empty config."
+            )
 
-        # Merge embedding sub-dict separately so a partial override works
-        if "embedding" in yaml_kb:
-            kb["embedding"] = {**kb["embedding"], **yaml_kb.pop("embedding")}
-
-        kb.update(yaml_kb)
-
-        self._config = iReDevConfig(knowledge_base=kb)
-        return self._config
-
-    @staticmethod
-    def _clean_unexpanded_vars(data: Any) -> Any:
-        if isinstance(data, dict):
-            return {k: ConfigManager._clean_unexpanded_vars(v) for k, v in data.items()}
-        elif isinstance(data, list):
-            return [ConfigManager._clean_unexpanded_vars(v) for v in data]
-        elif isinstance(data, str) and re.match(r"^\$\{.*\}$", data.strip()):
-            return None
-        return data
-
-    @staticmethod
-    def _read_and_expand(path: str) -> Dict[str, Any]:
-        p = Path(path)
-        if not p.exists():
-            raise FileNotFoundError(f"Config not found: {path}")
-
-        raw_text = p.read_text(encoding="utf-8")
-        expanded_text = os.path.expandvars(raw_text)
-
-        raw_dict = yaml.safe_load(expanded_text) or {}
-
-        return ConfigManager._clean_unexpanded_vars(raw_dict)
+        self._cache = self._deep_merge(base, override)
+        return self._cache
 
 
 # ---------------------------------------------------------------------------
-# Process-level singleton + public API
+# Process-level singleton + public helpers
 # ---------------------------------------------------------------------------
 
 _config_manager: Optional[ConfigManager] = None
 
 
-def get_config_manager(config_path: Optional[str] = None) -> ConfigManager:
+def get_config_manager(
+    config_path:        Optional[str] = None,
+    agent_config_path:  Optional[str] = None,
+    iredev_config_path: Optional[str] = None,
+) -> ConfigManager:
     """Return the global ConfigManager, creating it on first call.
 
-    Passing *config_path* always creates a fresh instance (useful during
+    Passing any path argument always creates a fresh instance (useful during
     initialisation or testing).
 
     Args:
-        config_path: Optional explicit path to the YAML config file.
+        config_path:        Legacy single-path arg; treated as agent_config_path.
+        agent_config_path:  Explicit path to agent_config.yaml (deployment layer).
+        iredev_config_path: Explicit path to iredev_config.yaml (framework layer).
 
     Returns:
         The global ConfigManager instance.
     """
     global _config_manager
-    if _config_manager is None or config_path is not None:
-        _config_manager = ConfigManager(config_path)
+    if _config_manager is None or any(
+        p is not None for p in (config_path, agent_config_path, iredev_config_path)
+    ):
+        _config_manager = ConfigManager(
+            config_path=config_path,
+            agent_config_path=agent_config_path,
+            iredev_config_path=iredev_config_path,
+        )
     return _config_manager
 
 
-def get_raw(
-    config_path: Optional[str] = None,
-    force_reload: bool = False,
+def get_config(
+    config_path:        Optional[str] = None,
+    agent_config_path:  Optional[str] = None,
+    iredev_config_path: Optional[str] = None,
+    force_reload:       bool = False,
 ) -> Dict[str, Any]:
-    """Return the YAML config as a plain dict with all ${ENV_VAR} expanded.
+    """Return the merged YAML config as a plain dict with all ${ENV_VAR} expanded.
 
-    Primary entry point for modules that need raw config values (LLMFactory,
-    BaseAgent, …). Env vars are loaded from .env before the first expansion
-    because load_dotenv() is called at module import time above.
-
-    Args:
-        config_path: Optional path to the YAML file.
-        force_reload: Re-read the file even if already cached.
-
-    Returns:
-        Expanded YAML dict (empty dict if the file does not exist).
-    """
-    return get_config_manager(config_path).get_raw(force_reload=force_reload)
-
-
-def get_config(force_reload: bool = False) -> iReDevConfig:
-    """Return the typed iReDevConfig with defaults applied.
+    Merges ``iredev_config.yaml`` (framework layer) with ``agent_config.yaml``
+    (deployment override layer).  Either file failing to load is treated as an
+    empty dict so the system always returns something usable.
 
     Args:
-        force_reload: Force re-read from disk.
+        config_path:        Legacy single-path arg; treated as agent_config_path.
+        agent_config_path:  Explicit path to agent_config.yaml.
+        iredev_config_path: Explicit path to iredev_config.yaml.
+        force_reload:       Re-read both files even if already cached.
 
     Returns:
-        iReDevConfig instance.
+        Deep-merged YAML dict (empty dict if both files are unavailable).
     """
-    return get_config_manager().load_config(force_reload)
+    return get_config_manager(
+        config_path=config_path,
+        agent_config_path=agent_config_path,
+        iredev_config_path=iredev_config_path,
+    ).get_raw(force_reload=force_reload)

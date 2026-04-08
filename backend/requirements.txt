@@ -30,9 +30,11 @@ langchain-postgres
 langgraph
 langgraph-checkpoint-postgres
 langchain-text-splitters
+langgraph-checkpoint-sqlite
 
 # Other useful libraries
 watchdog
 semver
 pypdf
 psycopg[binary]
+python-frontmatter

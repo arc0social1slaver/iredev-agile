@@ -1,46 +1,15 @@
-"""
-base.py – BaseAgent with six modules; the ReAct loop lives in ThinkModule.
-
-Six modules
-───────────
-1. Profile   ProfileModule       – system prompt loaded from a file
-2. Memory    MemoryModule        – short-term conversation buffer
-3. Knowledge KnowledgeModule     – pgvector knowledge retrieval (singleton)
-4. Think     ThinkModule         – Memory-First RAG  +  ReAct execution loop
-5. LLM       BaseLLM             – language-model from LLMFactory
-6. Action    react()             – thin shim; delegates to ThinkModule.run_react()
-             + per-agent tools registered via _register_tools()
-
-The ``process(state)`` method is the LangGraph node entry point.
-Subclasses implement ``_register_tools()`` and ``process()``.
-
-ReAct design (owned by ThinkModule)
-────────────────────────────────────
-  • LangGraph StateGraph with two nodes: ``agent`` (LLM) and ``tools``
-    (custom executor that understands ToolResult semantics).
-  • Loop control via LangGraph's built-in ``recursion_limit`` — no manual
-    counter or regex-based output parsing needed.
-  • Knowledge context injected once per turn via the Memory-First RAG graph
-    before the first ``agent`` call.
-  • ``ToolResult.state_updates`` are merged across all tool calls and returned
-    as the dict that LangGraph merges into WorkflowState.
-  • ``ToolResult.should_return = True`` triggers an immediate conditional-edge
-    exit from the ReAct graph.
-"""
-
 from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tool abstraction  (unchanged — subclasses register tools via these classes)
+# Tool abstraction
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -54,6 +23,7 @@ class ToolResult:
     observation:   str
     state_updates: Dict[str, Any] = field(default_factory=dict)
     should_return: bool           = False
+    is_error: bool = False
 
 
 class Tool:
@@ -69,7 +39,11 @@ class Tool:
             return self._func(**kwargs)
         except Exception as exc:
             logger.exception("Tool '%s' raised: %s", self.name, exc)
-            return ToolResult(observation=f"[Error in {self.name}]: {exc}")
+            return ToolResult(
+                observation=f"[Error in {self.name}]: {exc}",
+                is_error=True,
+                should_return=True,
+            )
 
     def describe(self) -> str:
         return f"  {self.name}: {self.description}"
@@ -96,8 +70,7 @@ class BaseAgent(ABC):
         self._raw_config = raw_config
 
         agent_section = raw_config.get("iredev", {}).get("agents", {}).get(name, {})
-
-        llm_cfg = raw_config.get("llm", {})
+        llm_cfg       = raw_config.get("llm", {})
 
         # ── LLM ─────────────────────────────────────────────────────────
         from .llm.factory import LLMFactory
@@ -105,17 +78,16 @@ class BaseAgent(ABC):
 
         # ── Module 1: Profile ────────────────────────────────────────────
         from ..profile.profile_module import ProfileModule
-        self.profile = ProfileModule(f"prompts/{name}_profile.txt")
+        self.profile = ProfileModule(f"prompts/{name}_react.txt")
 
         # ── Module 2: Memory ─────────────────────────────────────────────
         from ..memory.memory_module import MemoryModule
         from ..memory.types import MemoryType
-        self.memory = MemoryModule(
-            memory_type=MemoryType(str(agent_section.get("memory_type"))),
-            system_prompt=self.profile.prompt,
-        )
+        self.memory = MemoryModule(memory_type=MemoryType(str(agent_section.get("memory_type"))))
 
         # ── Module 3: Knowledge ──────────────────────────────────────────
+        # Kept as a reference so subclasses can use it inside tool functions
+        # (e.g. search_knowledge).  ThinkModule no longer touches it.
         self.knowledge = None
         try:
             from ..knowledge.knowledge_module import KnowledgeModule
@@ -125,16 +97,15 @@ class BaseAgent(ABC):
                 "Agent '%s': knowledge module unavailable (%s). Skipping.", name, exc
             )
 
-        # ── Module 4: Think (RAG + ReAct) ────────────────────────────────
+        # ── Module 4: Think (ReAct) ──────────────────────────────────────
         self.think: Optional[Any] = None
-
         try:
             from ..think.think_module import ThinkModule
-            self.think = ThinkModule(knowledge=self.knowledge, llm=self.llm)
+            self.think = ThinkModule(llm=self.llm)
         except Exception as exc:
             logger.warning("Agent '%s': ThinkModule failed to init (%s).", name, exc)
 
-        # ── Module 6: Action (ReAct config) ─────────────────────────────
+        # ── Module 5: Action (ReAct config) ─────────────────────────────
         self.tools: Dict[str, Tool] = {}
         self.max_react_iterations: int = agent_section.get("max_react_iterations", 10)
 
@@ -151,9 +122,9 @@ class BaseAgent(ABC):
     def react(self, state: Dict[str, Any], task: str) -> Dict[str, Any]:
         """Run one ReAct turn and return WorkflowState updates.
 
-        All loop logic, LLM calls, tool dispatching, loop-guard, and knowledge
-        injection are handled by ``ThinkModule.run_react()``.  This method is a
-        thin shim that collects the required inputs and merges memory afterwards.
+        Passes the full memory history to ThinkModule so the LLM receives
+        the complete conversation context in its context window.  No
+        summarisation or truncation is applied.
 
         Parameters
         ----------
@@ -170,17 +141,19 @@ class BaseAgent(ABC):
             )
             return {}
 
+        # Retrieve the full message history from memory.
+        memory_messages = self.memory.take().get("messages", [])
+
         state_updates = self.think.run_react(
             task=task,
             tools_dict=self.tools,
             workflow_state=state,
             profile_prompt=self.profile.prompt,
-            memory_context=self.memory.take(),
+            memory_messages=memory_messages,
             max_iterations=self.max_react_iterations,
         )
 
-        # Record the completed turn in the agent's memory buffer so that
-        # subsequent turns (and the ThinkModule's decide node) have context.
+        # Record this turn so subsequent turns have the updated history.
         self.memory.add(
             f"Task: {task}\nCompleted with {len(state_updates)} state update(s).",
             role="assistant",

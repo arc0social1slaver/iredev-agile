@@ -3,37 +3,42 @@ run_iReDev.py – End-to-end demo runner for iReDev.
 
 Sprint Zero flow:
   interviewer_turn ↔ enduser_turn   → produces: interview_record
+  review_turn                        → human-in-the-loop gate (interrupt + resume)
   sprint_agent_turn                  → produces: product_backlog
 
-Incremental extraction
-──────────────────────
-The InterviewerAgent extracts requirements after EVERY stakeholder turn.
-Watch for "DRAFT UPDATE" lines in the output — these show the live
-requirements list growing and conflicts being resolved in real time.
+Review loop:
+  • Workflow pauses at review_turn via interrupt().
+  • Runner prints the requirements and prompts the human reviewer in-terminal.
+  • On approval   → workflow resumes, advances to sprint_agent_turn.
+  • On rejection  → workflow resumes with feedback, interview restarts so the
+                    InterviewerAgent can address the reviewer's comments before
+                    producing a new interview_record for re-review.
 
-Stopping
-────────
-• PRIMARY : agent calls write_interview_record when completeness ≥ threshold.
-• SAFETY  : turn_count >= max_turns  (default 20, CLI-configurable).
+Checkpointer:
+  SqliteSaver persists state to checkpoints.db so interrupt/resume works
+  correctly across the review loop and feedback is never lost.
 
 Usage
 ─────
   python run_iReDev.py
   python run_iReDev.py --max-turns 15
   python run_iReDev.py --project "Custom project brief..."
+  python run_iReDev.py --db checkpoints.db   # custom checkpoint DB path
 """
 
 import argparse
 import logging
 import textwrap
 from dotenv import load_dotenv
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.types import Command
 from src.orchestrator import build_graph
 
 load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
@@ -41,18 +46,19 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="iReDev demo runner")
     p.add_argument(
-        "--max-turns",
-        type=int,
-        default=20,
-        help="Safety-net max interview turns (default: 20). "
-        "The interviewer stops earlier when completeness ≥ threshold.",
+        "--max-turns", type=int, default=20,
+        help="Safety-net max interview turns (default: 20).",
     )
     p.add_argument(
-        "--project", type=str, default=None, help="Override project description."
+        "--project", type=str, default=None,
+        help="Override project description.",
+    )
+    p.add_argument(
+        "--db", type=str, default="checkpoints.db",
+        help="Path to SQLite checkpoint DB (default: checkpoints.db).",
     )
     return p.parse_args()
 
@@ -68,24 +74,20 @@ def _section(title: str) -> None:
 
 def _wrap(text: str, indent: int = 4) -> str:
     return textwrap.fill(
-        str(text),
-        width=80,
+        str(text), width=80,
         initial_indent=" " * indent,
         subsequent_indent=" " * indent,
     )
 
 
 def _display_draft_update(draft: list) -> None:
-    """Show requirements_draft changes — called after each interviewer turn."""
     if not draft:
         return
     print(f"\n  ┌─ DRAFT UPDATE ({len(draft)} requirements) ─────────────────")
-    for r in draft[-5:]:  # show last 5 to keep output readable
-        status_icon = {"confirmed": "✓", "inferred": "~", "ambiguous": "?"}.get(
-            r.get("status", ""), "·"
-        )
+    for r in draft[-5:]:
+        icon = {"confirmed": "✓", "inferred": "~", "ambiguous": "?"}.get(r.get("status", ""), "·")
         print(
-            f"  │  {status_icon} [{r.get('id','?')}] "
+            f"  │  {icon} [{r.get('id','?')}] "
             f"({r.get('type','?')}, {r.get('priority','?')}) "
             f"{r.get('description','')[:70]}"
         )
@@ -100,22 +102,18 @@ def _display_interview_record(record: dict) -> None:
     gaps = record.get("gaps_identified") or []
     print(f"  Turns        : {record.get('total_turns', '?')}")
     print(f"  Requirements : {len(reqs)}")
-    print(f"    Functional   : {sum(1 for r in reqs if r.get('type')=='functional')}")
-    print(
-        f"    Non-functional: {sum(1 for r in reqs if r.get('type')=='non_functional')}"
-    )
-    print(f"    Constraints  : {sum(1 for r in reqs if r.get('type')=='constraint')}")
+    print(f"    Functional    : {sum(1 for r in reqs if r.get('type') == 'functional')}")
+    print(f"    Non-functional: {sum(1 for r in reqs if r.get('type') == 'non_functional')}")
+    print(f"    Constraints   : {sum(1 for r in reqs if r.get('type') == 'constraint')}")
     print(f"  Gaps         : {len(gaps)}")
     print(f"  Completeness : {record.get('completeness_score', '?')}")
     print(f"  Notes        : {record.get('notes', '')[:160]}")
     if reqs:
         print("\n  All requirements:")
         for r in reqs:
-            status_icon = {"confirmed": "✓", "inferred": "~", "ambiguous": "?"}.get(
-                r.get("status", ""), "·"
-            )
+            icon = {"confirmed": "✓", "inferred": "~", "ambiguous": "?"}.get(r.get("status", ""), "·")
             print(
-                f"    {status_icon} [{r.get('id','?')}] "
+                f"    {icon} [{r.get('id','?')}] "
                 f"({r.get('type','?')}, prio={r.get('priority','?')}) "
                 f"{r.get('description','')[:80]}"
             )
@@ -127,14 +125,104 @@ def _display_interview_record(record: dict) -> None:
 
 def _display_product_backlog(artifact: dict) -> None:
     _section("ARTIFACT: product_backlog")
-    print(_wrap(str(artifact)[:800]))
-    print("  … (truncated)")
+    items = artifact.get("items") or []
+    split_parents = artifact.get("split_parents") or []
+    methodology = artifact.get("methodology") or {}
+    print(f"  Total items    : {artifact.get('total_items', len(items))}")
+    print(f"  Split parents  : {len(split_parents)} (for traceability)")
+    print(f"  Estimation     : {methodology.get('estimation', 'N/A')}")
+    print(f"  Prioritization : {methodology.get('prioritization', 'N/A')}")
+    if items:
+        print("\n  Ranked backlog:")
+        for item in items[:15]:
+            rank = item.get('priority_rank', '?')
+            wsjf = item.get('wsjf_score')
+            pts = item.get('story_points', '?')
+            wsjf_str = f"WSJF={wsjf:.2f}" if wsjf else "WSJF=N/A"
+            print(
+                f"    #{rank} [{item.get('id','?')}] "
+                f"{wsjf_str} pts={pts} "
+                f"({item.get('type','?')}) "
+                f"{item.get('title','')[:60]}"
+            )
+        if len(items) > 15:
+            print(f"    … (+{len(items) - 15} more)")
+    print(f"  Notes: {artifact.get('notes', '')[:200]}")
+
+
+# ── Interrupt: collect human review decision ──────────────────────────────────
+
+def _collect_review_decision(updates: tuple) -> dict:
+    """
+    Print the review payload from interrupt() and collect the human's decision
+    interactively from stdin.
+
+    Returns a dict ready to pass to Command(resume=...):
+      {"approved": True}
+      {"approved": False, "feedback": "<text>"}
+    """
+    for interrupt_obj in updates:
+        payload = interrupt_obj.value if hasattr(interrupt_obj, "value") else interrupt_obj
+        if not isinstance(payload, dict):
+            print(f"\n  Interrupt value: {payload}")
+            continue
+
+        print(f"\n  {payload.get('review_prompt', '')}")
+
+        score = payload.get("completeness_score")
+        if score is not None:
+            print(f"\n  Completeness score : {score}")
+
+        gaps = payload.get("gaps", [])
+        if gaps:
+            print("  Gaps identified    :")
+            for g in gaps:
+                print(f"    • {g}")
+
+        reqs = payload.get("requirements", [])
+        if reqs:
+            print(f"\n  Requirements ({len(reqs)}):")
+            for r in reqs:
+                icon = {"confirmed": "✓", "inferred": "~", "ambiguous": "?"}.get(r.get("status", ""), "·")
+                print(
+                    f"    {icon} [{r.get('id','?')}] "
+                    f"({r.get('type','?')}, prio={r.get('priority','?')}, {r.get('status','?')}) "
+                    f"{r.get('description','')[:80]}"
+                )
+                rationale = r.get("rationale", "")
+                if rationale and rationale != "(not provided)":
+                    print(f"         rationale: {rationale[:100]}")
+
+    # Collect decision interactively
+    print(f"\n{'─'*70}")
+    print("  REVIEW DECISION")
+    print(f"{'─'*70}")
+
+    while True:
+        choice = input("\n  Approve requirements? [y/n]: ").strip().lower()
+        if choice in ("y", "n"):
+            break
+        print("  Please enter y or n.")
+
+    if choice == "y":
+        notes = input("  Optional approval notes (press Enter to skip): ").strip()
+        return {"approved": True, "feedback": notes or None}
+    else:
+        print("\n  Please provide feedback for the interviewer to address:")
+        print("  (Enter feedback lines, blank line to finish)")
+        feedback_lines = []
+        while True:
+            line = input("  > ")
+            if line == "":
+                break
+            feedback_lines.append(line)
+        feedback = " ".join(feedback_lines).strip() or "No specific feedback provided."
+        return {"approved": False, "feedback": feedback}
 
 
 # ── Stream handler ────────────────────────────────────────────────────────────
 
-
-def _handle_step(node_name: str, updates: dict) -> None:
+def _handle_step(node_name: str, updates) -> None:
     if not updates:
         return
 
@@ -142,30 +230,45 @@ def _handle_step(node_name: str, updates: dict) -> None:
     print(f"  NODE: {node_name.upper()}")
     print(f"{'─'*70}")
 
-    # Conversation turns
+    if not isinstance(updates, dict):
+        print(f"\n  (unexpected update type: {type(updates).__name__})")
+        return
+
     conversation = updates.get("conversation")
     if conversation:
-        last = conversation[-1]
-        role = last.get("role", "unknown")
-        label = "INTERVIEWER" if role == "interviewer" else "STAKEHOLDER"
+        last  = conversation[-1]
+        label = "INTERVIEWER" if last.get("role") == "interviewer" else "STAKEHOLDER"
         print(f"\n  [{label}]")
         print(_wrap(last.get("content", "")))
 
-    # Live requirements draft update (incremental extraction)
     draft = updates.get("requirements_draft")
     if draft is not None:
         _display_draft_update(draft)
 
-    # interview_complete flag
     if updates.get("interview_complete"):
-        print("\n  ✓ interview_complete = True  (agent satisfied with coverage)")
+        print("\n  ✓ interview_complete = True")
 
-    # Routing
+    backlog = updates.get("backlog_draft")
+    if backlog is not None:
+        print(f"\n  ┌─ BACKLOG DRAFT ({len(backlog)} items) ─────────────────────")
+        for item in backlog[-5:]:
+            status = item.get("status", "?")
+            pts = item.get("story_points", "?")
+            wsjf = item.get("wsjf_score")
+            wsjf_str = f" WSJF={wsjf:.2f}" if wsjf else ""
+            print(
+                f"  │  [{item.get('id','?')}] pts={pts} "
+                f"status={status}{wsjf_str} "
+                f"{item.get('title','')[:50]}"
+            )
+        if len(backlog) > 5:
+            print(f"  │  … (+{len(backlog) - 5} earlier items)")
+        print("  └────────────────────────────────────────────────────────────")
+
     next_node = updates.get("next_node")
     if next_node:
         print(f"\n  → routing to: {'END' if next_node == '__end__' else next_node}")
 
-    # Artifacts finalised
     artifacts = updates.get("artifacts")
     if artifacts:
         for name, content in artifacts.items():
@@ -176,7 +279,6 @@ def _handle_step(node_name: str, updates: dict) -> None:
             else:
                 print(f"\n  Artifact produced: {name}")
 
-    # Phase
     phase = updates.get("system_phase")
     if phase:
         print(f"\n  Phase: {phase}")
@@ -195,48 +297,87 @@ if __name__ == "__main__":
     )
     project = args.project or default_project
 
-    graph = build_graph()
+    # thread_id scopes the checkpoint to this run.
+    # Change it to resume a previous session from disk.
+    config = {"configurable": {"thread_id": "demo_session_1"}}
 
-    initial_state = {
-        # ── Session ───────────────────────────────────────────────────────
-        "session_id": "demo_session_1",
-        "project_description": project,
-        # ── Phase ─────────────────────────────────────────────────────────
-        "system_phase": "sprint_zero_planning",
-        # ── Artifacts ─────────────────────────────────────────────────────
-        "artifacts": {},
-        # ── Interview sub-state ───────────────────────────────────────────
-        "conversation": [],
-        "turn_count": 0,
-        # max_turns is a SAFETY NET — the interviewer stops on its own
-        # via interview_complete=True when completeness ≥ threshold (0.8).
-        # Only change this if you have a specific token-budget constraint.
-        "max_turns": args.max_turns,  # default 20
-        "interview_complete": False,
-        # ── Live requirements draft (populated incrementally per turn) ─────
-        # InterviewerAgent.update_requirements appends here after each
-        # stakeholder reply. write_interview_record copies this into
-        # interview_record["requirements_identified"].
-        "requirements_draft": [],
-        # ── Misc ──────────────────────────────────────────────────────────
-        "errors": [],
-    }
+    with SqliteSaver.from_conn_string(args.db) as checkpointer:
+        graph = build_graph(checkpointer=checkpointer)
 
-    _section("iReDev — Sprint Zero Planning")
-    print(f"  Project  : {project[:100]}{'…' if len(project) > 100 else ''}")
-    print(
-        f"  max_turns: {args.max_turns}  (safety net — agent stops earlier via completeness)"
-    )
-    print(
-        "\n  Watch for DRAFT UPDATE blocks — requirements are extracted and\n"
-        "  conflict-checked LIVE after every stakeholder reply."
-    )
+        initial_state = {
+            "session_id":          "demo_session_1",
+            "project_description": project,
+            "system_phase":        "sprint_zero_planning",
+            "artifacts":           {},
+            "conversation":        [],
+            "turn_count":          0,
+            "max_turns":           args.max_turns,
+            "interview_complete":  False,
+            "requirements_draft":  [],
+            "backlog_draft":       [],
+            "errors":              [],
+        }
 
-    for step_output in graph.stream(initial_state):
-        for node_name, updates in step_output.items():
-            _handle_step(node_name, updates)
+        _section("iReDev — Sprint Zero Planning")
+        print(f"  Project  : {project[:100]}{'…' if len(project) > 100 else ''}")
+        print(f"  max_turns: {args.max_turns}")
+        print(f"  DB       : {args.db}")
 
-    _section("Workflow complete")
-    print("  interview_record  — full conversation + validated requirements")
-    print("  product_backlog   — initial sprint backlog (if SprintAgent ran)")
-    print()
+        # ── Stream loop with interrupt/resume support ─────────────────────
+        # Outer while-loop re-streams after each resume so the review cycle
+        # (reject → re-interview → re-review) works for N iterations.
+        # After the first run, stream_input=None tells LangGraph to continue
+        # from the latest checkpoint rather than re-initialising state.
+        stream_input = initial_state
+
+        while True:
+            interrupted = False
+
+            for step_output in graph.stream(stream_input, config=config):
+                for node_name, updates in step_output.items():
+
+                    if node_name == "__interrupt__":
+                        print(f"\n{'─'*70}")
+                        print("  NODE: __INTERRUPT__ — REVIEW GATE")
+                        print(f"{'─'*70}")
+
+                        decision = _collect_review_decision(updates)
+
+                        if decision["approved"]:
+                            _section("Review: APPROVED ✓")
+                            if decision.get("feedback"):
+                                print(f"  Notes: {decision['feedback']}")
+                        else:
+                            _section("Review: REJECTED ✗")
+                            print(f"  Feedback: {decision['feedback']}")
+                            print("  Interview will restart with this feedback.")
+
+                        # Resume the graph with the reviewer's decision.
+                        # Consume the resume step silently (it just triggers
+                        # supervisor routing — nothing meaningful to display).
+                        for resume_output in graph.stream(
+                            Command(resume=decision), config=config
+                        ):
+                            for rnode, rupdates in resume_output.items():
+                                if rnode != "__interrupt__":
+                                    _handle_step(rnode, rupdates)
+
+                        interrupted = True
+                        break  # re-enter outer while to continue streaming
+
+                    else:
+                        _handle_step(node_name, updates)
+
+                if interrupted:
+                    break
+
+            if not interrupted:
+                break  # no interrupt → workflow finished
+
+            stream_input = None  # continue from checkpoint on next iteration
+
+        _section("Workflow complete")
+        print("  interview_record          — full conversation + validated requirements")
+        print("  reviewed_interview_record — approved record (if review passed)")
+        print("  product_backlog           — initial sprint backlog (if SprintAgent ran)")
+        print()

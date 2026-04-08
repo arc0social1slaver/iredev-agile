@@ -35,7 +35,8 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, create_model
+from langgraph.graph import END, StateGraph
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +45,7 @@ logger = logging.getLogger(__name__)
 # ReAct graph state
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _add_messages(
-    left: List[BaseMessage], right: List[BaseMessage]
-) -> List[BaseMessage]:
+def _add_messages(left: List[BaseMessage], right: List[BaseMessage]) -> List[BaseMessage]:
     return list(left) + list(right)
 
 
@@ -69,10 +68,10 @@ def _make_schema_tool(tool: Any) -> StructuredTool:
     should_return semantics that LangChain tools lack).
     """
     safe_name = re.sub(r"[^a-zA-Z0-9]", "_", tool.name)
-    ArgsModel: type[BaseModel] = type(
+    ArgsModel = create_model(
         f"_Args_{safe_name}",
-        (BaseModel,),
-        {"model_config": ConfigDict(extra="allow")},
+        __base__=BaseModel,
+        __config__=ConfigDict(extra="allow")
     )
 
     def _noop(**kwargs: Any) -> str:
@@ -116,68 +115,35 @@ class ThinkModule:
 
     def run_react(
         self,
-        task:            str,
-        tools_dict:      Dict[str, Any],
-        workflow_state:  Dict[str, Any],
-        profile_prompt:  str,
+        task: str,
+        tools_dict: Dict[str, Any],
+        workflow_state: Dict[str, Any],
+        profile_prompt: str,
         memory_messages: Optional[List[BaseMessage]] = None,
-        max_iterations:  int = 10,
+        max_iterations: int = 10,
     ) -> Dict[str, Any]:
-        """Run one full ReAct turn and return merged WorkflowState updates.
-
-        Steps
-        ─────
-        1. Build SystemMessage from profile + serialised memory history.
-        2. Compile (or retrieve cached) ReAct graph for this tool-set.
-        3. Invoke the graph; LangGraph's recursion_limit guards the loop.
-        4. Return all accumulated state_updates from tool calls.
-
-        Args:
-            task:            Natural-language goal for this agent turn.
-            tools_dict:      Mapping of tool name → Tool instance.
-            workflow_state:  Current WorkflowState (read-only inside tools).
-            profile_prompt:  Agent system prompt (profile).
-            memory_messages: Full message history from MemoryModule.
-                             Prepended to the conversation so the LLM has
-                             complete context without any summarisation.
-            max_iterations:  Upper bound on agent↔tools cycles.
-
-        Returns:
-            Dict of WorkflowState keys to update (merged from all tool calls).
-        """
-        # ── Build system message (profile + memory) ───────────────────────
-        system_content = profile_prompt
-        if memory_messages:
-            history_text = "\n".join(
-                f"[{'user' if isinstance(m, HumanMessage) else 'assistant'}] {m.content}"
-                for m in memory_messages
-                if isinstance(m, (HumanMessage, AIMessage))
-            )
-            if history_text:
-                system_content = (
-                    f"{profile_prompt}\n\n"
-                    "## Conversation History\n"
-                    f"{history_text}"
-                )
-
-        system_msg = SystemMessage(content=system_content)
+        # ── Build messages ────────────────────────────────────────────────
+        system_msg = SystemMessage(content=profile_prompt)
+        recent = (memory_messages or [])[-20:]
+        messages = [system_msg] + recent + [HumanMessage(content=task)]
 
         # ── Compile or retrieve cached graph ──────────────────────────────
         cache_key = frozenset(tools_dict.keys())
         if cache_key not in self._react_graph_cache:
-            self._react_graph_cache[cache_key] = self._compile_react_graph(
-                tools_dict
-            )
+            self._react_graph_cache[cache_key] = self._compile_react_graph(tools_dict)
         react_graph = self._react_graph_cache[cache_key]
 
         # ── Run graph ─────────────────────────────────────────────────────
         initial_state: _ReactState = {
-            "messages":            [system_msg, HumanMessage(content=task)],
-            "workflow_state":      workflow_state,
+            "messages": messages,
+            "workflow_state": workflow_state,
             "accumulated_updates": {},
             "should_return_early": False,
         }
-        recursion_limit = max_iterations * 2 + 4
+
+        STEPS_PER_ITERATION = 2
+        OVERHEAD_STEPS = 4
+        recursion_limit = max_iterations * STEPS_PER_ITERATION + OVERHEAD_STEPS
 
         try:
             result = react_graph.invoke(
@@ -195,9 +161,7 @@ class ThinkModule:
                 raise
 
         updates = result.get("accumulated_updates", {})
-        logger.debug(
-            "[ThinkModule] finished — %d state key(s) updated.", len(updates)
-        )
+        logger.debug("[ThinkModule] finished — %d state key(s) updated.", len(updates))
         return updates
 
     # ──────────────────────────────────────────────────────────────────────
@@ -205,18 +169,8 @@ class ThinkModule:
     # ──────────────────────────────────────────────────────────────────────
 
     def _compile_react_graph(self, tools_dict: Dict[str, Any]):
-        """Build and compile the ReAct StateGraph for a given tool set.
 
-        Graph topology::
-
-            START → agent ──(has tool_calls)──→ tools
-                         ╰──(no tool_calls)──→ END
-                    tools ──(should_return)──→ END
-                          ╰──(continue)─────→ agent
-        """
-        from langgraph.graph import END, StateGraph
-
-        lc_stubs         = [_make_schema_tool(t) for t in tools_dict.values()]
+        lc_stubs = [_make_schema_tool(t) for t in tools_dict.values()]
         model_with_tools = self._llm.bind_tools(lc_stubs) if lc_stubs else self._llm
 
         # ── node: agent ───────────────────────────────────────────────────
@@ -227,51 +181,70 @@ class ThinkModule:
         # ── node: tools ───────────────────────────────────────────────────
         def tools_node(state: _ReactState) -> Dict[str, Any]:
             last_ai_msg = state["messages"][-1]
-            tool_calls  = getattr(last_ai_msg, "tool_calls", None) or []
+            tool_calls = getattr(last_ai_msg, "tool_calls", None) or []
 
             tool_messages: List[ToolMessage] = []
-            updates    = dict(state.get("accumulated_updates") or {})
+            updates = dict(state.get("accumulated_updates") or {})
             early_exit = bool(state.get("should_return_early", False))
 
+            # Capture the LLM's reasoning (Thought) from the AIMessage content
+            # so tools can record it in history/reason fields.
+            ai_thought = getattr(last_ai_msg, "content", "") or ""
+            if ai_thought:
+                updates["_last_react_thought"] = ai_thought
+
             for tc in tool_calls:
-                name    = tc["name"]
-                args    = tc["args"]
+                name = tc["name"]
+                args = tc["args"]
                 call_id = tc["id"]
 
                 if name in tools_dict:
-                    # Merge intra-turn updates so each tool sees state
-                    # changes made by earlier tools in the same cycle.
                     effective_state = {**state["workflow_state"], **updates}
                     result = tools_dict[name](state=effective_state, **args)
 
-                    updates.update(getattr(result, "state_updates", {}))
-                    early_exit = early_exit or bool(
-                        getattr(result, "should_return", False)
-                    )
+                    if result.is_error:
+                        early_exit = True
+                        tool_messages.append(
+                            ToolMessage(
+                                content=(
+                                    f"[Fatal Error] Tool '{name}' crashed: {result.observation}. "
+                                    "Stop and report this error, do not retry."
+                                ),
+                                tool_call_id=call_id,
+                                name=name,
+                            )
+                        )
+                        break
+
+                    updates.update(result.state_updates)
+                    early_exit = early_exit or result.should_return
                     observation = result.observation
+
                 else:
+                    early_exit = True
                     observation = (
-                        f"[Tool Error] Unknown tool '{name}'. "
-                        f"Available: {list(tools_dict)}. "
-                        "Call one of the listed tools."
+                        f"[Not Found] Tool '{name}' does not exist. "
+                        f"You MUST only call tools from this exact list: {list(tools_dict)}. "
+                        "Do not guess or modify tool names."
                     )
 
                 tool_messages.append(
-                    ToolMessage(
-                        content=observation,
-                        tool_call_id=call_id,
-                        name=name,
-                    )
+                    ToolMessage(content=observation, tool_call_id=call_id, name=name)
                 )
 
+                if early_exit:
+                    break
+
             return {
-                "messages":            tool_messages,
+                "messages": tool_messages,
                 "accumulated_updates": updates,
                 "should_return_early": early_exit,
             }
 
         # ── conditional edges ─────────────────────────────────────────────
         def route_after_agent(state: _ReactState) -> str:
+            if state.get("should_return_early"):
+                return END
             last = state["messages"][-1]
             return "tools" if getattr(last, "tool_calls", None) else END
 
@@ -291,7 +264,5 @@ class ThinkModule:
         )
 
         compiled = g.compile()
-        logger.debug(
-            "[ThinkModule] compiled ReAct graph for tools: %s", list(tools_dict)
-        )
+        logger.debug("[ThinkModule] compiled ReAct graph for tools: %s", list(tools_dict))
         return compiled

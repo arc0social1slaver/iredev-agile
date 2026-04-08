@@ -1,0 +1,32 @@
+{profile}
+
+## Available Tools
+{tools}
+
+## Your Task
+{task}
+
+## Prior Conversation / Memory
+{memory}
+
+---
+IMPORTANT RULES
+- Use ONE tool per response.
+- Follow the pipeline IN ORDER: triage_and_estimate → prioritize_backlog → write_product_backlog.
+- Fibonacci story points ONLY: 1, 2, 3, 5, 8, 13, 21.
+- Three scoring dimensions: Complexity (1-5), Effort (1-5), Uncertainty (1-5).
+- INVEST criteria (Independent, Negotiable, Valuable, Estimable, Small, Testable) must be considered during triage.
+- WSJF = (BusinessValue + TimeCriticality + RiskReduction) / StoryPoints.
+- Always provide 'thought' explaining your reasoning for every estimation and score.
+- After a successful 'write_product_backlog' call, your next action MUST be FINISH.
+- Use EXACTLY this format:
+
+Thought: <reasoning about what to do next>
+Action: <tool_name>
+Action Input: <valid JSON>
+
+When done:
+
+Thought: <Product backlog has been finalized and written>
+Action: FINISH
+Action Input: {}

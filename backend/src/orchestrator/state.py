@@ -30,6 +30,17 @@ Each item follows the schema:
     "priority":    "high" | "medium" | "low",
     "source_turn": <int, 0-based index in conversation list>,
     "status":      "confirmed" | "inferred" | "ambiguous",
+    "rationale":   "<why this requirement was identified — evidence from the
+                     stakeholder's exact words, business goal, or constraint
+                     it addresses; also records any modification reason>",
+    "history":     [                          # populated on every edit
+                     {
+                       "action":    "created" | "modified" | "conflict_flagged",
+                       "turn":      <int>,
+                       "reason":    "<brief explanation of the change>",
+                       "old_value": "<previous description, if modified>",
+                     }, ...
+                   ]
   }
 """
 
@@ -96,7 +107,8 @@ class WorkflowState(TypedDict, total=False):
 
     # ── Artifact store (artifact-driven intra-phase routing) ──────────────
     # All produced artifacts live here, keyed by their logical name.
-    # e.g. {"interview_record": {...}, "product_backlog": {...}}
+    # e.g. {"interview_record": {...}, "reviewed_interview_record": {...},
+    #        "product_backlog": {...}}
     artifacts:    Dict[str, Any]
 
     # Optional parallel store of LangGraph store IDs for cross-session lookup.
@@ -114,15 +126,26 @@ class WorkflowState(TypedDict, total=False):
 
     # ── Live requirements draft (Sprint Zero – step 1) ────────────────────
     # Incrementally built by InterviewerAgent._tool_update_requirements.
-    # Each entry: {id, type, description, priority, source_turn, status}
+    # Each entry: {id, type, description, priority, source_turn, status,
+    #              rationale, history}
     # Copied into interview_record["requirements_identified"] when finalised.
     # Persists in state for downstream inspection (e.g. SprintAgent).
     requirements_draft: List[Dict[str, Any]]
 
-    # ── Human-review gate ─────────────────────────────────────────────────
+    # ── Live backlog draft (Sprint Zero – step 3) ─────────────────────────
+    # Incrementally built by SprintAgent tools (triage, split, validate, prioritize).
+    # Each entry: {id, title, description, story_points, status, wsjf_score, history, ...}
+    # Copied into product_backlog["items"] when finalised.
+    backlog_draft: List[Dict[str, Any]]
+
+    # ── Human-review gate (Sprint Zero – step 2: review_interview_record) ─
+    # Set by the review_turn node via LangGraph interrupt().
+    # review_feedback is injected back into the InterviewerAgent's task prompt
+    # when the interview restarts after a rejection so the agent knows what
+    # to improve.
     awaiting_review: bool
     review_approved: bool
-    review_feedback: Optional[str]
+    review_feedback: Optional[str]   # populated on rejection; None on approval
 
     # ── Error accumulation ────────────────────────────────────────────────
     errors: List[str]

@@ -9,7 +9,9 @@ draft.  Every turn the agent:
 
   1. Reads the latest stakeholder utterance.
   2. Calls ``update_requirements`` → extracts new requirements from that
-     utterance, merges them into the running ``requirements_draft`` in state,
+     utterance, each with a ``rationale`` (why it was identified) and
+     optionally a ``modification_reason`` (why an existing req was changed),
+     merges them into the running ``requirements_draft`` in state,
      detects conflicts / overlaps, and returns a completeness score.
   3. Decides its next move inside the SAME ReAct loop:
        • conflict detected  → ``send_message`` a targeted Socratic probe.
@@ -27,6 +29,19 @@ TIER 1 – semantic (primary):
 TIER 2 – structural (safety net, graph layer):
   after_interviewer() in graph.py forces a supervisor return when
   turn_count >= max_turns. This is a loop-guard, NOT a depth dial.
+
+Rationale & history tracking
+─────────────────────────────
+Every requirement in ``requirements_draft`` carries:
+  • ``rationale``  – why this requirement was identified (evidence from the
+                     stakeholder's exact words, business goal, or constraint).
+  • ``history``    – list of {action, turn, reason, old_value} entries so
+                     downstream reviewers and the SprintAgent can understand
+                     how each requirement evolved.
+
+When the interview restarts after a review rejection, ``review_feedback``
+from state is injected into the task prompt so the LLM knows exactly what
+the human reviewer asked to improve.
 
 ReAct tools
 ───────────
@@ -63,6 +78,8 @@ logger = logging.getLogger(__name__)
 #   "priority":    "high" | "medium" | "low",
 #   "source_turn": <int, 0-based index in conversation list>,
 #   "status":      "confirmed" | "inferred" | "ambiguous",
+#   "rationale":   "<why this requirement was identified>",
+#   "history":     [{action, turn, reason, old_value}, ...]
 # }
 
 
@@ -91,9 +108,9 @@ class InterviewerAgent(BaseAgent):
     ─────────────────────
     ``requirements_draft`` in WorkflowState is the single source of truth for
     the evolving requirements list.  Every call to ``update_requirements``
-    appends to it and checks consistency.  ``write_interview_record`` reads
-    from it directly — the LLM never needs to re-extract from the full
-    transcript at the end.
+    appends to it (with rationale + history) and checks consistency.
+    ``write_interview_record`` reads from it directly — the LLM never needs
+    to re-extract from the full transcript at the end.
     """
 
     # ── Persona / profile (from old BaseInterviewerAgent) ─────────────────
@@ -119,7 +136,8 @@ Experience & Preferred Practices:
 Internal Chain of Thought (visible to you only):
 1. Identify stakeholder type and context.
 2. Use 5W1H + targeted probes to surface goals, pain points, constraints.
-3. After EACH stakeholder reply, extract requirements via 'update_requirements'.
+3. After EACH stakeholder reply, extract requirements via 'update_requirements',
+   supplying a clear 'rationale' for EVERY requirement you extract.
 4. Paraphrase key findings; ask for confirmation before proceeding.
 5. When completeness ≥ threshold OR max_turns approached, finalise the record."""
 
@@ -151,21 +169,39 @@ Internal Chain of Thought (visible to you only):
         self.register_tool(Tool(
             name="update_requirements",
             description=(
-                "After the stakeholder replies, extract requirements from their "
-                "latest utterance and update the running draft.\n"
+                "Update the running requirements draft. Supports THREE operation types "
+                "(all optional — include only those you need):\n"
                 "This tool DOES NOT end the turn — call it first, then decide "
-                "whether to 'send_message' or 'write_interview_record'.\n"
+                "whether to 'send_message' or 'write_interview_record'.\n\n"
                 "Input: {\n"
-                "  \"extracted\": [\n"
+                "  \"extracted\": [       // NEW requirements to add\n"
                 "    {\n"
-                "      \"type\":        \"functional\" | \"non_functional\" | \"constraint\",\n"
-                "      \"description\": \"<precise, testable statement>\",\n"
-                "      \"priority\":    \"high\" | \"medium\" | \"low\",\n"
-                "      \"source_turn\": <int — 0-based turn index in conversation>,\n"
-                "      \"status\":      \"confirmed\" | \"inferred\" | \"ambiguous\"\n"
+                "      \"type\":           \"functional\" | \"non_functional\" | \"constraint\",\n"
+                "      \"description\":   \"<precise, testable statement>\",\n"
+                "      \"priority\":      \"high\" | \"medium\" | \"low\",\n"
+                "      \"source_turn\":   <int — 0-based turn index in conversation>,\n"
+                "      \"status\":        \"confirmed\" | \"inferred\" | \"ambiguous\",\n"
+                "      \"rationale\":     \"<WHY this was identified — cite exact words or goal>\",\n"
+                "      \"thought\":       \"<your reasoning / chain-of-thought for creating this>\"  // optional\n"
+                "    }, ...\n"
+                "  ],\n"
+                "  \"modifications\": [   // EDIT existing requirements by ID\n"
+                "    {\n"
+                "      \"id\":            \"FR-001\",\n"
+                "      \"field\":         \"description\" | \"priority\" | \"status\" | \"type\",\n"
+                "      \"new_value\":     \"<new value for the field>\",\n"
+                "      \"thought\":       \"<why you are making this change>\"\n"
+                "    }, ...\n"
+                "  ],\n"
+                "  \"deletions\": [       // REMOVE requirements by ID\n"
+                "    {\n"
+                "      \"id\":            \"FR-007\",\n"
+                "      \"thought\":       \"<why this requirement should be removed>\"\n"
                 "    }, ...\n"
                 "  ]\n"
-                "}\n"
+                "}\n\n"
+                "'rationale' is MANDATORY for every newly extracted item. "
+                "'thought' is MANDATORY for modifications and deletions. "
                 "Returns: updated draft size, completeness score, and any "
                 "conflicts or ambiguities to resolve."
             ),
@@ -226,60 +262,143 @@ Internal Chain of Thought (visible to you only):
     def _tool_update_requirements(
             self,
             extracted: List[Dict] = None,
+            modifications: List[Dict] = None,
+            deletions: List[Dict] = None,
             state: Dict = None,
             **_,
     ) -> ToolResult:
-        """Merge newly extracted requirements into the running draft.
+        """Merge newly extracted requirements into the running draft,
+        apply modifications to existing requirements, and delete requirements.
 
-        Steps:
-          1. Return early with a clear message when extracted is empty so the
-             LLM receives an actionable signal rather than a misleading
-             "0 new, continue gathering" observation.
-          2. Auto-assign IDs (FR-xxx / NFR-xxx / CON-xxx).
-          3. For each new requirement, check against the existing draft for:
-               a. Semantic overlap  — Jaccard similarity > 0.55 → skip (not add)
-               b. Logical conflict  — high overlap where one side has negation
-               c. Vague language    — flag for measurable follow-up
-          4. Append only non-duplicate entries to the draft.
-          5. Recompute completeness score.
-          6. Build a gap analysis (missing NFR / constraint categories) so the
-             LLM knows which requirement types still need to be elicited.
-          7. Return a rich observation the LLM uses to pick its next action.
+        Three operation types (all optional):
+          extracted     — add new requirements (existing behaviour)
+          modifications — edit existing requirements by ID
+          deletions     — remove requirements by ID
 
         Does NOT set should_return=True — the ReAct loop continues.
         """
         extracted = extracted or []
+        modifications = modifications or []
+        deletions = deletions or []
 
-        # Guard: if the LLM called this tool with an empty list, return an
-        # actionable message immediately instead of writing a useless observation.
-        if not extracted:
+        # Retrieve the LLM's last thought from the ReAct loop (if available)
+        react_thought = (state.get("_last_react_thought") or "").strip()
+
+        has_any_ops = bool(extracted) or bool(modifications) or bool(deletions)
+        if not has_any_ops:
             return ToolResult(
                 observation=(
-                    "No requirements were extracted (empty list received). "
-                    "Make sure the 'extracted' field contains at least one item "
-                    "with all required keys (type, description, priority, "
-                    "source_turn, status). "
-                    "Then call 'send_message' to ask the next question."
+                    "No operations received (empty extracted, modifications, and "
+                    "deletions). Include at least one operation. "
+                    "Then call 'send_message' or 'write_interview_record'."
                 ),
                 state_updates={},
             )
 
         draft: List[Dict] = list(state.get("requirements_draft") or [])
+        turn_index = state.get("turn_count", 0)
+
+        # Build a quick lookup of existing requirements by ID for history updates.
+        draft_by_id: Dict[str, Dict] = {r.get("id", ""): r for r in draft}
+
+        newly_added:  List[str] = []
+        modified_ids: List[str] = []
+        deleted_ids:  List[str] = []
+        skipped:      List[str] = []
+        conflicts:    List[str] = []
+        warnings:     List[str] = []
+
+        # ══════════════════════════════════════════════════════════════════
+        # Phase 1: DELETIONS
+        # ══════════════════════════════════════════════════════════════════
+        for deletion in deletions:
+            did = deletion.get("id", "").strip()
+            thought = deletion.get("thought", "").strip() or react_thought
+            if not did:
+                warnings.append("Deletion skipped: missing 'id'.")
+                continue
+            if did not in draft_by_id:
+                warnings.append(f"Deletion skipped: {did} not found in draft.")
+                continue
+
+            draft = [r for r in draft if r.get("id") != did]
+            draft_by_id.pop(did, None)
+            deleted_ids.append(did)
+            logger.info(
+                "[Interviewer] Deleted %s. Thought: %s", did, thought[:100]
+            )
+
+        # ══════════════════════════════════════════════════════════════════
+        # Phase 2: MODIFICATIONS
+        # ══════════════════════════════════════════════════════════════════
+        allowed_fields = {"description", "priority", "status", "type"}
+        for mod in modifications:
+            mid = mod.get("id", "").strip()
+            field = mod.get("field", "").strip()
+            new_value = mod.get("new_value", "").strip() if isinstance(mod.get("new_value"), str) else mod.get("new_value")
+            thought = mod.get("thought", "").strip() or react_thought
+
+            if not mid or not field:
+                warnings.append(f"Modification skipped: missing 'id' or 'field'. Got: {mod}")
+                continue
+            if field not in allowed_fields:
+                warnings.append(
+                    f"Modification skipped for {mid}: field '{field}' not allowed. "
+                    f"Allowed: {sorted(allowed_fields)}."
+                )
+                continue
+            if mid not in draft_by_id:
+                warnings.append(f"Modification skipped: {mid} not found in draft.")
+                continue
+
+            existing_req = draft_by_id[mid]
+            old_value = existing_req.get(field)
+            existing_req[field] = new_value
+
+            # Record the modification in history with the agent's thought
+            existing_req.setdefault("history", []).append({
+                "action":    "modified",
+                "turn":      turn_index,
+                "reason":    thought or f"Modified '{field}' per review feedback.",
+                "old_value": str(old_value) if old_value is not None else None,
+            })
+
+            # Also update rationale to reflect the change
+            if thought:
+                existing_req["rationale"] = (
+                    existing_req.get("rationale", "") +
+                    f" [Modified: {thought}]"
+                )
+
+            modified_ids.append(mid)
+            logger.info(
+                "[Interviewer] Modified %s.%s: '%s' → '%s'. Thought: %s",
+                mid, field, old_value, new_value, thought[:100],
+            )
+
+        # ══════════════════════════════════════════════════════════════════
+        # Phase 3: EXTRACTED (new requirements — existing logic)
+        # ══════════════════════════════════════════════════════════════════
 
         # ── ID counters ────────────────────────────────────────────────────
-        fr_count = sum(1 for r in draft if r.get("id", "").startswith("FR-"))
+        fr_count  = sum(1 for r in draft if r.get("id", "").startswith("FR-"))
         nfr_count = sum(1 for r in draft if r.get("id", "").startswith("NFR-"))
         con_count = sum(1 for r in draft if r.get("id", "").startswith("CON-"))
 
-        newly_added: List[str] = []
-        skipped: List[str] = []  # duplicates that were blocked
-        conflicts: List[str] = []
-        warnings: List[str] = []
-
         for req in extracted:
-            rtype = req.get("type", "functional")
+            rtype     = req.get("type", "functional")
+            rationale = req.get("rationale", "").strip()
+            thought   = req.get("thought", "").strip() or react_thought
 
-            # ── Assign ID ────────────────────────────────────────────────
+            # ── Warn if rationale is missing (but don't block) ────────────
+            if not rationale:
+                warnings.append(
+                    f"Requirement '{req.get('description', '')[:60]}' is missing "
+                    "'rationale'. Please supply reasoning in the next call."
+                )
+                rationale = "(rationale not provided)"
+
+            # ── Assign ID ─────────────────────────────────────────────────
             if not req.get("id"):
                 if rtype == "non_functional":
                     nfr_count += 1
@@ -291,15 +410,24 @@ Internal Chain of Thought (visible to you only):
                     fr_count += 1
                     req["id"] = f"FR-{fr_count:03d}"
 
-            rid = req["id"]
+            rid  = req["id"]
             desc = req.get("description", "").strip()
 
-            # ── Conflict / duplicate check ────────────────────────────────
+            # ── Conflict / duplicate check ─────────────────────────────────
             duplicate_of, conflict_with = self._check_conflicts(req, draft)
 
             if conflict_with:
-                # Conflicts are flagged but still added so the LLM can ask
-                # the stakeholder to resolve them explicitly.
+                if conflict_with in draft_by_id:
+                    existing_req = draft_by_id[conflict_with]
+                    existing_req.setdefault("history", []).append({
+                        "action":    "conflict_flagged",
+                        "turn":      turn_index,
+                        "reason":    (
+                            f"New requirement {rid} contradicts this one. "
+                            f"Rationale: {rationale}. Thought: {thought}"
+                        ),
+                        "old_value": None,
+                    })
                 conflicts.append(
                     f"⚠ CONFLICT: {rid} contradicts {conflict_with}. "
                     "Ask the stakeholder to resolve this."
@@ -307,19 +435,14 @@ Internal Chain of Thought (visible to you only):
                 req["status"] = "ambiguous"
 
             elif duplicate_of:
-                # Duplicates are silently skipped — appending them inflates
-                # the count without adding coverage, which previously caused
-                # the LLM to keep re-asking about the same topic (the count
-                # kept rising but completeness never improved because no new
-                # requirement *types* were added).
                 skipped.append(rid)
                 warnings.append(
                     f"{rid} is a probable duplicate of {duplicate_of} — skipped. "
                     "Consider merging or clarifying scope instead of re-asking."
                 )
-                continue  # do NOT append to draft
+                continue   # do NOT append to draft
 
-            # ── Vague language check ──────────────────────────────────────
+            # ── Vague language check ───────────────────────────────────────
             vague_found = _VAGUE_WORDS & set(desc.lower().split())
             if vague_found:
                 warnings.append(
@@ -328,19 +451,32 @@ Internal Chain of Thought (visible to you only):
                     "Add measurable criteria in a follow-up question."
                 )
 
-            # ── Append to draft ───────────────────────────────────────────
+            # ── Attach rationale & initialise history ─────────────────────
+            req["rationale"] = rationale
+            # Use the LLM's thought as the history reason if available;
+            # fall back to the rationale itself rather than a generic string.
+            history_reason = thought or rationale or f"Identified from stakeholder turn {req.get('source_turn', turn_index)}."
+            req.setdefault("history", []).append({
+                "action":    "created",
+                "turn":      turn_index,
+                "reason":    history_reason,
+                "old_value": None,
+            })
+
+            # ── Remove transient key before persisting ─────────────────────
+            req.pop("thought", None)
+
+            # ── Append to draft ────────────────────────────────────────────
             draft.append(req)
+            draft_by_id[rid] = req
             newly_added.append(rid)
 
         # ── Completeness ──────────────────────────────────────────────────
         completeness = self._assess_completeness(draft)
-        enough = completeness >= self._completeness_threshold
+        enough       = completeness >= self._completeness_threshold
 
-        # ── Gap analysis ─────────────────────────────────────────────────
-        # Count each requirement type currently in the draft so the LLM
-        # knows exactly which categories are missing, rather than receiving
-        # only a numeric score and having to infer the gap itself.
-        fr_in_draft = sum(1 for r in draft if r.get("type") == "functional")
+        # ── Gap analysis ──────────────────────────────────────────────────
+        fr_in_draft  = sum(1 for r in draft if r.get("type") == "functional")
         nfr_in_draft = sum(1 for r in draft if r.get("type") == "non_functional")
         con_in_draft = sum(1 for r in draft if r.get("type") == "constraint")
 
@@ -360,10 +496,12 @@ Internal Chain of Thought (visible to you only):
                 "delivery deadlines, or integration with existing systems."
             )
 
-        # ── Build observation ─────────────────────────────────────────────
+        # ── Build observation ──────────────────────────────────────────────
         parts = [
             f"Requirements draft: {len(draft)} total "
             f"(+{len(newly_added)} added: {newly_added or 'none'}"
+            + (f", {len(modified_ids)} modified: {modified_ids}" if modified_ids else "")
+            + (f", {len(deleted_ids)} deleted: {deleted_ids}" if deleted_ids else "")
             + (f", {len(skipped)} duplicates skipped: {skipped}" if skipped else "")
             + f"). Breakdown: {fr_in_draft} FR / {nfr_in_draft} NFR / {con_in_draft} CON.",
 
@@ -391,16 +529,15 @@ Internal Chain of Thought (visible to you only):
             )
 
         logger.info(
-            "[Interviewer] update_requirements: +%d new, %d skipped, %d total, "
-            "completeness=%.2f, conflicts=%d",
-            len(newly_added), len(skipped), len(draft), completeness, len(conflicts),
+            "[Interviewer] update_requirements: +%d new, %d modified, %d deleted, "
+            "%d skipped, %d total, completeness=%.2f, conflicts=%d",
+            len(newly_added), len(modified_ids), len(deleted_ids),
+            len(skipped), len(draft), completeness, len(conflicts),
         )
 
         return ToolResult(
             observation="\n".join(parts),
             state_updates={"requirements_draft": draft},
-            # should_return is intentionally False — the ReAct loop continues
-            # so the agent can pick its next action based on this observation.
         )
 
     # ------------------------------------------------------------------
@@ -442,8 +579,9 @@ Internal Chain of Thought (visible to you only):
         """
         Finalise the interview record using the accumulated requirements_draft.
 
-        The LLM supplies only ``gaps`` and ``notes``; requirements are read
-        directly from state so no re-extraction is needed.
+        The LLM supplies only ``gaps`` and ``notes``; requirements (including
+        their rationale and history) are read directly from state so no
+        re-extraction is needed.
         """
         conversation: List[Dict] = state.get("conversation") or []
         requirements: List[Dict] = list(state.get("requirements_draft") or [])
@@ -454,12 +592,12 @@ Internal Chain of Thought (visible to you only):
             "project_description":     state.get("project_description", ""),
             "conversation":            conversation,
             "total_turns":             state.get("turn_count", len(conversation) // 2),
-            "requirements_identified": requirements,
+            "requirements_identified": requirements,   # includes rationale + history
             "gaps_identified":         gaps,
             "notes":                   notes,
             "completeness_score":      self._assess_completeness(requirements),
             "created_at":              datetime.now().isoformat(),
-            "status":                  "completed",
+            "status":                  "pending_review",   # updated to "approved" by review_turn
         }
 
         artifacts = dict(state.get("artifacts") or {})
@@ -535,7 +673,7 @@ Internal Chain of Thought (visible to you only):
           • Same high-overlap pair where one has strong negation → conflict
         """
         new_desc = new_req.get("description", "")
-        duplicate_of = None
+        duplicate_of  = None
         conflict_with = None
 
         for existing in draft:
@@ -544,7 +682,6 @@ Internal Chain of Thought (visible to you only):
             overlap  = InterviewerAgent._word_overlap(new_desc, ex_desc)
 
             if overlap > 0.55:
-                # Check for negation → likely a conflict
                 new_tokens = set(new_desc.lower().split())
                 ex_tokens  = set(ex_desc.lower().split())
                 new_has_neg = bool({"not", "never", "no", "without"} & new_tokens)
@@ -556,7 +693,7 @@ Internal Chain of Thought (visible to you only):
                     duplicate_of = duplicate_of or ex_id
 
             if duplicate_of and conflict_with:
-                break   # found both; no need to scan further
+                break
 
         return duplicate_of, conflict_with
 
@@ -573,36 +710,28 @@ Internal Chain of Thought (visible to you only):
                          incomplete → next 5W1H question via send_message
                          complete   → write_interview_record
 
-        Cross-turn loop prevention
-        ──────────────────────────
-        The react() loop guard resets each process() call, so it cannot catch
-        a question that repeats across multiple graph cycles. This method
-        builds an explicit "recent questions sent" block and injects it as a
-        hard constraint so the LLM never re-asks a question already in the
-        conversation history.
-
-        Forced update_requirements
-        ──────────────────────────
-        If a stakeholder reply is present but update_requirements has not been
-        called yet this turn (detected by comparing draft size before/after),
-        the task prompt uses imperative language and places the extraction step
-        before any other instruction to prevent the LLM from skipping it.
+        Review-restart handling
+        ───────────────────────
+        If ``review_feedback`` is present in state the interview record was
+        previously rejected.  The feedback is injected prominently so the LLM
+        knows exactly what to improve in this run.
         """
-        conversation = state.get("conversation") or []
-        turn_count = state.get("turn_count", 0)
-        max_turns = state.get("max_turns", self._max_turns)
-        draft = state.get("requirements_draft") or []
-        completeness = self._assess_completeness(draft)
-        enough = completeness >= self._completeness_threshold
+        conversation  = state.get("conversation") or []
+        turn_count    = state.get("turn_count", 0)
+        max_turns     = state.get("max_turns", self._max_turns)
+        draft         = state.get("requirements_draft") or []
+        completeness  = self._assess_completeness(draft)
+        enough        = completeness >= self._completeness_threshold
+        review_feedback = (state.get("review_feedback") or "").strip()
 
-        # ── Build transcript ──────────────────────────────────────────────
+        # ── Build transcript ───────────────────────────────────────────────
         transcript = "\n".join(
             f"[{i}] {'Interviewer' if t['role'] == 'interviewer' else 'Stakeholder'}: "
             f"{t['content']}"
             for i, t in enumerate(conversation)
         ) or "(interview has not started yet)"
 
-        # ── Last stakeholder utterance ────────────────────────────────────
+        # ── Last stakeholder utterance ─────────────────────────────────────
         last_stakeholder = next(
             (t["content"] for t in reversed(conversation)
              if t["role"] == "enduser"),
@@ -610,16 +739,17 @@ Internal Chain of Thought (visible to you only):
         )
         last_turn_index = len(conversation) - 1
 
-        # ── Draft summary ─────────────────────────────────────────────────
+        # ── Draft summary (include rationale excerpt) ──────────────────────
         draft_summary = (
-                "\n".join(
-                    f"  [{r.get('id', '?')}] ({r.get('type', '?')}, "
-                    f"{r.get('status', '?')}) {r.get('description', '')[:80]}"
-                    for r in draft[-10:]
-                ) or "  (no requirements captured yet)"
+            "\n".join(
+                f"  [{r.get('id', '?')}] ({r.get('type', '?')}, "
+                f"{r.get('status', '?')}) {r.get('description', '')[:80]}\n"
+                f"    ↳ rationale: {r.get('rationale', '(none)')[:100]}"
+                for r in draft[-10:]
+            ) or "  (no requirements captured yet)"
         )
 
-        # ── Stopping hint ─────────────────────────────────────────────────
+        # ── Stopping hint ──────────────────────────────────────────────────
         approaching_limit = turn_count >= max(4, max_turns - 3)
         if approaching_limit:
             stop_hint = (
@@ -639,34 +769,69 @@ Internal Chain of Thought (visible to you only):
                 f"{remaining} turns remaining."
             )
 
-        # ── Cross-turn loop detection ─────────────────────────────────────
-        # Collect the last 5 questions the interviewer has already sent so
-        # the LLM can be explicitly told not to repeat any of them.
-        # This is necessary because react()'s action_repeat_counts resets
-        # on every process() call and cannot track cross-turn repetition.
+        # ── Cross-turn loop detection ──────────────────────────────────────
         recent_interviewer_questions = [
-                                           t["content"]
-                                           for t in conversation
-                                           if t["role"] == "interviewer"
-                                       ][-5:]
+            t["content"]
+            for t in conversation
+            if t["role"] == "interviewer"
+        ][-5:]
 
         if recent_interviewer_questions:
             repeat_guard = (
-                    "QUESTIONS ALREADY SENT (do NOT ask these again — "
-                    "the stakeholder has already answered them):\n"
-                    + "\n".join(f"  • {q[:120]}" for q in recent_interviewer_questions)
-                    + "\nYou MUST ask about a DIFFERENT topic or aspect."
+                "QUESTIONS ALREADY SENT (do NOT ask these again — "
+                "the stakeholder has already answered them):\n"
+                + "\n".join(f"  • {q[:120]}" for q in recent_interviewer_questions)
+                + "\nYou MUST ask about a DIFFERENT topic or aspect."
             )
         else:
             repeat_guard = ""
 
-        # ── Decision context ──────────────────────────────────────────────
-        if last_stakeholder:
+        # ── Review-restart feedback block ──────────────────────────────────
+        if review_feedback:
+            review_block = (
+                "━━━━━━━━━━━━━━  REVIEW FEEDBACK (previous record was rejected)  ━━━━━━━━━━━━━━\n"
+                f"{review_feedback}\n\n"
+                "You MUST address ALL points above.\n"
+                "USE 'update_requirements' with the appropriate operations:\n"
+                "  • To EDIT an existing requirement → use 'modifications' with the req ID,\n"
+                "    the field to change, the new value, and your thought explaining why.\n"
+                "  • To REMOVE a requirement         → use 'deletions' with the req ID\n"
+                "    and your thought explaining why.\n"
+                "  • To ADD a missing requirement     → use 'extracted' as before.\n"
+                "Apply ALL feedback changes in a SINGLE 'update_requirements' call,\n"
+                "then call 'write_interview_record' to produce the corrected record.\n"
+            )
+        else:
+            review_block = ""
+
+        # ── Decision context ───────────────────────────────────────────────
+        if review_feedback:
+            # Feedback-driven mode: apply reviewer's changes directly on the
+            # existing requirements_draft without needing a new stakeholder turn.
+            extraction_guidance = (
+                "STEP 1 — MANDATORY: call 'update_requirements' RIGHT NOW.\n"
+                "  You have review feedback to address. Apply ALL requested changes:\n"
+                "  • Use 'modifications' to edit existing requirements (change priority,\n"
+                "    description, status, etc.) — provide your 'thought' for each.\n"
+                "  • Use 'deletions' to remove requirements the reviewer flagged — \n"
+                "    provide your 'thought' for each.\n"
+                "  • Use 'extracted' to add any new requirements the reviewer asked for —\n"
+                "    provide 'rationale' and optionally 'thought' for each.\n"
+                "  Do ALL changes in a SINGLE 'update_requirements' call.\n\n"
+                "STEP 2 — After update_requirements returns:\n"
+                "  • If completeness is SUFFICIENT → call 'write_interview_record'\n"
+                "  • If more info is needed        → 'send_message' to ask the stakeholder\n"
+            )
+        elif last_stakeholder:
             extraction_guidance = (
                 "STEP 1 — MANDATORY: call 'update_requirements' RIGHT NOW.\n"
                 f"  The stakeholder just replied at conversation index {last_turn_index}:\n"
                 f"  \"{last_stakeholder[:200]}\"\n"
                 "  Extract EVERY requirement you can find in that reply.\n"
+                "  For EACH requirement you MUST supply a 'rationale' field that:\n"
+                "    • Cites the stakeholder's exact words or intent.\n"
+                "    • Explains the business goal or constraint the requirement addresses.\n"
+                "  Optionally supply a 'thought' field with your chain-of-thought reasoning.\n"
                 "  Include functional AND non-functional requirements "
                 "(performance, security, reliability, usability).\n"
                 "  Do not skip this step — calling 'send_message' without "
@@ -689,28 +854,34 @@ Internal Chain of Thought (visible to you only):
             )
 
         task = (
-                f"{self.PROFILE}\n\n"
-                "━━━━━━━━━━━━━━  PROJECT  ━━━━━━━━━━━━━━\n"
-                f"{state.get('project_description', 'not provided')}\n\n"
-                "━━━━━━━━━━━━━━  CONVERSATION SO FAR  ━━━━━━━━━━━━━━\n"
-                f"{transcript}\n\n"
-                "━━━━━━━━━━━━━━  REQUIREMENTS DRAFT (latest 10)  ━━━━━━━━━━━━━━\n"
-                f"{draft_summary}\n\n"
-                "━━━━━━━━━━━━━━  STATUS  ━━━━━━━━━━━━━━\n"
-                f"{stop_hint}\n\n"
-                + (
-                    "━━━━━━━━━━━━━━  REPEAT GUARD  ━━━━━━━━━━━━━━\n"
-                    f"{repeat_guard}\n\n"
-                    if repeat_guard else ""
-                )
-                + "━━━━━━━━━━━━━━  YOUR NEXT ACTION  ━━━━━━━━━━━━━━\n"
-                  f"{extraction_guidance}\n"
-                  "RULES:\n"
-                  "• ONE tool per ReAct step.\n"
-                  "• 'send_message': ONE question only. No compound questions.\n"
-                  "• 'update_requirements': include source_turn index for traceability.\n"
-                  "• 'write_interview_record': do NOT pass a requirements list;\n"
-                  "  the draft is read automatically. Pass only gaps and notes.\n"
+            f"{self.PROFILE}\n\n"
+            "━━━━━━━━━━━━━━  PROJECT  ━━━━━━━━━━━━━━\n"
+            f"{state.get('project_description', 'not provided')}\n\n"
+            + (review_block if review_block else "")
+            + "━━━━━━━━━━━━━━  CONVERSATION SO FAR  ━━━━━━━━━━━━━━\n"
+            f"{transcript}\n\n"
+            "━━━━━━━━━━━━━━  REQUIREMENTS DRAFT (latest 10)  ━━━━━━━━━━━━━━\n"
+            f"{draft_summary}\n\n"
+            "━━━━━━━━━━━━━━  STATUS  ━━━━━━━━━━━━━━\n"
+            f"{stop_hint}\n\n"
+            + (
+                "━━━━━━━━━━━━━━  REPEAT GUARD  ━━━━━━━━━━━━━━\n"
+                f"{repeat_guard}\n\n"
+                if repeat_guard else ""
+            )
+            + "━━━━━━━━━━━━━━  YOUR NEXT ACTION  ━━━━━━━━━━━━━━\n"
+              f"{extraction_guidance}\n"
+              "RULES:\n"
+              "• ONE tool per ReAct step.\n"
+              "• 'send_message': ONE question only. No compound questions.\n"
+              "• 'update_requirements':\n"
+              "    - 'extracted': EVERY item MUST have a 'rationale' field.\n"
+              "      Include 'thought' for richer history tracking.\n"
+              "    - 'modifications': provide 'id', 'field', 'new_value', 'thought'.\n"
+              "    - 'deletions': provide 'id' and 'thought'.\n"
+              "    - You can combine all three in a single call.\n"
+              "• 'write_interview_record': do NOT pass a requirements list;\n"
+              "  the draft is read automatically. Pass only gaps and notes.\n"
         )
 
         return self.react(state, task)

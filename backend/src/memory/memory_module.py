@@ -34,6 +34,7 @@ from typing import Any, Dict, Optional, Union
 from .long_term import EpisodicMemory, SemanticMemory, create_store
 from .short_term import ConversationBuffer
 from .types import Episode, Fact, MemoryType
+from ..config.config_manager import get_config
 
 
 class MemoryModule:
@@ -47,9 +48,7 @@ class MemoryModule:
     def __init__(
         self,
         memory_type: MemoryType,
-        pg_conn_str: Optional[str] = None,
         project_id: str = "default",
-        system_prompt: str = "",
         embed_fn=None,
         dims: int = 1536,
     ) -> None:
@@ -57,9 +56,7 @@ class MemoryModule:
 
         Args:
             memory_type: Which memory strategy to activate.
-            pg_conn_str: PostgreSQL connection string — required for EPISODIC / SEMANTIC / EPISODIC_SEMANTIC.
             project_id: Namespace root used to partition the store per project.
-            system_prompt: Fixed system prompt injected into the SHORT_TERM buffer.
             embed_fn: Embedding callable to enable semantic search in the store.
             dims: Vector dimensions — must match embed_fn output.
         """
@@ -68,14 +65,10 @@ class MemoryModule:
         self._episodic: Optional[EpisodicMemory] = None
         self._semantic: Optional[SemanticMemory] = None
 
-        if memory_type == MemoryType.SHORT_TERM:
-            self._buffer = ConversationBuffer(system_prompt)
-
         if memory_type in (MemoryType.EPISODIC, MemoryType.SEMANTIC, MemoryType.EPISODIC_SEMANTIC):
-            if not pg_conn_str:
-                raise ValueError(
-                    f"pg_conn_str is required for memory_type='{memory_type}'."
-                )
+            cfg = get_config().get("iredev", {}).get("knowledge_base", {})
+            pg_conn_str = cfg.get("pg_connection")
+
             store = create_store(pg_conn_str, embed_fn=embed_fn, dims=dims)
 
             if memory_type in (MemoryType.EPISODIC, MemoryType.EPISODIC_SEMANTIC):

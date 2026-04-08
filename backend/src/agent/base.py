@@ -1,36 +1,9 @@
-"""
-base.py – BaseAgent with five modules; the ReAct loop lives in ThinkModule.
-
-Five modules
-────────────
-1. Profile    ProfileModule   – system prompt loaded from a file
-2. Memory     MemoryModule    – conversation buffer (full history)
-3. Knowledge  KnowledgeModule – pgvector retrieval (agents call via tool)
-4. Think      ThinkModule     – ReAct execution loop
-5. Action     react()         – thin shim; delegates to ThinkModule.run_react()
-              + per-agent tools registered via _register_tools()
-
-The ``process(state)`` method is the LangGraph node entry point.
-Subclasses implement ``_register_tools()`` and ``process()``.
-
-ReAct design (owned by ThinkModule)
-────────────────────────────────────
-• LangGraph StateGraph: ``agent`` (LLM) → ``tools`` (executor) → loop.
-• Full memory history injected once into the SystemMessage — no summarisation,
-  no truncation; the LLM sees everything in its context window.
-• RAG is NOT injected automatically.  Agents that need knowledge call the
-  ``search_knowledge`` tool themselves during the loop.
-• ``ToolResult.state_updates`` are merged across all tool calls each turn.
-• ``ToolResult.should_return = True`` exits the ReAct graph immediately.
-• Loop guard via LangGraph's built-in ``recursion_limit``.
-"""
-
 from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +23,7 @@ class ToolResult:
     observation:   str
     state_updates: Dict[str, Any] = field(default_factory=dict)
     should_return: bool           = False
+    is_error: bool = False
 
 
 class Tool:
@@ -65,7 +39,11 @@ class Tool:
             return self._func(**kwargs)
         except Exception as exc:
             logger.exception("Tool '%s' raised: %s", self.name, exc)
-            return ToolResult(observation=f"[Error in {self.name}]: {exc}")
+            return ToolResult(
+                observation=f"[Error in {self.name}]: {exc}",
+                is_error=True,
+                should_return=True,
+            )
 
     def describe(self) -> str:
         return f"  {self.name}: {self.description}"
@@ -100,15 +78,12 @@ class BaseAgent(ABC):
 
         # ── Module 1: Profile ────────────────────────────────────────────
         from ..profile.profile_module import ProfileModule
-        self.profile = ProfileModule(f"prompts/{name}_profile.txt")
+        self.profile = ProfileModule(f"prompts/{name}_react.txt")
 
         # ── Module 2: Memory ─────────────────────────────────────────────
         from ..memory.memory_module import MemoryModule
         from ..memory.types import MemoryType
-        self.memory = MemoryModule(
-            memory_type=MemoryType(str(agent_section.get("memory_type"))),
-            system_prompt=self.profile.prompt,
-        )
+        self.memory = MemoryModule(memory_type=MemoryType(str(agent_section.get("memory_type"))))
 
         # ── Module 3: Knowledge ──────────────────────────────────────────
         # Kept as a reference so subclasses can use it inside tool functions

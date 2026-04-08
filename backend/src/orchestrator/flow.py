@@ -9,19 +9,35 @@ Sprint Zero artifact chain
     Output: interview_record
 
     InterviewerAgent calls update_requirements after EVERY stakeholder turn.
+    Each requirement carries a ``rationale`` field explaining why it was
+    identified and a ``history`` list recording every modification reason.
     Conflicts are resolved INLINE via Socratic follow-up — not post-hoc.
     Stops when interview_complete=True (completeness ≥ threshold, LLM-driven)
     or max_turns (safety net).
 
-  Step 2 – build_product_backlog
-    Agent : SprintAgent
+  Step 2 – review_interview_record          ← NEW human-in-the-loop gate
+    Agent : human reviewer (LangGraph interrupt)
     Input : interview_record
+    Output: reviewed_interview_record
+
+    A human reviewer inspects every requirement together with its rationale
+    and modification history.  Two outcomes:
+      • Approved  → reviewed_interview_record artifact is written; flow
+                    advances to step 3.
+      • Rejected  → interview_record is removed; review_feedback is injected
+                    into state; the flow returns to step 1 (re-interview with
+                    context of what needs improving).
+
+  Step 3 – build_product_backlog
+    Agent : SprintAgent
+    Input : reviewed_interview_record        ← was interview_record
     Output: product_backlog
 
 Design rationale (no separate extraction step)
 ───────────────────────────────────────────────
 Extraction is now incremental and conflict-aware. The interview_record
-already contains a clean requirements_identified list built turn-by-turn.
+already contains a clean requirements_identified list built turn-by-turn,
+each entry annotated with its rationale and history.
 A separate extraction pass would duplicate work and lose conflict context.
 """
 
@@ -57,8 +73,9 @@ WORKFLOW_PHASES: List[PhaseDefinition] = [
         display_name="Sprint Zero — Discovery & Planning",
         description=(
             "Gather software requirements via stakeholder interviews "
-            "(with live, conflict-aware incremental extraction) and "
-            "translate them into an initial product backlog."
+            "(with live, conflict-aware incremental extraction), submit the "
+            "interview record for human review, then translate approved "
+            "requirements into an initial product backlog."
         ),
         steps=[
             ArtifactStep(
@@ -71,20 +88,42 @@ WORKFLOW_PHASES: List[PhaseDefinition] = [
                     "InterviewerAgent conducts a multi-turn dialogue. "
                     "After EACH stakeholder reply, calls update_requirements "
                     "to extract, merge, and conflict-check incrementally. "
-                    "Conflicts trigger inline Socratic clarification. "
+                    "Every requirement is stored with a 'rationale' (why it "
+                    "was identified) and a 'history' list (modifications + "
+                    "reasons).  Conflicts trigger inline Socratic clarification. "
                     "Stops when completeness ≥ threshold (interview_complete=True) "
                     "or max_turns safety net is reached."
                 ),
             ),
+
+            # ── NEW step ─────────────────────────────────────────────────
+            ArtifactStep(
+                step_name="review_interview_record",
+                node_name="review_turn",
+                requires_artifacts=["interview_record"],
+                produces_artifact="reviewed_interview_record",
+                agent_name="human_reviewer",
+                description=(
+                    "Human reviewer inspects every requirement together with "
+                    "its rationale and modification history. "
+                    "• Approved  → reviewed_interview_record artifact written. "
+                    "• Rejected  → interview_record removed; review_feedback "
+                    "  injected; flow returns to conduct_requirements_interview."
+                ),
+            ),
+
             ArtifactStep(
                 step_name="build_product_backlog",
                 node_name="sprint_agent_turn",
-                requires_artifacts=["interview_record"],
+                # Changed prerequisite: requires the *reviewed* record so the
+                # backlog is only built after human approval.
+                requires_artifacts=["reviewed_interview_record"],
                 produces_artifact="product_backlog",
                 agent_name="sprint_agent",
                 description=(
-                    "SprintAgent reads interview_record and generates "
-                    "the initial product backlog."
+                    "SprintAgent reads reviewed_interview_record (which includes "
+                    "requirement rationale and history) and generates the initial "
+                    "product backlog."
                 ),
             ),
         ],

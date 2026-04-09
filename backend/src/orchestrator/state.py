@@ -14,34 +14,32 @@ Within each phase, routing is artifact-driven:
   The supervisor inspects (system_phase, artifacts) and selects the next
   ArtifactStep whose prerequisites are met but whose output is absent.
 
-Requirements elicitation sub-state
-───────────────────────────────────
-``requirements_draft`` is the live, incrementally-updated requirement list
-maintained by InterviewerAgent throughout the interview loop.
-  • Populated by: InterviewerAgent._tool_update_requirements  (per turn)
-  • Finalised by: InterviewerAgent._tool_write_interview_record
-    (copies draft → interview_record artifact; does NOT clear the draft)
+Sprint Zero artifact chain (6 steps)
+──────────────────────────────────────
+  1. conduct_requirements_interview → interview_record
+  2. review_interview_record        → reviewed_interview_record
+  3. build_product_backlog          → product_backlog
+  4. review_product_backlog         → reviewed_product_backlog
+  5. plan_sprint_backlog            → sprint_backlog_<N>
+  6. review_sprint_backlog          → reviewed_sprint_backlog_<N>
 
-Each item follows the schema:
+Sprint planning sub-state
+──────────────────────────
+``sprint_feedback`` carries the human planner's inputs for Pipeline B:
   {
-    "id":          "FR-001" | "NFR-001" | "CON-001",
-    "type":        "functional" | "non_functional" | "constraint",
-    "description": "<precise, testable statement>",
-    "priority":    "high" | "medium" | "low",
-    "source_turn": <int, 0-based index in conversation list>,
-    "status":      "confirmed" | "inferred" | "ambiguous",
-    "rationale":   "<why this requirement was identified — evidence from the
-                     stakeholder's exact words, business goal, or constraint
-                     it addresses; also records any modification reason>",
-    "history":     [                          # populated on every edit
-                     {
-                       "action":    "created" | "modified" | "conflict_flagged",
-                       "turn":      <int>,
-                       "reason":    "<brief explanation of the change>",
-                       "old_value": "<previous description, if modified>",
-                     }, ...
-                   ]
+    "sprint_goal":        "<one-sentence goal>",
+    "capacity_points":    <int>,
+    "completed_pbi_ids":  ["PBI-xxx", ...],
+    "plan_another":       <bool>,
+    "notes":              "<optional planner notes>"
   }
+
+``sprint_draft`` is the working list of PBIs being planned (Pipeline B).
+Seeded from product_backlog["items"] on first sprint, then reused across
+multiple sprints within a session.
+
+``current_sprint_number`` tracks which sprint is being planned (1-based int).
+Incremented by sprint_feedback_turn before each new sprint.
 """
 
 from enum import Enum
@@ -54,14 +52,9 @@ from typing_extensions import TypedDict
 # ---------------------------------------------------------------------------
 
 class SystemPhase(str, Enum):
-    """
-    Top-level workflow phases.  Progress is strictly sequential: once a phase
-    is complete (all its artifact steps are done) the workflow advances to the
-    next phase and never returns.
-    """
-    SPRINT_ZERO_PLANNING = "sprint_zero_planning"   # discovery + initial backlog
-    SPRINT_EXECUTION     = "sprint_execution"        # sprint N iterations
-    SPRINT_REVIEW        = "sprint_review"           # review + retrospective
+    SPRINT_ZERO_PLANNING = "sprint_zero_planning"
+    SPRINT_EXECUTION     = "sprint_execution"
+    SPRINT_REVIEW        = "sprint_review"
 
 
 # ---------------------------------------------------------------------------
@@ -88,64 +81,60 @@ class ConversationTurn(TypedDict):
 
 # ---------------------------------------------------------------------------
 # WorkflowState
-#
-# Every node receives the full state and returns a *partial* dict that
-# LangGraph merges via reducer.  Fields are total=False (all optional) so
-# nodes only need to return the keys they actually change.
 # ---------------------------------------------------------------------------
 
 class WorkflowState(TypedDict, total=False):
 
     # ── Session ───────────────────────────────────────────────────────────
     session_id:          str
-    project_description: str   # raw brief provided by the user / caller
+    project_description: str
 
-    # ── Phase management (hard sequential flow) ───────────────────────────
-    # Stores a SystemPhase value (string).  Defaults to SPRINT_ZERO_PLANNING
-    # when absent.  Updated by the supervisor when the phase advances.
+    # ── Phase management ──────────────────────────────────────────────────
     system_phase: str
 
-    # ── Artifact store (artifact-driven intra-phase routing) ──────────────
-    # All produced artifacts live here, keyed by their logical name.
-    # e.g. {"interview_record": {...}, "reviewed_interview_record": {...},
-    #        "product_backlog": {...}}
+    # ── Artifact store ────────────────────────────────────────────────────
     artifacts:    Dict[str, Any]
-
-    # Optional parallel store of LangGraph store IDs for cross-session lookup.
     artifact_ids: Dict[str, str]
 
     # ── Supervisor routing signal ─────────────────────────────────────────
-    # Set by supervisor_node; read by supervisor_router to pick the next edge.
     next_node: str
 
-    # ── Interview sub-state (Sprint Zero – step 1) ────────────────────────
+    # ── Interview sub-state (step 1) ──────────────────────────────────────
     conversation:       List[ConversationTurn]
     turn_count:         int
     max_turns:          int
-    interview_complete: bool   # set True by InterviewerAgent._tool_write_interview_record
+    interview_complete: bool
 
-    # ── Live requirements draft (Sprint Zero – step 1) ────────────────────
-    # Incrementally built by InterviewerAgent._tool_update_requirements.
-    # Each entry: {id, type, description, priority, source_turn, status,
-    #              rationale, history}
-    # Copied into interview_record["requirements_identified"] when finalised.
-    # Persists in state for downstream inspection (e.g. SprintAgent).
+    # ── Live requirements draft (step 1) ──────────────────────────────────
     requirements_draft: List[Dict[str, Any]]
 
-    # ── Live backlog draft (Sprint Zero – step 3) ─────────────────────────
-    # Incrementally built by SprintAgent tools (triage, split, validate, prioritize).
-    # Each entry: {id, title, description, story_points, status, wsjf_score, history, ...}
-    # Copied into product_backlog["items"] when finalised.
+    # ── Live backlog draft (step 3) ───────────────────────────────────────
     backlog_draft: List[Dict[str, Any]]
 
-    # ── Human-review gate (Sprint Zero – step 2: review_interview_record) ─
-    # Set by the review_turn node via LangGraph interrupt().
-    # review_feedback is injected back into the InterviewerAgent's task prompt
-    # when the interview restarts after a rejection so the agent knows what
-    # to improve.
+    # ── Human-review gate: interview record (step 2) ───────────────────────
     awaiting_review: bool
     review_approved: bool
-    review_feedback: Optional[str]   # populated on rejection; None on approval
+    review_feedback: Optional[str]
+
+    # ── Human-review gate: product backlog (step 4) ────────────────────────
+    # On rejection: product_backlog removed from artifacts; feedback set so
+    # SprintAgent rebuilds the backlog with the reviewer's comments.
+    product_backlog_review_approved: bool
+    product_backlog_feedback:        Optional[str]
+
+    # ── Sprint planning sub-state (step 5) ────────────────────────────────
+    # sprint_feedback_turn collects the human planner's inputs before
+    # SprintAgent Pipeline B runs.  The sentinel "_sprint_feedback_ready"
+    # (written into artifacts) tells SprintAgent.process() to run Pipeline B.
+    sprint_feedback:       Optional[Dict[str, Any]]
+    current_sprint_number: int
+    sprint_draft:          List[Dict[str, Any]]
+
+    # ── Human-review gate: sprint backlog (step 6) ────────────────────────
+    # On rejection: sprint_backlog_N removed from artifacts; feedback set so
+    # SprintAgent replans; _sprint_feedback_ready re-added to trigger replan.
+    sprint_backlog_review_approved: bool
+    sprint_backlog_feedback:        Optional[str]
 
     # ── Error accumulation ────────────────────────────────────────────────
     errors: List[str]

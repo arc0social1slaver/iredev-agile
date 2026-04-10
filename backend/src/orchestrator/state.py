@@ -42,36 +42,41 @@ from typing_extensions import TypedDict
 # SystemPhase – top-level phase sequencing (hard flow between phases)
 # ---------------------------------------------------------------------------
 
+
 class SystemPhase(str, Enum):
     """
     Top-level workflow phases.  Progress is strictly sequential: once a phase
     is complete (all its artifact steps are done) the workflow advances to the
     next phase and never returns.
     """
-    SPRINT_ZERO_PLANNING = "sprint_zero_planning"   # discovery + initial backlog
-    SPRINT_EXECUTION     = "sprint_execution"        # sprint N iterations
-    SPRINT_REVIEW        = "sprint_review"           # review + retrospective
+
+    SPRINT_ZERO_PLANNING = "sprint_zero_planning"  # discovery + initial backlog
+    SPRINT_EXECUTION = "sprint_execution"  # sprint N iterations
+    SPRINT_REVIEW = "sprint_review"  # review + retrospective
 
 
 # ---------------------------------------------------------------------------
 # ProcessPhase – knowledge-retrieval scopes (used by ThinkModule internally)
 # ---------------------------------------------------------------------------
 
+
 class ProcessPhase(str, Enum):
     """Scopes used by KnowledgeModule / ThinkModule for retrieval filtering."""
-    ELICITATION   = "elicitation"
-    ANALYSIS      = "analysis"
+
+    ELICITATION = "elicitation"
+    ANALYSIS = "analysis"
     SPECIFICATION = "specification"
-    VALIDATION    = "validation"
+    VALIDATION = "validation"
 
 
 # ---------------------------------------------------------------------------
 # Typed conversation turn
 # ---------------------------------------------------------------------------
 
+
 class ConversationTurn(TypedDict):
-    role:      str   # "interviewer" | "enduser"
-    content:   str
+    role: str  # "interviewer" | "enduser"
+    content: str
     timestamp: str
 
 
@@ -83,11 +88,12 @@ class ConversationTurn(TypedDict):
 # nodes only need to return the keys they actually change.
 # ---------------------------------------------------------------------------
 
+
 class WorkflowState(TypedDict, total=False):
 
     # ── Session ───────────────────────────────────────────────────────────
-    session_id:          str
-    project_description: str   # raw brief provided by the user / caller
+    session_id: str
+    project_description: str  # raw brief provided by the user / caller
 
     # ── Phase management (hard sequential flow) ───────────────────────────
     # Stores a SystemPhase value (string).  Defaults to SPRINT_ZERO_PLANNING
@@ -97,7 +103,7 @@ class WorkflowState(TypedDict, total=False):
     # ── Artifact store (artifact-driven intra-phase routing) ──────────────
     # All produced artifacts live here, keyed by their logical name.
     # e.g. {"interview_record": {...}, "product_backlog": {...}}
-    artifacts:    Dict[str, Any]
+    artifacts: Dict[str, Any]
 
     # Optional parallel store of LangGraph store IDs for cross-session lookup.
     artifact_ids: Dict[str, str]
@@ -107,10 +113,12 @@ class WorkflowState(TypedDict, total=False):
     next_node: str
 
     # ── Interview sub-state (Sprint Zero – step 1) ────────────────────────
-    conversation:       List[ConversationTurn]
-    turn_count:         int
-    max_turns:          int
-    interview_complete: bool   # set True by InterviewerAgent._tool_write_interview_record
+    conversation: List[ConversationTurn]
+    turn_count: int
+    max_turns: int
+    interview_complete: (
+        bool  # set True by InterviewerAgent._tool_write_interview_record
+    )
 
     # ── Live requirements draft (Sprint Zero – step 1) ────────────────────
     # Incrementally built by InterviewerAgent._tool_update_requirements.
@@ -126,3 +134,5 @@ class WorkflowState(TypedDict, total=False):
 
     # ── Error accumulation ────────────────────────────────────────────────
     errors: List[str]
+
+    metadata: Optional[Dict[str, Any]]

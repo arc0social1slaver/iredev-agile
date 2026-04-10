@@ -34,7 +34,7 @@ import time
 import threading
 import logging
 
-from config.config import BLACKLIST_SWEEP_INTERVAL_SECONDS
+from ..config.config import BLACKLIST_SWEEP_INTERVAL_SECONDS
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +48,7 @@ _lock = threading.Lock()
 # =============================================================================
 # Public API
 # =============================================================================
+
 
 def add(token: str, expires_at: float) -> None:
     """
@@ -72,7 +73,7 @@ def is_blacklisted(token: str) -> bool:
     with _lock:
         expiry = _blacklist.get(key)
         if expiry is None:
-            return False   # not in blacklist
+            return False  # not in blacklist
 
         if time.time() > expiry:
             # Entry has naturally expired — clean it up and treat as not blacklisted.
@@ -95,27 +96,32 @@ def size() -> int:
 # Background sweep — runs in a daemon thread started by start_sweep_thread()
 # =============================================================================
 
+
 def _sweep() -> int:
     """
     Remove all entries whose expiry timestamp is in the past.
     Returns the number of entries removed.
     """
-    now    = time.time()
+    now = time.time()
     with _lock:
         expired_keys = [k for k, exp in _blacklist.items() if now > exp]
         for k in expired_keys:
             del _blacklist[k]
 
     if expired_keys:
-        log.info(f"[blacklist] Sweep removed {len(expired_keys)} expired entries. "
-                 f"Remaining: {len(_blacklist)}")
+        log.info(
+            f"[blacklist] Sweep removed {len(expired_keys)} expired entries. "
+            f"Remaining: {len(_blacklist)}"
+        )
     return len(expired_keys)
 
 
 def _sweep_loop() -> None:
     """Daemon thread target — sweeps the blacklist on a fixed interval."""
-    log.info(f"[blacklist] Sweep thread started "
-             f"(interval={BLACKLIST_SWEEP_INTERVAL_SECONDS}s)")
+    log.info(
+        f"[blacklist] Sweep thread started "
+        f"(interval={BLACKLIST_SWEEP_INTERVAL_SECONDS}s)"
+    )
     while True:
         time.sleep(BLACKLIST_SWEEP_INTERVAL_SECONDS)
         _sweep()
@@ -135,6 +141,7 @@ def start_sweep_thread() -> threading.Thread:
 # =============================================================================
 # Private helpers
 # =============================================================================
+
 
 def _token_key(token: str) -> str:
     """

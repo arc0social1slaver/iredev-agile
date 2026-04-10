@@ -16,14 +16,12 @@ import re
 # =============================================================================
 
 _RESPONSES: dict[str, str] = {
-
     "greeting": """\
 Hello! I'm Claude, an AI assistant made by Anthropic. I can help you with \
 writing, coding, analysis, research, creative work, and much more.
 
 What would you like to work on today?\
 """,
-
     "react": """\
 Here's a clean, reusable React custom hook:
 
@@ -59,7 +57,6 @@ const [theme, setTheme] = useLocalStorage('theme', 'light')
 2. **Automatic sync** — `useEffect` keeps localStorage in sync with state
 3. **Error safety** — `try/catch` guards against corrupted stored JSON\
 """,
-
     "python": """\
 Here's a solid pandas data-cleaning workflow:
 
@@ -100,7 +97,6 @@ print(summary)
 - `pd.to_numeric(errors='coerce')` — converts bad strings to NaN instead of crashing
 - Named aggregation syntax is cleaner than a plain dict\
 """,
-
     "javascript": """\
 Here's a robust async utility with automatic retries:
 
@@ -136,7 +132,6 @@ export async function fetchWithRetry(url, options = {}, retries = 3) {
 Exponential back-off means transient hiccups resolve automatically \
 without hammering the server.\
 """,
-
     "write": """\
 Here's a polished follow-up email template:
 
@@ -166,7 +161,6 @@ Best regards,
 
 Want me to adjust the tone (more formal, more casual, or more persuasive)?\
 """,
-
     "explain": """\
 Great question — let me break this down clearly.
 
@@ -190,7 +184,6 @@ and much easier to debug.
 
 Would you like me to go deeper on any specific stage?\
 """,
-
     "default": """\
 That's an interesting question! Here's how I'd approach it:
 
@@ -220,7 +213,6 @@ Would you like me to apply this approach to your specific problem?\
 # =============================================================================
 
 _REVISION_RESPONSES: dict[str, str] = {
-
     # Feedback about colours / styling
     "color": """\
 // Revised — updated color scheme to blue as requested
@@ -250,7 +242,6 @@ export function useLocalStorage(key, initialValue) {
   return [value, setValue]
 }
 """,
-
     # Feedback about adding types / TypeScript
     "type": """\
 // Revised — added TypeScript types as requested
@@ -277,7 +268,6 @@ export function useLocalStorage<T>(
   return [value, setValue]
 }
 """,
-
     # Feedback about error handling
     "error": """\
 // Revised — improved error handling with callbacks as requested
@@ -322,7 +312,6 @@ export function useLocalStorage(key, initialValue, onError) {
   return [value, setStoredValue]
 }
 """,
-
     # Feedback about comments / documentation
     "comment": """\
 // Revised — added detailed JSDoc comments as requested
@@ -367,7 +356,6 @@ export function useLocalStorage(key, initialValue) {
   return [value, setValue]
 }
 """,
-
     # Generic / default revision
     "default": """\
 // Revised — refactored for clarity and added remove() helper as requested
@@ -409,6 +397,7 @@ export function useLocalStorage(key, initialValue) {
 # Public functions
 # =============================================================================
 
+
 def generate_response(user_message: str) -> str:
     """
     Pick the best canned reply for a user message.
@@ -446,13 +435,13 @@ def stream_tokens(text: str):
             ws.send(token)
     """
     # Keep whitespace attached to each word so the client reconstructs faithfully
-    words = re.findall(r'\S+\s*|\n+', text)
+    words = re.findall(r"\S+\s*|\n+", text)
 
     for word in words:
-        if word.rstrip().endswith(('.', '!', '?', ':')):
-            delay = 0.06   # longer pause after sentence-ending punctuation
-        elif '\n' in word:
-            delay = 0.04   # medium pause after newline
+        if word.rstrip().endswith((".", "!", "?", ":")):
+            delay = 0.06  # longer pause after sentence-ending punctuation
+        elif "\n" in word:
+            delay = 0.04  # medium pause after newline
         else:
             delay = 0.025  # fast for regular words
 
@@ -463,11 +452,14 @@ def stream_tokens(text: str):
 # Private helpers
 # =============================================================================
 
+
 def _pick_response_key(message: str) -> str:
     t = message.lower()
     if any(w in t for w in ("hello", "hi ", "hey ", "good morning")):
         return "greeting"
-    if any(w in t for w in ("react", "component", "hook", "jsx", "frontend", "dashboard")):
+    if any(
+        w in t for w in ("react", "component", "hook", "jsx", "frontend", "dashboard")
+    ):
         return "react"
     if any(w in t for w in ("python", "pandas", "numpy", "django", "flask")):
         return "python"
@@ -482,7 +474,9 @@ def _pick_response_key(message: str) -> str:
 
 def _pick_revision_key(feedback: str) -> str:
     t = feedback.lower()
-    if any(w in t for w in ("color", "colour", "blue", "red", "green", "style", "theme")):
+    if any(
+        w in t for w in ("color", "colour", "blue", "red", "green", "style", "theme")
+    ):
         return "color"
     if any(w in t for w in ("type", "typescript", "ts", "interface", "generic")):
         return "type"

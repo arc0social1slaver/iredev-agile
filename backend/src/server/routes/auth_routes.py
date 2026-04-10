@@ -20,8 +20,8 @@ import time
 import logging
 from flask import Blueprint, request, jsonify, make_response
 
-import data.mock_db as mock_db
-from auth.auth_utils import (
+from ..data import mock_db
+from ..auth.auth_utils import (
     create_access_token,
     create_refresh_token,
     verify_refresh_token,
@@ -30,7 +30,7 @@ from auth.auth_utils import (
     get_refresh_token_from_cookie,
     require_auth,
 )
-from config.config import (
+from ..config.config import (
     COOKIE_NAME,
     COOKIE_SECURE,
     COOKIE_SAMESITE,
@@ -40,12 +40,13 @@ from config.config import (
 )
 
 auth_bp = Blueprint("auth", __name__)
-log     = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 # =============================================================================
 # Helper: build a response that sets the refresh-token HttpOnly cookie
 # =============================================================================
+
 
 def _set_refresh_cookie(response, refresh_token: str) -> None:
     """
@@ -66,13 +67,13 @@ def _set_refresh_cookie(response, refresh_token: str) -> None:
     """
     response.set_cookie(
         COOKIE_NAME,
-        value    = refresh_token,
-        max_age  = REFRESH_TOKEN_TTL_SECONDS,
-        httponly = True,                   # JS cannot read
-        secure   = COOKIE_SECURE,         # HTTPS only in prod
-        samesite = COOKIE_SAMESITE,        # CSRF protection
-        domain   = COOKIE_DOMAIN,
-        path     = COOKIE_PATH,
+        value=refresh_token,
+        max_age=REFRESH_TOKEN_TTL_SECONDS,
+        httponly=True,  # JS cannot read
+        secure=COOKIE_SECURE,  # HTTPS only in prod
+        samesite=COOKIE_SAMESITE,  # CSRF protection
+        domain=COOKIE_DOMAIN,
+        path=COOKIE_PATH,
     )
 
 
@@ -80,19 +81,20 @@ def _clear_refresh_cookie(response) -> None:
     """Delete the refresh-token cookie by setting max_age=0."""
     response.set_cookie(
         COOKIE_NAME,
-        value    = "",
-        max_age  = 0,
-        httponly = True,
-        secure   = COOKIE_SECURE,
-        samesite = COOKIE_SAMESITE,
-        domain   = COOKIE_DOMAIN,
-        path     = COOKIE_PATH,
+        value="",
+        max_age=0,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        domain=COOKIE_DOMAIN,
+        path=COOKIE_PATH,
     )
 
 
 # =============================================================================
 # POST /api/auth/register
 # =============================================================================
+
 
 @auth_bp.route("/register", methods=["POST"])
 def register():
@@ -107,9 +109,9 @@ def register():
     Response cookie (HttpOnly):
         refresh_token=eyJ...  (path=/api/auth, max_age=7 days)
     """
-    data     = request.get_json(silent=True) or {}
-    name     = (data.get("name")     or "").strip()
-    email    = (data.get("email")    or "").strip().lower()
+    data = request.get_json(silent=True) or {}
+    name = (data.get("name") or "").strip()
+    email = (data.get("email") or "").strip().lower()
     password = (data.get("password") or "").strip()
 
     if not name:
@@ -117,21 +119,33 @@ def register():
     if not email:
         return jsonify({"error": "Validation", "message": "Email is required."}), 400
     if not password or len(password) < 8:
-        return jsonify({"error": "Validation",
-                        "message": "Password must be at least 8 characters."}), 400
+        return (
+            jsonify(
+                {
+                    "error": "Validation",
+                    "message": "Password must be at least 8 characters.",
+                }
+            ),
+            400,
+        )
 
     try:
         user = mock_db.create_user(name=name, email=email, password=password)
     except ValueError as e:
         return jsonify({"error": "Conflict", "message": str(e)}), 409
 
-    access_token  = create_access_token(user["id"])
+    access_token = create_access_token(user["id"])
     refresh_token = create_refresh_token(user["id"])
 
-    resp = make_response(jsonify({
-        "access_token": access_token,
-        "user":         mock_db.safe_user(user),
-    }), 201)
+    resp = make_response(
+        jsonify(
+            {
+                "access_token": access_token,
+                "user": mock_db.safe_user(user),
+            }
+        ),
+        201,
+    )
     _set_refresh_cookie(resp, refresh_token)
 
     log.info(f"[auth] Registered  user={user['id']}  email={email}")
@@ -141,6 +155,7 @@ def register():
 # =============================================================================
 # POST /api/auth/login
 # =============================================================================
+
 
 @auth_bp.route("/login", methods=["POST"])
 def login():
@@ -155,26 +170,37 @@ def login():
     Response cookie (HttpOnly):
         refresh_token=eyJ...  (path=/api/auth, max_age=7 days)
     """
-    data     = request.get_json(silent=True) or {}
-    email    = (data.get("email")    or "").strip().lower()
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
     password = (data.get("password") or "").strip()
 
     if not email or not password:
-        return jsonify({"error": "Validation",
-                        "message": "Email and password are required."}), 400
+        return (
+            jsonify(
+                {"error": "Validation", "message": "Email and password are required."}
+            ),
+            400,
+        )
 
     user = mock_db.find_user_by_email(email)
     if not user or not mock_db.check_password(user, password):
-        return jsonify({"error": "Unauthorized",
-                        "message": "Invalid email or password."}), 401
+        return (
+            jsonify({"error": "Unauthorized", "message": "Invalid email or password."}),
+            401,
+        )
 
-    access_token  = create_access_token(user["id"])
+    access_token = create_access_token(user["id"])
     refresh_token = create_refresh_token(user["id"])
 
-    resp = make_response(jsonify({
-        "access_token": access_token,
-        "user":         mock_db.safe_user(user),
-    }), 200)
+    resp = make_response(
+        jsonify(
+            {
+                "access_token": access_token,
+                "user": mock_db.safe_user(user),
+            }
+        ),
+        200,
+    )
     _set_refresh_cookie(resp, refresh_token)
 
     log.info(f"[auth] Login OK  user={user['id']}")
@@ -184,6 +210,7 @@ def login():
 # =============================================================================
 # POST /api/auth/refresh
 # =============================================================================
+
 
 @auth_bp.route("/refresh", methods=["POST"])
 def refresh():
@@ -208,16 +235,27 @@ def refresh():
 
     if not refresh_token:
         log.warning("[auth] /refresh: no refresh cookie present")
-        return jsonify({"error": "Unauthorized",
-                        "message": "No refresh token cookie found."}), 401
+        return (
+            jsonify(
+                {"error": "Unauthorized", "message": "No refresh token cookie found."}
+            ),
+            401,
+        )
 
     user_id = verify_refresh_token(refresh_token)
     if not user_id:
         # Token is expired, malformed, or already blacklisted.
         # Clear the bad cookie so the browser doesn't keep sending it.
-        resp = make_response(jsonify({"error": "Unauthorized",
-                                      "message": "Refresh token is invalid or expired. "
-                                                 "Please log in again."}), 401)
+        resp = make_response(
+            jsonify(
+                {
+                    "error": "Unauthorized",
+                    "message": "Refresh token is invalid or expired. "
+                    "Please log in again.",
+                }
+            ),
+            401,
+        )
         _clear_refresh_cookie(resp)
         return resp
 
@@ -228,7 +266,7 @@ def refresh():
     blacklist_token(refresh_token, is_refresh=True)
 
     # Issue fresh tokens
-    new_access_token  = create_access_token(user_id)
+    new_access_token = create_access_token(user_id)
     new_refresh_token = create_refresh_token(user_id)
 
     resp = make_response(jsonify({"access_token": new_access_token}), 200)
@@ -241,6 +279,7 @@ def refresh():
 # =============================================================================
 # POST /api/auth/logout
 # =============================================================================
+
 
 @auth_bp.route("/logout", methods=["POST"])
 @require_auth
@@ -260,7 +299,7 @@ def logout(current_user):
 
     Requires: Authorization: Bearer <access_token>
     """
-    access_token  = get_access_token_from_request()
+    access_token = get_access_token_from_request()
     refresh_token = get_refresh_token_from_cookie()
 
     # Blacklist the access token — prevents reuse within its remaining TTL
@@ -271,8 +310,9 @@ def logout(current_user):
     if refresh_token:
         blacklist_token(refresh_token, is_refresh=True)
 
-    resp = make_response(jsonify({"ok": True,
-                                  "message": "Logged out successfully."}), 200)
+    resp = make_response(
+        jsonify({"ok": True, "message": "Logged out successfully."}), 200
+    )
     _clear_refresh_cookie(resp)
 
     log.info(f"[auth] Logout  user={current_user['id']}")
@@ -282,6 +322,7 @@ def logout(current_user):
 # =============================================================================
 # GET /api/auth/me
 # =============================================================================
+
 
 @auth_bp.route("/me", methods=["GET"])
 @require_auth

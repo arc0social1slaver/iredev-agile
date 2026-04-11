@@ -69,34 +69,40 @@ _MIN_MEMORY_LINES_FOR_LLM = 3
 # RAG graph state  (unchanged from original)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class _ThinkState(TypedDict):
     """Shared state threaded through every node in the RAG reasoning graph."""
-    query:             str
-    phase:             str                   # ProcessPhase.value
-    memory_context:    Dict[str, Any]
-    memory_summary:    str
+
+    query: str
+    phase: str  # ProcessPhase.value
+    memory_context: Dict[str, Any]
+    memory_summary: str
     memory_sufficient: bool
-    rewritten_query:   str
-    knowledge_docs:    List[Document]
-    final_context:     str
-    k:                 int
+    rewritten_query: str
+    knowledge_docs: List[Document]
+    final_context: str
+    k: int
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ReAct graph state
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _add_messages(left: List[BaseMessage], right: List[BaseMessage]) -> List[BaseMessage]:
+
+def _add_messages(
+    left: List[BaseMessage], right: List[BaseMessage]
+) -> List[BaseMessage]:
     """Reducer: append new messages to the existing list (LangGraph convention)."""
     return list(left) + list(right)
 
 
 class _ReactState(TypedDict):
     """Shared state threaded through the ReAct execution graph."""
+
     # Conversation buffer — grows with each agent/tool round-trip
-    messages:            Annotated[List[BaseMessage], _add_messages]
+    messages: Annotated[List[BaseMessage], _add_messages]
     # The calling agent's WorkflowState — read-only inside tool functions
-    workflow_state:      Dict[str, Any]
+    workflow_state: Dict[str, Any]
     # Merged state_updates returned by all tools so far
     accumulated_updates: Dict[str, Any]
     # Set to True by any tool whose ToolResult.should_return is True
@@ -139,6 +145,7 @@ Output only the rewritten query, nothing else."""
 # Helper: schema-only LangChain tool stub for LLM bind_tools
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _make_schema_tool(tool: Any) -> StructuredTool:
     """Wrap a custom Tool as a schema-only LangChain StructuredTool.
 
@@ -161,7 +168,7 @@ def _make_schema_tool(tool: Any) -> StructuredTool:
     # We use type() with a unique name per tool to avoid Pydantic model
     # registry collisions when many tools share the same class name.
     safe_name = re.sub(r"[^a-zA-Z0-9]", "_", tool.name)
-    cls_name  = f"_Args_{safe_name}"
+    cls_name = f"_Args_{safe_name}"
 
     ArgsModel: type[BaseModel] = type(
         cls_name,
@@ -184,6 +191,7 @@ def _make_schema_tool(tool: Any) -> StructuredTool:
 # ─────────────────────────────────────────────────────────────────────────────
 # ThinkModule
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class ThinkModule:
     """Per-agent reasoning layer: Memory-First RAG + ReAct execution loop.
@@ -210,7 +218,7 @@ class ThinkModule:
 
     def __init__(self, knowledge: KnowledgeModule, llm: BaseChatModel) -> None:
         self._knowledge = knowledge
-        self._llm       = llm
+        self._llm = llm
         self._rag_graph = self._build_rag_graph()
 
         # Cache compiled ReAct graphs keyed by frozenset of tool names so we
@@ -223,10 +231,10 @@ class ThinkModule:
 
     def build_prompt_context(
         self,
-        query:          str,
-        phase:          ProcessPhase,
+        query: str,
+        phase: ProcessPhase,
         memory_context: Optional[Dict[str, Any]] = None,
-        k:              int = 5,
+        k: int = 5,
     ) -> str:
         """Run the Memory-First RAG loop and return a formatted context block.
 
@@ -243,15 +251,15 @@ class ThinkModule:
             Formatted context string, or "" if nothing relevant found.
         """
         initial: _ThinkState = {
-            "query":             query,
-            "phase":             phase.value,
-            "memory_context":    memory_context or {},
-            "memory_summary":    "",
+            "query": query,
+            "phase": phase.value,
+            "memory_context": memory_context or {},
+            "memory_summary": "",
             "memory_sufficient": False,
-            "rewritten_query":   query,
-            "knowledge_docs":    [],
-            "final_context":     "",
-            "k":                 k,
+            "rewritten_query": query,
+            "knowledge_docs": [],
+            "final_context": "",
+            "k": k,
         }
         result = self._rag_graph.invoke(initial)
         return result.get("final_context", "")
@@ -262,13 +270,13 @@ class ThinkModule:
 
     def run_react(
         self,
-        task:            str,
-        tools_dict:      Dict[str, Any],       # Dict[str, base.Tool]
-        workflow_state:  Dict[str, Any],
-        profile_prompt:  str,
-        memory_context:  Optional[Dict[str, Any]] = None,
-        max_iterations:  int = 10,
-        phase:           Optional[ProcessPhase] = None,
+        task: str,
+        tools_dict: Dict[str, Any],  # Dict[str, base.Tool]
+        workflow_state: Dict[str, Any],
+        profile_prompt: str,
+        memory_context: Optional[Dict[str, Any]] = None,
+        max_iterations: int = 10,
+        phase: Optional[ProcessPhase] = None,
     ) -> Dict[str, Any]:
         """Run one full ReAct turn and return merged WorkflowState updates.
 
@@ -317,8 +325,8 @@ class ThinkModule:
 
         # ── Step 4: run the ReAct graph ───────────────────────────────────
         initial_state: _ReactState = {
-            "messages":            [system_msg, HumanMessage(content=task)],
-            "workflow_state":      workflow_state,
+            "messages": [system_msg, HumanMessage(content=task)],
+            "workflow_state": workflow_state,
             "accumulated_updates": {},
             "should_return_early": False,
         }
@@ -328,16 +336,21 @@ class ThinkModule:
 
         try:
             from langgraph.errors import GraphRecursionError
+
             result = react_graph.invoke(
                 initial_state,
                 config={"recursion_limit": recursion_limit},
             )
         except Exception as exc:
             # Catch GraphRecursionError and any provider-side recursion signals.
-            if "recursion" in type(exc).__name__.lower() or "recursion" in str(exc).lower():
+            if (
+                "recursion" in type(exc).__name__.lower()
+                or "recursion" in str(exc).lower()
+            ):
                 logger.warning(
                     "[ThinkModule/ReAct] Max iterations (%d) reached for task: %.80s",
-                    max_iterations, task,
+                    max_iterations,
+                    task,
                 )
                 result = {"accumulated_updates": {}}
             else:
@@ -373,7 +386,7 @@ class ThinkModule:
         from langgraph.graph import END, START, StateGraph
 
         # Bind schema-only stubs to the LLM for function-calling awareness.
-        lc_stubs         = [_make_schema_tool(t) for t in tools_dict.values()]
+        lc_stubs = [_make_schema_tool(t) for t in tools_dict.values()]
         model_with_tools = self._llm.bind_tools(lc_stubs) if lc_stubs else self._llm
 
         # ── node: agent ───────────────────────────────────────────────────
@@ -394,15 +407,15 @@ class ThinkModule:
             so the agent can self-correct in the next cycle.
             """
             last_ai_msg = state["messages"][-1]
-            tool_calls  = getattr(last_ai_msg, "tool_calls", None) or []
+            tool_calls = getattr(last_ai_msg, "tool_calls", None) or []
 
             tool_messages: List[ToolMessage] = []
-            updates       = dict(state.get("accumulated_updates") or {})
-            early_exit    = bool(state.get("should_return_early", False))
+            updates = dict(state.get("accumulated_updates") or {})
+            early_exit = bool(state.get("should_return_early", False))
 
             for tc in tool_calls:
-                name    = tc["name"]
-                args    = tc["args"]
+                name = tc["name"]
+                args = tc["args"]
                 call_id = tc["id"]
 
                 if name in tools_dict:
@@ -421,12 +434,13 @@ class ThinkModule:
                     # causing requirements_draft (and any other intra-turn
                     # state) to appear empty to tools that run after the first.
                     effective_state = {**state["workflow_state"], **updates}
-                    result = tools_dict[name](
-                        state=effective_state, **args
-                    )
+                    logger.info(f"Calling {tools_dict[name]}, args = {args}")
+                    result = tools_dict[name](state=effective_state, **args)
                     observation = result.observation
                     updates.update(getattr(result, "state_updates", {}))
-                    early_exit  = early_exit or bool(getattr(result, "should_return", False))
+                    early_exit = early_exit or bool(
+                        getattr(result, "should_return", False)
+                    )
                 else:
                     observation = (
                         f"[Tool Error] Unknown tool '{name}'. "
@@ -443,7 +457,7 @@ class ThinkModule:
                 )
 
             return {
-                "messages":            tool_messages,
+                "messages": tool_messages,
                 "accumulated_updates": updates,
                 "should_return_early": early_exit,
             }
@@ -482,7 +496,8 @@ class ThinkModule:
         compiled = g.compile()
         logger.debug(
             "[ThinkModule] compiled ReAct graph for %d tool(s): %s",
-            len(tools_dict), list(tools_dict),
+            len(tools_dict),
+            list(tools_dict),
         )
         return compiled
 
@@ -492,7 +507,7 @@ class ThinkModule:
 
     def _node_search_memory(self, state: _ThinkState) -> Dict[str, Any]:
         """Extract prior context from all three memory shapes into plain text."""
-        ctx   = state["memory_context"]
+        ctx = state["memory_context"]
         lines: List[str] = []
 
         messages: List[BaseMessage] = ctx.get("messages", [])
@@ -506,34 +521,44 @@ class ThinkModule:
                 lines.append(f"[fact] {fact['topic']}: {fact['content']}")
 
         for episode in ctx.get("episodes", [])[:4]:
-            trigger  = episode.get("trigger", "")
+            trigger = episode.get("trigger", "")
             decision = episode.get("decision", "")
             if trigger and decision:
                 lines.append(f"[episode] trigger={trigger} | decision={decision}")
 
         summary = "\n".join(lines) if lines else "(no prior memory)"
-        logger.debug("[ThinkModule] memory_summary (%d lines): %.150s", len(lines), summary)
+        logger.debug(
+            "[ThinkModule] memory_summary (%d lines): %.150s", len(lines), summary
+        )
         return {"memory_summary": summary}
 
     def _node_decide(self, state: _ThinkState) -> Dict[str, Any]:
         """Decide whether memory context alone is sufficient."""
-        summary    = state["memory_summary"]
+        summary = state["memory_summary"]
         line_count = len([ln for ln in summary.splitlines() if ln.strip()])
 
         if summary == "(no prior memory)" or line_count < _MIN_MEMORY_LINES_FOR_LLM:
-            logger.debug("[ThinkModule] decide=False (heuristic: sparse memory, lines=%d)", line_count)
+            logger.debug(
+                "[ThinkModule] decide=False (heuristic: sparse memory, lines=%d)",
+                line_count,
+            )
             return {"memory_sufficient": False}
 
         if line_count >= 10:
-            logger.debug("[ThinkModule] decide=True (heuristic: rich memory, lines=%d)", line_count)
+            logger.debug(
+                "[ThinkModule] decide=True (heuristic: rich memory, lines=%d)",
+                line_count,
+            )
             return {"memory_sufficient": True}
 
-        prompt   = _DECIDE_PROMPT.format(query=state["query"], memory_summary=summary)
+        prompt = _DECIDE_PROMPT.format(query=state["query"], memory_summary=summary)
         response = self._llm.invoke([HumanMessage(content=prompt)])
         sufficient = response.content.strip().upper().startswith("YES")
         logger.debug(
             "[ThinkModule] decide=%s (LLM, raw='%.30s', lines=%d)",
-            sufficient, response.content.strip(), line_count,
+            sufficient,
+            response.content.strip(),
+            line_count,
         )
         return {"memory_sufficient": sufficient}
 
@@ -542,7 +567,9 @@ class ThinkModule:
         if state["memory_summary"] == "(no prior memory)":
             return {"rewritten_query": state["query"]}
 
-        prompt   = _REWRITE_PROMPT.format(query=state["query"], memory_summary=state["memory_summary"])
+        prompt = _REWRITE_PROMPT.format(
+            query=state["query"], memory_summary=state["memory_summary"]
+        )
         response = self._llm.invoke([HumanMessage(content=prompt)])
         rewritten = response.content.strip()
         logger.debug("[ThinkModule] rewritten_query: %.120s", rewritten)
@@ -551,14 +578,19 @@ class ThinkModule:
     def _node_retrieve(self, state: _ThinkState) -> Dict[str, Any]:
         """Retrieve knowledge documents using the (rewritten) query."""
         phase = ProcessPhase(state["phase"])
-        docs  = self._knowledge.retrieve(
-            query=state["rewritten_query"],
-            phase=phase,
-            k=state["k"],
+        docs = (
+            self._knowledge.retrieve(
+                query=state["rewritten_query"],
+                phase=phase,
+                k=state["k"],
+            )
+            if self._knowledge
+            else []
         )
         logger.info(
             "[ThinkModule] retrieved %d knowledge docs for phase=%s.",
-            len(docs), phase.value,
+            len(docs),
+            phase.value,
         )
         return {"knowledge_docs": docs}
 
@@ -610,17 +642,17 @@ class ThinkModule:
         from langgraph.graph import END, StateGraph
 
         g = StateGraph(_ThinkState)
-        g.add_node("search_memory",  self._node_search_memory)
-        g.add_node("decide",         self._node_decide)
-        g.add_node("rewrite_query",  self._node_rewrite_query)
-        g.add_node("retrieve",       self._node_retrieve)
-        g.add_node("blend",          self._node_blend)
+        g.add_node("search_memory", self._node_search_memory)
+        g.add_node("decide", self._node_decide)
+        g.add_node("rewrite_query", self._node_rewrite_query)
+        g.add_node("retrieve", self._node_retrieve)
+        g.add_node("blend", self._node_blend)
 
         g.set_entry_point("search_memory")
         g.add_edge("search_memory", "decide")
         g.add_conditional_edges("decide", self._route_after_decide)
         g.add_edge("rewrite_query", "retrieve")
-        g.add_edge("retrieve",      "blend")
-        g.add_edge("blend",         END)
+        g.add_edge("retrieve", "blend")
+        g.add_edge("blend", END)
 
         return g.compile()

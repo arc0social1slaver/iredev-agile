@@ -13,34 +13,44 @@
 //   │   └── ChatInput
 //   └── ArtifactPanel    (right, fixed width, shown only when open)
 // ─────────────────────────────────────────────────────────────────────────────
-import { useRef, useEffect } from 'react'
-import { useChat }               from './context/ChatContext'
-import { ProtectedRoute }        from './components/layout/ProtectedRoute'
-import { MainLayout }            from './components/layout/MainLayout'
-import { Sidebar }               from './components/sidebar/Sidebar'
-import { ChatHeader }            from './components/chat/ChatHeader'
-import { HomeScreen }            from './components/chat/HomeScreen'
-import { MessageBubble }         from './components/chat/MessageBubble'
-import { ChatInput }             from './components/chat/ChatInput'
-import { ArtifactPanel }         from './components/artifact/ArtifactPanel'
-import { LoadingSpinner }        from './components/ui/LoadingSpinner'
-import { ErrorBanner }           from './components/ui/ErrorBanner'
+import { useRef, useEffect } from "react";
+import { useChat } from "./context/ChatContext";
+import { ProtectedRoute } from "./components/layout/ProtectedRoute";
+import { MainLayout } from "./components/layout/MainLayout";
+import { Sidebar } from "./components/sidebar/Sidebar";
+import { ChatHeader } from "./components/chat/ChatHeader";
+import { HomeScreen } from "./components/chat/HomeScreen";
+import { MessageBubble } from "./components/chat/MessageBubble";
+import { ChatInput } from "./components/chat/ChatInput";
+import { ArtifactPanel } from "./components/artifact/ArtifactPanel";
+import { LoadingSpinner } from "./components/ui/LoadingSpinner";
+import { ErrorBanner } from "./components/ui/ErrorBanner";
 
 function ChatLayout() {
   const {
-    chats, messages, activeChatId,
-    streaming, openArtifact,
-    loadingChats, loadingMessages, error,
-    setOpenArtifact, setError,
-    newChat, selectChat, deleteChat,
-    sendMessage, cancelStream,
+    chats,
+    messages,
+    activeChatId,
+    streaming,
+    openArtifact,
+    loadingChats,
+    loadingMessages,
+    error,
+    setOpenArtifact,
+    setError,
+    newChat,
+    selectChat,
+    deleteChat,
+    sendMessage,
+    cancelStream,
     sendArtifactFeedback,
-  } = useChat()
+    handleStartProcess,
+  } = useChat();
 
-  const bottomRef = useRef(null)
+  const bottomRef = useRef(null);
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
   return (
     <MainLayout>
@@ -51,6 +61,7 @@ function ChatLayout() {
         onNew={newChat}
         onSelect={selectChat}
         onDelete={deleteChat}
+        onStart={handleStartProcess}
       />
 
       <div className="flex-1 flex flex-col min-w-0 h-full bg-[#F4F0E6]">
@@ -66,13 +77,13 @@ function ChatLayout() {
             <HomeScreen onSend={sendMessage} />
           ) : (
             <div className="max-w-[720px] mx-auto px-6 py-8 space-y-7">
-              {messages.map(msg => (
+              {messages.map((msg) => (
                 <MessageBubble
                   key={msg.id}
                   message={msg}
                   onOpenArtifact={(art) => {
                     // Attach the messageId so feedback can reference it
-                    setOpenArtifact({ ...art, messageId: msg.id })
+                    setOpenArtifact({ ...art, messageId: msg.id });
                   }}
                 />
               ))}
@@ -93,13 +104,13 @@ function ChatLayout() {
           <ArtifactPanel
             artifact={openArtifact}
             onClose={() => setOpenArtifact(null)}
-            onAccept={() => sendArtifactFeedback('accept', '')}
-            onRevise={(comment) => sendArtifactFeedback('revise', comment)}
+            onAccept={() => sendArtifactFeedback("accept", "")}
+            onRevise={(comment) => sendArtifactFeedback("revise", comment)}
           />
         </div>
       )}
     </MainLayout>
-  )
+  );
 }
 
 export default function App() {
@@ -107,5 +118,5 @@ export default function App() {
     <ProtectedRoute>
       <ChatLayout />
     </ProtectedRoute>
-  )
+  );
 }

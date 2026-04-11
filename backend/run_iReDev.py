@@ -232,10 +232,32 @@ if __name__ == "__main__":
         "  conflict-checked LIVE after every stakeholder reply."
     )
 
-    for step_output in graph.stream(initial_state):
-        for node_name, updates in step_output.items():
-            _handle_step(node_name, updates)
+    while True:
+        interrupted = False
+        for step_output in graph.stream(
+            initial_state, config={"configurable": {"thread_id": "123"}}
+        ):
+            if "__interrupt__" in step_output:
+                from langgraph.types import Command
 
+                interrupt_obj = step_output["__interrupt__"][0]
+                payload = interrupt_obj.value
+
+                user_input = input(f"{payload.get("instruction", "Hahaha: ")}").strip()
+                approved = user_input.lower() == "y"
+                if approved:
+                    initial_state = Command(resume={"action": "accept", "feedback": ""})
+                else:
+                    initial_state = Command(
+                        resume={"action": "reject", "feedback": user_input}
+                    )
+                interrupted = True
+                break
+            for node_name, updates in step_output.items():
+                _handle_step(node_name, updates)
+
+        if not interrupted:
+            break
     _section("Workflow complete")
     print("  interview_record  — full conversation + validated requirements")
     print("  product_backlog   — initial sprint backlog (if SprintAgent ran)")

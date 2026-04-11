@@ -20,8 +20,8 @@
 // Also shows a "Revising…" spinner when revising === true (optimistic state
 // between the user clicking "Request changes" and the artifact_revised frame
 // arriving from the backend).
-import { useState } from 'react'
-import { Check, Pencil, Send, X, Loader } from 'lucide-react'
+import { useState } from "react";
+import { Check, Pencil, Send, X, Loader } from "lucide-react";
 
 export function ArtifactFeedbackBar({
   artifact,
@@ -30,46 +30,53 @@ export function ArtifactFeedbackBar({
   onAccept,
   onRevise,
 }) {
-  const [revising, setRevising] = useState(false)
-  const [comment,  setComment]  = useState('')
+  const [revising, setRevising] = useState(false);
+  const [comment, setComment] = useState("");
 
   // The artifact is currently being revised by the backend
   if (artifact?.revising) {
     return (
       <div className="border-t border-[#E8E3D9] bg-[#FAF7F3] flex-shrink-0">
         <div className="flex items-center gap-2.5 px-4 py-4">
-          <Loader size={14} className="text-[#C96A42] animate-spin flex-shrink-0" />
+          <Loader
+            size={14}
+            className="text-[#C96A42] animate-spin flex-shrink-0"
+          />
           <span className="text-[12px] text-[#3D3530] font-medium">
             Revising — generating new version…
           </span>
         </div>
       </div>
-    )
+    );
   }
 
   function handleReviseSubmit() {
-    if (!comment.trim()) return
-    onRevise(comment.trim())
-    setComment('')
-    setRevising(false)
+    if (!comment.trim()) return;
+    onRevise(comment.trim());
+    setComment("");
+    setRevising(false);
   }
 
   function handleKeyDown(e) {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') handleReviseSubmit()
-    if (e.key === 'Escape') { setRevising(false); setComment('') }
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") handleReviseSubmit();
+    if (e.key === "Escape") {
+      setRevising(false);
+      setComment("");
+    }
   }
 
-  const revisionsLeft = maxIter - iteration
+  const revisionsLeft = maxIter - iteration;
 
   return (
     <div className="border-t border-[#E8E3D9] bg-[#FAF7F3] flex-shrink-0">
-
       {/* Iteration indicator */}
       <div className="flex items-center justify-between px-4 pt-3 pb-1">
         <div className="flex items-center gap-1.5">
           <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full
-                             rounded-full bg-[#C96A42] opacity-75" />
+            <span
+              className="animate-ping absolute inline-flex h-full w-full
+                             rounded-full bg-[#C96A42] opacity-75"
+            />
             <span className="relative inline-flex rounded-full h-2 w-2 bg-[#C96A42]" />
           </span>
           <span className="text-[12px] font-medium text-[#1A1410]">
@@ -79,8 +86,8 @@ export function ArtifactFeedbackBar({
         <span className="text-[11px] text-[#B5ADA4]">
           v{iteration}
           {revisionsLeft > 0
-            ? ` · ${revisionsLeft} revision${revisionsLeft !== 1 ? 's' : ''} left`
-            : ' · last revision'}
+            ? ` · ${revisionsLeft} revision${revisionsLeft !== 1 ? "s" : ""} left`
+            : " · last revision"}
         </span>
       </div>
 
@@ -92,7 +99,7 @@ export function ArtifactFeedbackBar({
             rows={3}
             placeholder="Describe what you'd like changed… (Ctrl+Enter to send)"
             value={comment}
-            onChange={e => setComment(e.target.value)}
+            onChange={(e) => setComment(e.target.value)}
             onKeyDown={handleKeyDown}
             className="w-full px-3 py-2 bg-white border border-[#E8E3D9] rounded-lg
                        text-[13px] text-[#1A1410] placeholder:text-[#B5ADA4]
@@ -101,7 +108,10 @@ export function ArtifactFeedbackBar({
           />
           <div className="flex gap-2 mt-2">
             <button
-              onClick={() => { setRevising(false); setComment('') }}
+              onClick={() => {
+                setRevising(false);
+                setComment("");
+              }}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg
                          text-[12px] text-[#8A7F72] hover:bg-[#EAE6DC] transition-colors"
             >
@@ -142,5 +152,5 @@ export function ArtifactFeedbackBar({
         </div>
       )}
     </div>
-  )
+  );
 }

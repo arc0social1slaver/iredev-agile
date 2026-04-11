@@ -22,24 +22,25 @@ import logging
 from functools import wraps
 from flask import request, jsonify
 
-from config.config import (
+from ..config.config import (
     ACCESS_TOKEN_SECRET,
     REFRESH_TOKEN_SECRET,
     ACCESS_TOKEN_TTL_SECONDS,
     REFRESH_TOKEN_TTL_SECONDS,
     COOKIE_NAME,
 )
-import data.mock_db as mock_db
-import auth.token_blacklist as token_blacklist
+from ..data import mock_db
+from ..auth import token_blacklist
 
 log = logging.getLogger(__name__)
 
-LEEWAY = datetime.timedelta(seconds=10)   # tolerate small clock skew
+LEEWAY = datetime.timedelta(seconds=10)  # tolerate small clock skew
 
 
 # =============================================================================
 # Token creation
 # =============================================================================
+
 
 def create_access_token(user_id: str) -> str:
     """
@@ -54,14 +55,16 @@ def create_access_token(user_id: str) -> str:
     """
     now = datetime.datetime.utcnow()
     payload = {
-        "sub":  user_id,
-        "jti":  str(uuid.uuid4()),   # unique ID for blacklisting
+        "sub": user_id,
+        "jti": str(uuid.uuid4()),  # unique ID for blacklisting
         "type": "access",
-        "iat":  now,
-        "exp":  now + datetime.timedelta(seconds=ACCESS_TOKEN_TTL_SECONDS),
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=ACCESS_TOKEN_TTL_SECONDS),
     }
     token = jwt.encode(payload, ACCESS_TOKEN_SECRET, algorithm="HS256")
-    log.debug(f"[auth] Access token created  user={user_id}  ttl={ACCESS_TOKEN_TTL_SECONDS}s")
+    log.debug(
+        f"[auth] Access token created  user={user_id}  ttl={ACCESS_TOKEN_TTL_SECONDS}s"
+    )
     return token
 
 
@@ -78,20 +81,23 @@ def create_refresh_token(user_id: str) -> str:
     """
     now = datetime.datetime.utcnow()
     payload = {
-        "sub":  user_id,
-        "jti":  str(uuid.uuid4()),
+        "sub": user_id,
+        "jti": str(uuid.uuid4()),
         "type": "refresh",
-        "iat":  now,
-        "exp":  now + datetime.timedelta(seconds=REFRESH_TOKEN_TTL_SECONDS),
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=REFRESH_TOKEN_TTL_SECONDS),
     }
     token = jwt.encode(payload, REFRESH_TOKEN_SECRET, algorithm="HS256")
-    log.debug(f"[auth] Refresh token created  user={user_id}  ttl={REFRESH_TOKEN_TTL_SECONDS}s")
+    log.debug(
+        f"[auth] Refresh token created  user={user_id}  ttl={REFRESH_TOKEN_TTL_SECONDS}s"
+    )
     return token
 
 
 # =============================================================================
 # Token decoding
 # =============================================================================
+
 
 def decode_access_token(token: str) -> dict | None:
     """
@@ -145,6 +151,7 @@ def decode_refresh_token(token: str) -> dict | None:
 # Token verification (includes blacklist check)
 # =============================================================================
 
+
 def verify_access_token(token: str) -> str | None:
     """
     Fully verify an access token.
@@ -162,7 +169,7 @@ def verify_access_token(token: str) -> str | None:
 
     payload = decode_access_token(token)
     if not payload:
-        return None   # already logged in decode_*
+        return None  # already logged in decode_*
 
     user_id = payload.get("sub")
     if not user_id:
@@ -216,6 +223,7 @@ def verify_refresh_token(token: str) -> str | None:
 # Token expiry helpers (used when blacklisting)
 # =============================================================================
 
+
 def _get_exp(token: str, secret: str) -> float:
     """
     Extract the exp (expiry) timestamp from a JWT without strict validation.
@@ -224,7 +232,9 @@ def _get_exp(token: str, secret: str) -> float:
     """
     try:
         payload = jwt.decode(
-            token, secret, algorithms=["HS256"],
+            token,
+            secret,
+            algorithms=["HS256"],
             options={"verify_exp": False},
             leeway=LEEWAY,
         )
@@ -233,7 +243,7 @@ def _get_exp(token: str, secret: str) -> float:
             return float(exp)
     except Exception:
         pass
-    return time.time() + 300   # fallback: expire the blacklist entry in 5 min
+    return time.time() + 300  # fallback: expire the blacklist entry in 5 min
 
 
 def blacklist_token(token: str, is_refresh: bool = False) -> None:
@@ -245,7 +255,7 @@ def blacklist_token(token: str, is_refresh: bool = False) -> None:
     :param is_refresh: True if this is a refresh token (uses REFRESH_TOKEN_SECRET).
     """
     secret = REFRESH_TOKEN_SECRET if is_refresh else ACCESS_TOKEN_SECRET
-    exp    = _get_exp(token, secret)
+    exp = _get_exp(token, secret)
     token_blacklist.add(token, exp)
 
 
@@ -253,11 +263,12 @@ def blacklist_token(token: str, is_refresh: bool = False) -> None:
 # Request helpers
 # =============================================================================
 
+
 def get_access_token_from_request() -> str | None:
     """Extract the Bearer access token from the Authorization header."""
     header = request.headers.get("Authorization", "")
     if header.startswith("Bearer "):
-        return header[len("Bearer "):]
+        return header[len("Bearer ") :]
     return None
 
 
@@ -270,6 +281,7 @@ def get_refresh_token_from_cookie() -> str | None:
 # Route decorator
 # =============================================================================
 
+
 def require_auth(f):
     """
     Protects a route with access-token authentication.
@@ -277,25 +289,38 @@ def require_auth(f):
     verifies it, and injects `current_user` as the first argument.
     Returns 401 if invalid.
     """
+
     @wraps(f)
     def wrapper(*args, **kwargs):
         token = get_access_token_from_request()
 
         if not token:
             log.warning("[auth] require_auth: no Authorization header")
-            return jsonify({
-                "error":   "Missing token",
-                "message": "Authorization: Bearer <access_token> header is required.",
-            }), 401
+            return (
+                jsonify(
+                    {
+                        "error": "Missing token",
+                        "message": "Authorization: Bearer <access_token> header is required.",
+                    }
+                ),
+                401,
+            )
 
         user_id = verify_access_token(token)
         if not user_id:
-            log.warning(f"[auth] require_auth: invalid access token  first20={token[:20]}")
-            return jsonify({
-                "error":   "Invalid token",
-                "message": "Access token is expired, malformed, or revoked. "
-                           "Call POST /api/auth/refresh to get a new one.",
-            }), 401
+            log.warning(
+                f"[auth] require_auth: invalid access token  first20={token[:20]}"
+            )
+            return (
+                jsonify(
+                    {
+                        "error": "Invalid token",
+                        "message": "Access token is expired, malformed, or revoked. "
+                        "Call POST /api/auth/refresh to get a new one.",
+                    }
+                ),
+                401,
+            )
 
         user = mock_db.find_user_by_id(user_id)
         if not user:
@@ -309,6 +334,7 @@ def require_auth(f):
 # =============================================================================
 # WebSocket authentication
 # =============================================================================
+
 
 def get_user_id_for_token_ws(token: str) -> str | None:
     """

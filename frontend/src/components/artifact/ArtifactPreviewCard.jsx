@@ -1,14 +1,26 @@
 // src/components/artifact/ArtifactPreviewCard.jsx
 // Clickable card shown below an assistant message.
 // Shows an "awaiting feedback" indicator when relevant.
-import { Code2, Globe, FileText, ImageIcon, File, ChevronRight, Check } from 'lucide-react'
+import {
+  Code2,
+  Globe,
+  FileText,
+  ImageIcon,
+  File,
+  ChevronRight,
+  Check,
+} from "lucide-react";
 
 const TYPE_ICONS = {
-  react: Code2, html: Globe, code: Code2, markdown: FileText, svg: ImageIcon,
-}
+  react: Code2,
+  html: Globe,
+  code: Code2,
+  markdown: FileText,
+  svg: ImageIcon,
+};
 
 export function ArtifactPreviewCard({ artifact, onOpen }) {
-  const Icon = TYPE_ICONS[artifact.type] ?? File
+  const Icon = TYPE_ICONS[artifact.type] ?? File;
 
   return (
     <button
@@ -21,13 +33,19 @@ export function ArtifactPreviewCard({ artifact, onOpen }) {
                  transition-all duration-150 text-left w-full max-w-[320px] group"
     >
       {/* Icon tile — orange while awaiting, green when accepted */}
-      <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0
-                       border ${artifact.accepted
-                         ? 'bg-green-50 border-green-200'
-                         : 'bg-[#F5EDE8] border-[#EDD9CE]'}`}>
-        {artifact.accepted
-          ? <Check size={16} className="text-green-600" />
-          : <Icon  size={16} className="text-[#C96A42]" />}
+      <div
+        className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0
+                       border ${
+                         artifact.accepted
+                           ? "bg-green-50 border-green-200"
+                           : "bg-[#F5EDE8] border-[#EDD9CE]"
+                       }`}
+      >
+        {artifact.accepted ? (
+          <Check size={16} className="text-green-600" />
+        ) : (
+          <Icon size={16} className="text-[#C96A42]" />
+        )}
       </div>
 
       {/* Text */}
@@ -43,16 +61,25 @@ export function ArtifactPreviewCard({ artifact, onOpen }) {
           )}
         </div>
         <div className="text-[11px] mt-0.5">
-          {artifact.accepted
-            ? <span className="text-green-600 font-medium">Accepted</span>
-            : artifact.awaitingFeedback
-              ? <span className="text-[#C96A42] font-medium">Awaiting your review</span>
-              : <span className="text-[#8A7F72] capitalize">{artifact.type} · Click to open</span>}
+          {artifact.accepted ? (
+            <span className="text-green-600 font-medium">Accepted</span>
+          ) : artifact.awaitingFeedback ? (
+            <span className="text-[#C96A42] font-medium">
+              Awaiting your review
+            </span>
+          ) : (
+            <span className="text-[#8A7F72] capitalize">
+              {artifact.type} · Click to open
+            </span>
+          )}
         </div>
       </div>
 
-      <ChevronRight size={14} className="text-[#C0B8AE] group-hover:text-[#8A7F72]
-                                          group-hover:translate-x-0.5 transition-all flex-shrink-0" />
+      <ChevronRight
+        size={14}
+        className="text-[#C0B8AE] group-hover:text-[#8A7F72]
+                                          group-hover:translate-x-0.5 transition-all flex-shrink-0"
+      />
     </button>
-  )
+  );
 }

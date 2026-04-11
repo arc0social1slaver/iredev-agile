@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 # Tool abstraction  (unchanged — subclasses register tools via these classes)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class ToolResult:
     """Value returned by every tool function.
@@ -51,18 +52,19 @@ class ToolResult:
     state_updates – partial WorkflowState dict to merge after this step
     should_return – if True the ReAct loop exits immediately after this tool
     """
-    observation:   str
+
+    observation: str
     state_updates: Dict[str, Any] = field(default_factory=dict)
-    should_return: bool           = False
+    should_return: bool = False
 
 
 class Tool:
     """A named callable available to an agent inside the ReAct loop."""
 
     def __init__(self, name: str, description: str, func: Callable[..., ToolResult]):
-        self.name        = name
+        self.name = name
         self.description = description
-        self._func       = func
+        self._func = func
 
     def __call__(self, **kwargs: Any) -> ToolResult:
         try:
@@ -79,6 +81,7 @@ class Tool:
 # BaseAgent
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class BaseAgent(ABC):
     """Abstract base for all iReDev agents.
 
@@ -92,7 +95,8 @@ class BaseAgent(ABC):
 
         # ── Config ──────────────────────────────────────────────────────
         from ..config.config_manager import get_config
-        raw_config       = get_config()
+
+        raw_config = get_config()
         self._raw_config = raw_config
 
         agent_section = raw_config.get("iredev", {}).get("agents", {}).get(name, {})
@@ -101,15 +105,18 @@ class BaseAgent(ABC):
 
         # ── LLM ─────────────────────────────────────────────────────────
         from .llm.factory import LLMFactory
+
         self.llm = LLMFactory.create_llm(llm_cfg)
 
         # ── Module 1: Profile ────────────────────────────────────────────
         from ..profile.profile_module import ProfileModule
+
         self.profile = ProfileModule(f"prompts/{name}_profile.txt")
 
         # ── Module 2: Memory ─────────────────────────────────────────────
         from ..memory.memory_module import MemoryModule
         from ..memory.types import MemoryType
+
         self.memory = MemoryModule(
             memory_type=MemoryType(str(agent_section.get("memory_type"))),
             system_prompt=self.profile.prompt,
@@ -119,6 +126,7 @@ class BaseAgent(ABC):
         self.knowledge = None
         try:
             from ..knowledge.knowledge_module import KnowledgeModule
+
             self.knowledge = KnowledgeModule.get_instance()
         except Exception as exc:
             logger.warning(
@@ -130,6 +138,7 @@ class BaseAgent(ABC):
 
         try:
             from ..think.think_module import ThinkModule
+
             self.think = ThinkModule(knowledge=self.knowledge, llm=self.llm)
         except Exception as exc:
             logger.warning("Agent '%s': ThinkModule failed to init (%s).", name, exc)

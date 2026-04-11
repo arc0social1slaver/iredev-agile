@@ -57,22 +57,36 @@ class SprintAgent:
         Reads interview_record from state, prints confirmation to demonstrate
         the trigger, and returns a stub product_backlog artifact.
         """
-        artifacts        = state.get("artifacts") or {}
+        feedback = state.get("review_feedback")
+        review_approved = state.get("review_approved")
+        artifacts = state.get("artifacts") or {}
+        messID = state.get("metadata", {}).get("messID")
         interview_record = artifacts.get("interview_record", {})
-        requirements     = interview_record.get("requirements_identified") or []
-        session_id       = state.get("session_id", "unknown")
-        completeness     = interview_record.get("completeness_score", 0.0)
-        gaps             = interview_record.get("gaps_identified") or []
+        requirements = interview_record.get("requirements_identified") or []
+        session_id = state.get("session_id", "unknown")
+        completeness = interview_record.get("completeness_score", 0.0)
+        gaps = interview_record.get("gaps_identified") or []
+
+        if feedback:
+            state["artifacts"]["product_backlog"]["gaps_carried_over"].append(feedback)
+            return state
+        elif review_approved == True:
+            return state
+        if not messID:
+            import uuid
+
+            state["metadata"] = {}
+            state["metadata"]["messID"] = str(uuid.uuid4())
 
         self._print_trigger_report(session_id, requirements, gaps, completeness)
 
-        backlog_items   = self._build_backlog_items(requirements)
+        backlog_items = self._build_backlog_items(requirements)
         product_backlog = {
-            "session_id":        session_id,
-            "source_artifact":   "interview_record",
-            "status":            "draft",
-            "total_items":       len(backlog_items),
-            "items":             backlog_items,
+            "id": session_id,
+            "source_artifact": "interview_record",
+            "status": "draft",
+            "total_items": len(backlog_items),
+            "items": backlog_items,
             "gaps_carried_over": gaps,
             "notes": (
                 "STUB – generated directly from interview_record requirements. "
@@ -84,21 +98,23 @@ class SprintAgent:
         }
 
         updated_artifacts = {**artifacts, "product_backlog": product_backlog}
+        state["artifacts"]["product_backlog"] = product_backlog
 
         logger.info(
             "SprintAgent: product_backlog written -- %d items from %d requirements.",
-            len(backlog_items), len(requirements),
+            len(backlog_items),
+            len(requirements),
         )
 
-        return {"artifacts": updated_artifacts}
+        return state
 
     # -- Internal helpers ---------------------------------------------------
 
     def _print_trigger_report(
         self,
-        session_id:   str,
+        session_id: str,
         requirements: List[Dict],
-        gaps:         List[str],
+        gaps: List[str],
         completeness: float,
     ) -> None:
         print(f"\n{_SEP}")
@@ -114,9 +130,9 @@ class SprintAgent:
             print()
             print("  Requirements (first 8):")
             for req in requirements[:8]:
-                req_id   = req.get("id", "?")
+                req_id = req.get("id", "?")
                 req_type = req.get("type", "?")[:3].upper()
-                desc     = req.get("description", "")[:72]
+                desc = req.get("description", "")[:72]
                 priority = req.get("priority", "?")
                 print(f"    [{req_id}] ({req_type}, {priority}) {desc}")
             if len(requirements) > 8:
@@ -146,13 +162,13 @@ class SprintAgent:
         if not requirements:
             return [
                 {
-                    "id":                  "PBI-001",
-                    "title":               "STUB -- no requirements extracted from interview",
-                    "type":                "functional",
-                    "priority":            "high",
-                    "source_req_id":       None,
-                    "story_points":        None,
-                    "status":              "open",
+                    "id": "PBI-001",
+                    "title": "STUB -- no requirements extracted from interview",
+                    "type": "functional",
+                    "priority": "high",
+                    "source_req_id": None,
+                    "story_points": None,
+                    "status": "open",
                     "acceptance_criteria": [],
                     "notes": (
                         "The interview_record contained no requirements. "
@@ -163,16 +179,18 @@ class SprintAgent:
 
         items = []
         for i, req in enumerate(requirements, start=1):
-            items.append({
-                "id":                  f"PBI-{i:03d}",
-                "title":               req.get("description", f"Requirement {i}")[:100],
-                "type":                req.get("type", "functional"),
-                "priority":            req.get("priority", "medium"),
-                "source_req_id":       req.get("id"),
-                "story_points":        None,
-                "status":              "open",
-                "acceptance_criteria": [],
-                "notes":               "STUB -- story points and acceptance criteria pending.",
-            })
+            items.append(
+                {
+                    "id": f"PBI-{i:03d}",
+                    "title": req.get("description", f"Requirement {i}")[:100],
+                    "type": req.get("type", "functional"),
+                    "priority": req.get("priority", "medium"),
+                    "source_req_id": req.get("id"),
+                    "story_points": None,
+                    "status": "open",
+                    "acceptance_criteria": [],
+                    "notes": "STUB -- story points and acceptance criteria pending.",
+                }
+            )
 
         return items

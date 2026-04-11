@@ -35,6 +35,9 @@ from typing import Any, Dict, Optional
 
 from langgraph.graph import END, StateGraph
 from langgraph.store.memory import InMemoryStore
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import interrupt
+
 
 from .state import WorkflowState
 from .supervisor import supervisor_node, supervisor_router
@@ -52,25 +55,44 @@ def _default_store() -> InMemoryStore:
 
 # ── Lazy agent singletons ─────────────────────────────────────────────────────
 
+
 @lru_cache(maxsize=1)
 def _get_interviewer():
     from ..agent.interviewer import InterviewerAgent
+
     return InterviewerAgent()
 
 
 @lru_cache(maxsize=1)
 def _get_enduser():
     from ..agent.enduser import EndUserAgent
+
     return EndUserAgent()
 
 
 @lru_cache(maxsize=1)
 def _get_sprint_agent():
     from ..agent.sprint import SprintAgent
+
     return SprintAgent()
 
 
 # ── Node functions ────────────────────────────────────────────────────────────
+
+
+def review_node(state: WorkflowState):
+    response = interrupt(
+        {
+            "type": "review",
+            "content": state.get("artifacts"),
+            "instruction": "Accept or reject. If reject, provide feedback. If accept, type 'y' only: ",
+        }
+    )
+    state["review_approved"] = True if response["action"] == "accept" else False
+    state["review_feedback"] = response.get("feedback")
+
+    return state
+
 
 def supervisor_node_fn(state: WorkflowState) -> Dict[str, Any]:
     return supervisor_node(state)
@@ -98,9 +120,10 @@ def sprint_agent_turn_fn(state: WorkflowState) -> Dict[str, Any]:
 
 # ── Store sync ────────────────────────────────────────────────────────────────
 
+
 def _sync_artifacts_to_store(
-        state: WorkflowState,
-        updates: Dict[str, Any],
+    state: WorkflowState,
+    updates: Dict[str, Any],
 ) -> None:
     new_artifacts: Dict[str, Any] = updates.get("artifacts") or {}
     if not new_artifacts:
@@ -110,7 +133,9 @@ def _sync_artifacts_to_store(
     store = _default_store()
     namespace = ("artifacts", session_id)
 
-    existing_items = {item.key: item.value.get("content") for item in store.search(namespace)}
+    existing_items = {
+        item.key: item.value.get("content") for item in store.search(namespace)
+    }
 
     base_dir = Path("../artifacts")
     latest_dir = base_dir / "artifact"
@@ -139,22 +164,28 @@ def _sync_artifacts_to_store(
                 version_file_path = versions_dir / version_file_name
 
                 shutil.move(str(latest_file_path), str(version_file_path))
-                logger.info("File: Moved older version of '%s' to versions folder.", name)
+                logger.info(
+                    "File: Moved older version of '%s' to versions folder.", name
+                )
 
             try:
                 with open(latest_file_path, "w", encoding="utf-8") as f:
                     json.dump(content, f, ensure_ascii=False, indent=2)
-                logger.info("File: Saved latest artifact '%s' to %s", name, latest_file_path)
+                logger.info(
+                    "File: Saved latest artifact '%s' to %s", name, latest_file_path
+                )
             except Exception as e:
                 logger.error("File: Failed to save artifact '%s': %s", name, e)
 
+
 def get_artifact_from_store(session_id: str, artifact_name: str) -> Optional[Any]:
     store = _default_store()
-    item  = store.get(("artifacts", session_id), artifact_name)
+    item = store.get(("artifacts", session_id), artifact_name)
     return item.value.get("content") if item else None
 
 
 # ── Conditional edge ──────────────────────────────────────────────────────────
+
 
 def after_interviewer(state: WorkflowState) -> str:
     """
@@ -174,13 +205,14 @@ def after_interviewer(state: WorkflowState) -> str:
 
     # ── Tier 2 ───────────────────────────────────────────────────────────
     turn_count = state.get("turn_count", 0)
-    max_turns  = state.get("max_turns", _INTERVIEW_SAFETY_MAX_TURNS)
+    max_turns = state.get("max_turns", _INTERVIEW_SAFETY_MAX_TURNS)
 
     if turn_count >= max_turns:
         logger.warning(
             "Tier-2 safety net: turn_count=%d >= max_turns=%d → forcing supervisor. "
             "Consider reviewing completeness_threshold or raising max_turns.",
-            turn_count, max_turns,
+            turn_count,
+            max_turns,
         )
         return "supervisor"
 
@@ -188,7 +220,14 @@ def after_interviewer(state: WorkflowState) -> str:
     return "enduser_turn"
 
 
+def route_after_review(state: WorkflowState):
+    if state.get("review_approved") == True:
+        return "supervisor"  # forward
+    return "review"  # go back
+
+
 # ── Build graph ───────────────────────────────────────────────────────────────
+
 
 def build_graph(store=None, checkpointer=None):
     """
@@ -203,10 +242,11 @@ def build_graph(store=None, checkpointer=None):
 
     g = StateGraph(WorkflowState)
 
-    g.add_node("supervisor",        supervisor_node_fn)
-    g.add_node("interviewer_turn",  interviewer_turn_fn)
-    g.add_node("enduser_turn",      enduser_turn_fn)
+    g.add_node("supervisor", supervisor_node_fn)
+    g.add_node("interviewer_turn", interviewer_turn_fn)
+    g.add_node("enduser_turn", enduser_turn_fn)
     g.add_node("sprint_agent_turn", sprint_agent_turn_fn)
+    g.add_node("review", review_node)
 
     g.set_entry_point("supervisor")
 
@@ -214,9 +254,9 @@ def build_graph(store=None, checkpointer=None):
         "supervisor",
         supervisor_router,
         {
-            "interviewer_turn":  "interviewer_turn",
+            "interviewer_turn": "interviewer_turn",
             "sprint_agent_turn": "sprint_agent_turn",
-            "__end__":           END,
+            "__end__": END,
         },
     )
 
@@ -224,15 +264,25 @@ def build_graph(store=None, checkpointer=None):
         "interviewer_turn",
         after_interviewer,
         {
-            "supervisor":   "supervisor",
+            "supervisor": "supervisor",
             "enduser_turn": "enduser_turn",
         },
     )
     g.add_edge("enduser_turn", "interviewer_turn")
-    g.add_edge("sprint_agent_turn", "supervisor")
+    g.add_conditional_edges(
+        "sprint_agent_turn",
+        route_after_review,
+        {
+            "supervisor": "supervisor",
+            "review": "review",
+        },
+    )
+    g.add_edge("review", "sprint_agent_turn")
 
     compile_kwargs: Dict[str, Any] = {"store": store}
     if checkpointer is not None:
         compile_kwargs["checkpointer"] = checkpointer
+    else:
+        compile_kwargs["checkpointer"] = InMemorySaver()
 
     return g.compile(**compile_kwargs)

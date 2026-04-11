@@ -189,15 +189,21 @@ def start(current_user, chat_id):
 
     req_id = str(uuid.uuid4())
     data = request.get_json(silent=True) or {}
+    projDescr = data.get("projectDescription", "").strip()
+    if not projDescr:
+        return (
+            jsonify(
+                {
+                    "error": "Validation error",
+                    "message": "Project Description is required.",
+                }
+            ),
+            400,
+        )
     initial_state = {
         # ── Session ───────────────────────────────────────────────────────
-        "session_id": "demo_session_1",
-        "project_description": (
-            "We need a course-registration system for university students. "
-            "Students should be able to browse available courses, register for "
-            "up to 5 courses per semester, view their schedule, and receive "
-            "notifications about enrollment deadlines."
-        ),
+        "session_id": req_id,
+        "project_description": projDescr,
         # ── Phase ─────────────────────────────────────────────────────────
         "system_phase": "sprint_zero_planning",
         # ── Artifacts ─────────────────────────────────────────────────────
@@ -208,7 +214,7 @@ def start(current_user, chat_id):
         # max_turns is a SAFETY NET — the interviewer stops on its own
         # via interview_complete=True when completeness ≥ threshold (0.8).
         # Only change this if you have a specific token-budget constraint.
-        # "max_turns": args.max_turns,  # default 20
+        "max_turns": data.get("maxIterations", 20),  # default 20
         "interview_complete": False,
         # ── Live requirements draft (populated incrementally per turn) ─────
         # InterviewerAgent.update_requirements appends here after each
@@ -218,6 +224,7 @@ def start(current_user, chat_id):
         # ── Misc ──────────────────────────────────────────────────────────
         "errors": [],
     }
+    print(initial_state)
 
     task = executor.submit(
         ws_handler.run_iredev_workflow, initial_state, current_user["id"], chat_id

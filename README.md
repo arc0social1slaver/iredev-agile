@@ -52,13 +52,13 @@ At the start of each new iteration:
 
 ## Agents
 
-| Agent | Status | Role |
-|---|---|---|
-| **InterviewerAgent** | ✅ Implemented | Conducts requirements interviews, extracts and validates requirements incrementally, produces `interview_record` |
-| **EndUserAgent** | ✅ Implemented | Simulates a stakeholder (product manager / domain expert) responding to interview questions |
-| **SprintAgent** | 🔧 Stub | Converts interview record into Product Backlog; decomposes into Sprint Backlogs; updates backlogs after each sprint |
-| **AnalystAgent** | ⏳ Not yet | Generates Acceptance Criteria for user stories in Sprint N |
-| **ReviewerAgent** | ⏳ Not yet | Validates pull requests / developer work against Acceptance Criteria |
+| Agent | Role |
+|---|---|
+| **InterviewerAgent** | Conducts requirements interviews, extracts and validates requirements incrementally, produces `interview_record` |
+| **EndUserAgent** | Simulates a stakeholder (product manager / domain expert) responding to interview questions |
+| **SprintAgent** | Converts interview record into Product Backlog; decomposes into Sprint Backlogs; updates backlogs after each sprint |
+| **AnalystAgent** | Generates Acceptance Criteria for user stories in Sprint N |
+| **ReviewerAgent** | Validates pull requests / developer work against Acceptance Criteria |
 
 ---
 

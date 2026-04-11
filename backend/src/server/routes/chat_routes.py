@@ -97,9 +97,9 @@ def delete_chat(current_user, chat_id):
 # =============================================================================
 
 
-@chat_bp.route("/<chat_id>/messages", methods=["GET"])
+@chat_bp.route("/<chat_id>/<sub_chat_id>/messages", methods=["GET"])
 @require_auth
-def list_messages(current_user, chat_id):
+def list_messages(current_user, chat_id, sub_chat_id):
     """
     GET /api/chats/<chat_id>/messages
     Return the full message history for a conversation (oldest first).
@@ -119,12 +119,12 @@ def list_messages(current_user, chat_id):
             403,
         )
 
-    return jsonify(mock_db.get_messages(chat_id)), 200
+    return jsonify(mock_db.get_messages(chat_id, sub_chat_id)), 200
 
 
-@chat_bp.route("/<chat_id>/messages", methods=["POST"])
+@chat_bp.route("/<chat_id>/<sub_chat_id>/messages", methods=["POST"])
 @require_auth
-def save_message(current_user, chat_id):
+def save_message(current_user, chat_id, sub_chat_id):
     """
     POST /api/chats/<chat_id>/messages
     Body: { "role": "user", "content": "Hello!" }
@@ -177,7 +177,9 @@ def save_message(current_user, chat_id):
         )
 
     # Persist and return the message
-    message = mock_db.add_message(chat_id=chat_id, role=role, content=content)
+    message = mock_db.add_message(
+        chat_id=chat_id, role=role, content=content, subChatID=sub_chat_id
+    )
     return jsonify(message), 201
 
 

@@ -104,48 +104,50 @@ def _seed():
         "date": "Today",
         "createdAt": _now(),
     }
-    MESSAGES["c1"] = [
-        {
-            "id": "m1",
-            "chatId": "c1",
-            "role": "user",
-            "content": "Can you build me a simple dashboard in React?",
-            "createdAt": _now(),
-        },
-        {
-            "id": "m2",
-            "chatId": "c1",
-            "role": "assistant",
-            "content": (
-                "Sure! Here's a clean dashboard layout:\n\n"
-                "```jsx\nexport function Dashboard() {\n"
-                '  return (\n    <div className="grid grid-cols-3 gap-4 p-6">\n'
-                '      <StatCard title="Users"   value="1,240" />\n'
-                '      <StatCard title="Revenue" value="$8,320" />\n'
-                '      <StatCard title="Orders"  value="340" />\n'
-                "    </div>\n  )\n}\n```\n\n"
-                "Each **StatCard** receives a `title` and `value` prop. "
-                "Want me to add charts or live data fetching?"
-            ),
-            "artifact": {
-                "id": "art_m2_v1",
-                "type": "react",
-                "language": "jsx",
-                "title": "JSX snippet",
-                "iteration": 1,
-                "accepted": True,
+    MESSAGES["c1"] = {
+        0: [
+            {
+                "id": "m1",
+                "chatId": "c1",
+                "role": "user",
+                "content": "Can you build me a simple dashboard in React?",
+                "createdAt": _now(),
+            },
+            {
+                "id": "m2",
+                "chatId": "c1",
+                "role": "assistant",
                 "content": (
-                    "export function Dashboard() {\n"
+                    "Sure! Here's a clean dashboard layout:\n\n"
+                    "```jsx\nexport function Dashboard() {\n"
                     '  return (\n    <div className="grid grid-cols-3 gap-4 p-6">\n'
                     '      <StatCard title="Users"   value="1,240" />\n'
                     '      <StatCard title="Revenue" value="$8,320" />\n'
                     '      <StatCard title="Orders"  value="340" />\n'
-                    "    </div>\n  )\n}"
+                    "    </div>\n  )\n}\n```\n\n"
+                    "Each **StatCard** receives a `title` and `value` prop. "
+                    "Want me to add charts or live data fetching?"
                 ),
+                "artifact": {
+                    "id": "art_m2_v1",
+                    "type": "react",
+                    "language": "jsx",
+                    "title": "JSX snippet",
+                    "iteration": 1,
+                    "accepted": True,
+                    "content": (
+                        "export function Dashboard() {\n"
+                        '  return (\n    <div className="grid grid-cols-3 gap-4 p-6">\n'
+                        '      <StatCard title="Users"   value="1,240" />\n'
+                        '      <StatCard title="Revenue" value="$8,320" />\n'
+                        '      <StatCard title="Orders"  value="340" />\n'
+                        "    </div>\n  )\n}"
+                    ),
+                },
+                "createdAt": _now(),
             },
-            "createdAt": _now(),
-        },
-    ]
+        ]
+    }
 
     # ── Chat 2: async/await ───────────────────────────────────────────────────
     CHATS["c2"] = {
@@ -155,44 +157,46 @@ def _seed():
         "date": "Today",
         "createdAt": _now(),
     }
-    MESSAGES["c2"] = [
-        {
-            "id": "m3",
-            "chatId": "c2",
-            "role": "user",
-            "content": "Explain async/await in JavaScript simply.",
-            "createdAt": _now(),
-        },
-        {
-            "id": "m4",
-            "chatId": "c2",
-            "role": "assistant",
-            "content": (
-                "**async/await** makes asynchronous code read like synchronous code.\n\n"
-                "- `async` marks a function — it always returns a **Promise**\n"
-                "- `await` pauses until a Promise resolves\n\n"
-                "```javascript\nasync function getUser() {\n"
-                "  const res  = await fetch('/api/user')\n"
-                "  const user = await res.json()\n  console.log(user)\n}\n```\n\n"
-                'Think of `await` as: **"wait here until done, then continue."**'
-            ),
-            "artifact": {
-                "id": "art_m4_v1",
-                "type": "code",
-                "language": "javascript",
-                "title": "JAVASCRIPT snippet",
-                "iteration": 1,
-                "accepted": True,
-                "content": (
-                    "async function getUser() {\n"
-                    "  const res  = await fetch('/api/user')\n"
-                    "  const user = await res.json()\n"
-                    "  console.log(user)\n}"
-                ),
+    MESSAGES["c2"] = {
+        0: [
+            {
+                "id": "m3",
+                "chatId": "c2",
+                "role": "user",
+                "content": "Explain async/await in JavaScript simply.",
+                "createdAt": _now(),
             },
-            "createdAt": _now(),
-        },
-    ]
+            {
+                "id": "m4",
+                "chatId": "c2",
+                "role": "assistant",
+                "content": (
+                    "**async/await** makes asynchronous code read like synchronous code.\n\n"
+                    "- `async` marks a function — it always returns a **Promise**\n"
+                    "- `await` pauses until a Promise resolves\n\n"
+                    "```javascript\nasync function getUser() {\n"
+                    "  const res  = await fetch('/api/user')\n"
+                    "  const user = await res.json()\n  console.log(user)\n}\n```\n\n"
+                    'Think of `await` as: **"wait here until done, then continue."**'
+                ),
+                "artifact": {
+                    "id": "art_m4_v1",
+                    "type": "code",
+                    "language": "javascript",
+                    "title": "JAVASCRIPT snippet",
+                    "iteration": 1,
+                    "accepted": True,
+                    "content": (
+                        "async function getUser() {\n"
+                        "  const res  = await fetch('/api/user')\n"
+                        "  const user = await res.json()\n"
+                        "  console.log(user)\n}"
+                    ),
+                },
+                "createdAt": _now(),
+            },
+        ]
+    }
 
     # ── Stub chats (no messages yet) ──────────────────────────────────────────
     for cid, title, date in [
@@ -207,10 +211,10 @@ def _seed():
             "date": date,
             "createdAt": _now(),
         }
-        MESSAGES[cid] = []
+        MESSAGES[cid] = {0: []}
 
 
-_seed()
+# _seed()
 
 
 # ── Chat CRUD ─────────────────────────────────────────────────────────────────
@@ -234,7 +238,7 @@ def create_chat(user_id: str, title: str) -> dict:
         "createdAt": _now(),
     }
     CHATS[cid] = chat
-    MESSAGES[cid] = []
+    MESSAGES[cid] = {}
     return chat
 
 
@@ -249,8 +253,8 @@ def delete_chat(chat_id: str) -> bool:
 # ── Message CRUD ──────────────────────────────────────────────────────────────
 
 
-def get_messages(chat_id: str) -> list:
-    return MESSAGES.get(chat_id, [])
+def get_messages(chat_id: str, sub_chat_id) -> list:
+    return MESSAGES.get(chat_id, {}).get(int(sub_chat_id), [])
 
 
 def add_message(
@@ -259,6 +263,7 @@ def add_message(
     content: str,
     artifact: dict | None = None,
     messID: str | None = None,
+    subChatID: int = 0,
 ) -> dict:
     """
     Persist a message.  If artifact is provided it is stored on the
@@ -274,7 +279,7 @@ def add_message(
     }
     if artifact:
         msg["artifact"] = artifact  # persisted so reload restores the card
-    MESSAGES.setdefault(chat_id, []).append(msg)
+    MESSAGES.setdefault(chat_id, {}).setdefault(int(subChatID), []).append(msg)
     if chat_id in CHATS:
         CHATS[chat_id]["date"] = "Today"
     return msg
@@ -306,9 +311,10 @@ def update_message_artifact(message_id: str, artifact: dict) -> bool:
     accepted=True and awaitingFeedback=False on reload.
     Returns True if the message was found, False otherwise.
     """
-    for msgs in MESSAGES.values():
-        for msg in msgs:
-            if msg["id"] == message_id:
-                msg["artifact"] = artifact
-                return True
+    for conversations in MESSAGES.values():
+        for msgs in conversations.values():
+            for msg in msgs:
+                if msg["id"] == message_id:
+                    msg["artifact"] = artifact
+                    return True
     return False

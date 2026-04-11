@@ -30,6 +30,7 @@ import { useAuth } from "../context/AuthContext";
 export function useChat() {
   const [chats, setChats] = useState([]);
   const [activeChatId, setActiveChatId] = useState(null);
+  const [subChat, setSubChat] = useState(null);
   const [messages, setMessages] = useState([]);
   const [streaming, setStreaming] = useState(false);
   const [openArtifact, setOpenArtifact] = useState(null);
@@ -114,6 +115,7 @@ export function useChat() {
     const tempId = `temp_${uid()}`;
     setChats((prev) => [{ id: tempId, title, date: "Today" }, ...prev]);
     setActiveChatId(tempId);
+    setSubChat(0);
     let chatId = tempId;
     try {
       const serverChat = await apiCreateChat(title);
@@ -397,18 +399,19 @@ export function useChat() {
   }, [activeChatId]);
 
   const selectChat = useCallback(
-    async (id) => {
-      if (id === activeChatId) return;
+    async (id, newSubChat = 0) => {
+      if (id === activeChatId && subChat === newSubChat) return;
       if (activeChatId) wsService.stopStream(activeChatId);
       placeholderIdRef.current = null;
       setActiveChatId(id);
+      setSubChat(newSubChat);
       setMessages([]);
       setOpenArtifact(null);
       setError(null);
       setStreaming(false);
       setLoadingMessages(true);
       try {
-        const messages = await apiFetchMessages(id);
+        const messages = await apiFetchMessages(id, newSubChat);
         // Keep awaitingFeedback as-is — if the backend still has a live
         // feedback slot, the bar should show so the user can respond.
         // If the slot is gone (server restart), the user will get an error
@@ -496,19 +499,15 @@ export function useChat() {
 
       // Empty assistant placeholder with cursor
       const placeholderId = `ph_${uid()}`;
-      placeholderIdRef.current = placeholderId;
-      setMessages((prev) => [
-        ...prev,
-        { id: placeholderId, role: "assistant", content: "", streaming: true },
-      ]);
+
       setStreaming(true);
 
       try {
-        const savedMsg = await apiSendMessage(chatId, trimmed);
+        const savedMsg = await apiSendMessage(chatId, trimmed, subChat);
         setMessages((prev) =>
           prev.map((m) => (m.id === localUserMsgId ? savedMsg : m)),
         );
-        wsService.sendChatMessage(chatId, placeholderId, trimmed);
+        wsService.sendChatMessage(chatId, placeholderId, trimmed, subChat);
       } catch (err) {
         setMessages((prev) => prev.filter((m) => m.id !== placeholderId));
         placeholderIdRef.current = null;
@@ -516,7 +515,7 @@ export function useChat() {
         setError("Failed to send. Please try again.");
       }
     },
-    [activeChatId, streaming],
+    [activeChatId, streaming, subChat],
   );
 
   /**
@@ -592,6 +591,7 @@ export function useChat() {
   }, []); // stable — reads current values via refs
 
   return {
+    subChat,
     chats,
     messages,
     activeChatId,
@@ -603,6 +603,7 @@ export function useChat() {
     wsConnected,
     setOpenArtifact,
     setError,
+    setSubChat,
     newChat,
     selectChat,
     deleteChat,

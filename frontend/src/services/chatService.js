@@ -75,6 +75,10 @@ export const startReq = (config, chat_id) =>
 export const fetchChats = () => get("/api/chats");
 export const createChat = (title) => post("/api/chats", { title });
 export const deleteChat = (chatId) => del(`/api/chats/${chatId}`);
-export const fetchMessages = (chatId) => get(`/api/chats/${chatId}/messages`);
-export const sendMessage = (chatId, content) =>
-  post(`/api/chats/${chatId}/messages`, { role: "user", content });
+export const fetchMessages = (chatId, newSubChat) =>
+  get(`/api/chats/${chatId}/${newSubChat}/messages`);
+export const sendMessage = (chatId, content, newSubChat) =>
+  post(`/api/chats/${chatId}/${newSubChat}/messages`, {
+    role: "user",
+    content,
+  });

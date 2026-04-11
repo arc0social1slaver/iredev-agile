@@ -56,7 +56,7 @@ export function ChatInput({ onSend, disabled, onCancel }) {
           <textarea
             ref={taRef}
             rows={1}
-            placeholder="Message Claude…"
+            placeholder="Message CARA…"
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={handleKeyDown}

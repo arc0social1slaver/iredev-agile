@@ -10,7 +10,7 @@ import { Tooltip } from "../ui";
 export function ChatHeader({ activeChatId, chats, onNew, subChat, onSelect }) {
   const title = activeChatId
     ? (chats.find((c) => c.id === activeChatId)?.title ?? "Chat")
-    : "Claude";
+    : "Collaborative Agile Requirements Agent";
 
   return (
     <header

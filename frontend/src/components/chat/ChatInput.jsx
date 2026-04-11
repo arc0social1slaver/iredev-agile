@@ -8,57 +8,57 @@
 //   - While streaming: shows a "Stop" button instead of Send
 //   - onCancel() is called when the user clicks Stop
 // =============================================================================
-import { useState, useEffect, useRef } from 'react'
-import { Paperclip, ArrowUp, Square, Mic } from 'lucide-react'
-import { Tooltip } from '../ui'
+import { useState, useEffect, useRef } from "react";
+import { Paperclip, ArrowUp, Square, Mic } from "lucide-react";
+import { Tooltip } from "../ui";
 
 export function ChatInput({ onSend, disabled, onCancel }) {
-  const [text, setText] = useState('')
-  const taRef           = useRef(null)
+  const [text, setText] = useState("");
+  const taRef = useRef(null);
 
   // Auto-grow textarea to fit content
   useEffect(() => {
-    const ta = taRef.current
-    if (!ta) return
-    ta.style.height = 'auto'
-    ta.style.height = Math.min(ta.scrollHeight, 220) + 'px'
-  }, [text])
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, 220) + "px";
+  }, [text]);
 
   function handleKeyDown(e) {
     // Enter (no Shift) = send; Shift+Enter = newline
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      submit()
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submit();
     }
   }
 
   function submit() {
-    if (!text.trim() || disabled) return
-    onSend(text)
-    setText('')
+    if (!text.trim() || disabled) return;
+    onSend(text);
+    setText("");
   }
 
   // True while the AI is generating (disabled comes from streaming state)
-  const isStreaming = disabled
+  const isStreaming = disabled;
 
   return (
     <div className="px-4 pb-5 pt-2 flex-shrink-0">
       <div className="max-w-[720px] mx-auto">
-
         {/* Input card */}
-        <div className="relative bg-white rounded-2xl border border-[#E8E3D9]
+        <div
+          className="relative bg-white rounded-2xl border border-[#E8E3D9]
                         shadow-[0_2px_8px_rgba(0,0,0,0.06)]
                         focus-within:border-[#C96A42]/50
                         focus-within:shadow-[0_0_0_3px_rgba(201,106,66,0.10),0_2px_8px_rgba(0,0,0,0.06)]
-                        transition-all duration-150">
-
+                        transition-all duration-150"
+        >
           {/* Textarea */}
           <textarea
             ref={taRef}
             rows={1}
             placeholder="Message Claude…"
             value={text}
-            onChange={e => setText(e.target.value)}
+            onChange={(e) => setText(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={isStreaming}
             className="w-full px-4 pt-3.5 pb-[52px] bg-transparent text-[14px]
@@ -70,9 +70,10 @@ export function ChatInput({ onSend, disabled, onCancel }) {
           />
 
           {/* Bottom action row — sits inside the card */}
-          <div className="absolute bottom-0 left-0 right-0
-                          flex items-center justify-between px-3 pb-3 pt-1">
-
+          <div
+            className="absolute bottom-0 left-0 right-0
+                          flex items-center justify-between px-3 pb-3 pt-1"
+          >
             {/* Left: attach button */}
             <Tooltip text="Attach files">
               <button
@@ -119,10 +120,10 @@ export function ChatInput({ onSend, disabled, onCancel }) {
                     disabled={!text.trim()}
                     className={`w-8 h-8 flex items-center justify-center rounded-full
                                 transition-all duration-150 ${
-                      text.trim()
-                        ? 'bg-[#C96A42] hover:bg-[#B85E38] text-white shadow-sm'
-                        : 'bg-[#EAE6DC] text-[#C0B8AE] cursor-not-allowed'
-                    }`}
+                                  text.trim()
+                                    ? "bg-[#C96A42] hover:bg-[#B85E38] text-white shadow-sm"
+                                    : "bg-[#EAE6DC] text-[#C0B8AE] cursor-not-allowed"
+                                }`}
                   >
                     <ArrowUp size={15} strokeWidth={2.5} />
                   </button>
@@ -134,9 +135,9 @@ export function ChatInput({ onSend, disabled, onCancel }) {
 
         {/* Disclaimer */}
         <p className="text-center text-[11px] text-[#C0B8AE] mt-2.5">
-          Claude can make mistakes. Please check important information.
+          CARA can make mistakes. Please check important information.
         </p>
       </div>
     </div>
-  )
+  );
 }

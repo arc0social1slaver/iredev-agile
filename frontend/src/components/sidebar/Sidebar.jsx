@@ -10,7 +10,6 @@ import {
   PanelLeft,
   SquarePen,
   Search,
-  Sparkles,
   Settings,
   LogOut,
   Play,
@@ -91,7 +90,7 @@ export function Sidebar({
               <span className="text-white text-[10px] font-semibold">C</span>
             </div>
             <span className="text-[13px] font-semibold text-[#1A1410] tracking-[-0.01em]">
-              Claude
+              CARA
             </span>
           </div>
           <Tooltip text="Close sidebar">
@@ -184,13 +183,6 @@ export function Sidebar({
 
         {/* Bottom nav */}
         <div className="border-t border-[#E2DCCF] p-2 space-y-0.5">
-          <button
-            className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg
-                             text-[12px] text-[#8A7F72] hover:bg-[#E4E0D5]
-                             hover:text-[#3D3530] transition-colors"
-          >
-            <Sparkles size={13} /> Upgrade plan
-          </button>
           <button
             onClick={() => setShowSettings(true)}
             className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg

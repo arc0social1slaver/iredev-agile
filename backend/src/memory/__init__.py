@@ -1,4 +1,3 @@
-from .global_log import GlobalConversationLog
 from .long_term import EpisodicMemory, SemanticMemory, create_store
 from .memory_module import MemoryModule
 from .short_term import ConversationBuffer, create_checkpointer
@@ -14,7 +13,6 @@ __all__ = [
     "ConversationBuffer",
     "EpisodicMemory",
     "SemanticMemory",
-    "GlobalConversationLog",
     # Store / checkpointer factories
     "create_store",
     "create_checkpointer",

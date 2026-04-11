@@ -1,41 +1,18 @@
-"""Shared knowledge module for iReDev agents.
+"""Shared knowledge module for iReDev agents."""
 
-Indexes the local knowledge base into a PostgreSQL vector store (pgvector)
-and exposes phase-filtered semantic retrieval for ThinkModule to inject
-into agent prompts.
+from __future__ import annotations
 
-Knowledge files live under the paths declared in config.knowledge_base:
-    knowledge/domains/          -> KnowledgeType.DOMAIN_KNOWLEDGE
-    knowledge/methodologies/    -> KnowledgeType.METHODOLOGY
-    knowledge/standards/        -> KnowledgeType.STANDARDS
-    knowledge/templates/        -> KnowledgeType.TEMPLATES
-    knowledge/strategies/       -> KnowledgeType.STRATEGIES
-
-Each .md / .txt / .pdf file may carry a YAML front-matter block to declare
-which phases the document applies to:
-
-    ---
-    phases: [elicitation, analysis]
-    title: "Interview Techniques"
-    ---
-    # Interview Techniques
-    ...
-
-Files without front-matter are indexed under ALL phases.
-
-Import-time side effects:
-    This module imports only stdlib, yaml, and local enum types at module level.
-    All heavy drivers (langchain_postgres, watchdog, langchain_text_splitters) are
-    imported lazily inside the methods that first need them so that a bare
-    ``from src.modules.knowledge import KnowledgeModule`` has zero runtime cost.
-"""
-from enum import Enum
 import logging
 import threading
+import uuid
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-import yaml
+import frontmatter
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_core.documents import Document
+from langchain_text_splitters import MarkdownHeaderTextSplitter
 
 from ..config.config_manager import get_config
 from ..agent.llm.factory import LLMFactory
@@ -43,12 +20,30 @@ from ..orchestrator import ProcessPhase
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# KnowledgeType — exported for knowledge_module.py
-# ---------------------------------------------------------------------------
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MARKDOWN_HEADERS = [
+    ("#",   "h1"),
+    ("##",  "h2"),
+    ("###", "h3"),
+]
+
+_SUPPORTED_EXTENSIONS = {".md", ".txt", ".pdf"}
+
+# Over-fetch multiplier for similarity_search to survive deduplication:
+# a single file may produce many chunks, so we fetch more than k
+# and deduplicate by parent_id before capping at the requested k.
+_CHUNK_OVERFETCH = 3
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KnowledgeType
+# ─────────────────────────────────────────────────────────────────────────────
 
 class KnowledgeType(Enum):
-    """Types of knowledge files recognized by KnowledgeModule."""
     DOMAIN_KNOWLEDGE = "domain_knowledge"
     METHODOLOGY      = "methodology"
     STANDARDS        = "standards"
@@ -56,32 +51,14 @@ class KnowledgeType(Enum):
     STRATEGIES       = "strategies"
 
 
-# ---------------------------------------------------------------------------
-# Phase -> knowledge-type coverage (iReDev paper, Table 1)
-# ---------------------------------------------------------------------------
+_ALL_KNOWLEDGE_TYPES: Set[KnowledgeType] = set(KnowledgeType)
 
-_PHASE_TYPES: Dict[ProcessPhase, Set[KnowledgeType]] = {
-    ProcessPhase.ELICITATION: {
-        KnowledgeType.DOMAIN_KNOWLEDGE,
-        KnowledgeType.METHODOLOGY,
-        KnowledgeType.STANDARDS,
-        KnowledgeType.TEMPLATES,
-        KnowledgeType.STRATEGIES,
-    },
-    ProcessPhase.ANALYSIS: {
-        KnowledgeType.DOMAIN_KNOWLEDGE,
-        KnowledgeType.METHODOLOGY,
-        KnowledgeType.STANDARDS,
-        KnowledgeType.TEMPLATES,
-        KnowledgeType.STRATEGIES,
-    },
-    ProcessPhase.SPECIFICATION: {
-        KnowledgeType.DOMAIN_KNOWLEDGE,
-        KnowledgeType.METHODOLOGY,
-        KnowledgeType.STANDARDS,
-        KnowledgeType.TEMPLATES,
-        KnowledgeType.STRATEGIES,
-    },
+# Phase → allowed knowledge types.
+# VALIDATION excludes STRATEGIES — all other phases allow everything.
+_PHASE_ALLOWED_TYPES: Dict[ProcessPhase, Set[KnowledgeType]] = {
+    ProcessPhase.ELICITATION:   _ALL_KNOWLEDGE_TYPES,
+    ProcessPhase.ANALYSIS:      _ALL_KNOWLEDGE_TYPES,
+    ProcessPhase.SPECIFICATION: _ALL_KNOWLEDGE_TYPES,
     ProcessPhase.VALIDATION: {
         KnowledgeType.DOMAIN_KNOWLEDGE,
         KnowledgeType.METHODOLOGY,
@@ -90,427 +67,298 @@ _PHASE_TYPES: Dict[ProcessPhase, Set[KnowledgeType]] = {
     },
 }
 
-_SUPPORTED_EXTENSIONS = {".md", ".txt", ".pdf", ".yaml", ".yml"}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# File-system event handler (module-level for testability)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_watchdog_handler(module: "KnowledgeModule"):
+    """Return a FileSystemEventHandler wired to *module*."""
+    from watchdog.events import FileSystemEventHandler
+
+    class _Handler(FileSystemEventHandler):
+        def on_created(self, event) -> None:
+            path = Path(event.src_path)
+            if not event.is_directory and path.suffix in _SUPPORTED_EXTENSIONS:
+                module._reindex_file(path)
+
+        def on_modified(self, event) -> None:
+            path = Path(event.src_path)
+            if not event.is_directory and path.suffix in _SUPPORTED_EXTENSIONS:
+                module._reindex_file(path)
+
+        def on_deleted(self, event) -> None:
+            if not event.is_directory:
+                module._remove_file(Path(event.src_path))
+
+    return _Handler()
 
 
-# ---------------------------------------------------------------------------
-# KnowledgeModule -- singleton
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# KnowledgeModule — singleton
+# ─────────────────────────────────────────────────────────────────────────────
 
 class KnowledgeModule:
-    """Shared, process-wide knowledge store backed by PostgreSQL + pgvector.
+    """Process-wide knowledge store backed by PostgreSQL + pgvector.
 
-    Singleton: use ``KnowledgeModule.get_instance()`` — do not instantiate
-    directly.
+    Chunks are indexed with MarkdownHeaderTextSplitter for accurate semantic
+    search. Retrieval deduplicates by source file and returns full documents,
+    since each knowledge file is designed to be read as a whole.
 
-    On first call to get_instance():
-      1. Loads config from ``get_config()`` (``iredev.knowledge_base`` section).
-      2. Resolves the PostgreSQL connection string (env → config → default).
-      3. Calls ``LLMFactory.create_embeddings()`` to build the embeddings model.
-      4. Imports and initializes PGVector (lazy).
-      5. Imports and starts a watchdog Observer (lazy).
-      6. Indexes all existing knowledge files.
-
-    PostgreSQL connection string resolution order
-    ---------------------------------------------
-    1. Explicit ``pg_conn_str`` argument to get_instance().
-    2. ``IREDEV_PG_CONNECTION`` environment variable (loaded from .env by
-       config_manager at import time).
-    3. ``pg_connection`` key in the ``knowledge_base`` YAML block.
-    4. Hard-coded local default.
+    Always use ``KnowledgeModule.get_instance()`` — do not instantiate directly.
     """
 
     _instance: Optional["KnowledgeModule"] = None
     _lock = threading.Lock()
 
-    def __init__(self, pg_conn_str: Optional[str] = None) -> None:
-        config = get_config()
-        self._config: Dict[str, Any] = (
-            config.get("iredev", {}).get("knowledge_base")
-            or config.get("knowledge_base")
-            or {}
-        )
+    def __init__(self) -> None:
+        cfg = get_config().get("iredev", {}).get("knowledge_base", {})
 
-        # pg_conn_str resolution order (see class docstring)
-        self._pg_conn_str = (
-                pg_conn_str
-                or self._config.get("pg_connection")
-                or "postgresql+psycopg://postgres:postgres@localhost:5432/iredev"
-        )
-
-        # Log host/db only — never log credentials
-        logger.info(
-            "[KnowledgeModule] Connecting to: %s",
-            self._pg_conn_str.split("@")[-1],
-        )
-
-        # Resolve project root (this file: src/knowledge/knowledge_module.py)
-        _project_root = Path(__file__).resolve().parent.parent.parent
-
-        def _resolve_path(cfg_key: str, default: str) -> Path:
-            config = self._config.get(cfg_key, default)
-            p   = Path(config)
-            return p if p.is_absolute() else _project_root / p
-
-        self._type_paths: Dict[KnowledgeType, Path] = {
-            KnowledgeType.DOMAIN_KNOWLEDGE: _resolve_path(
-                "domain_knowledge_path", "knowledge/domains"
-            ),
-            KnowledgeType.METHODOLOGY: _resolve_path(
-                "methodology_path", "knowledge/methodologies"
-            ),
-            KnowledgeType.STANDARDS: _resolve_path(
-                "standards_path", "knowledge/standards"
-            ),
-            KnowledgeType.TEMPLATES: _resolve_path(
-                "templates_path", "knowledge/templates"
-            ),
-            KnowledgeType.STRATEGIES: _resolve_path(
-                "strategies_path", "knowledge/strategies"
-            ),
-        }
-
-        # Reverse lookup: resolved folder path -> KnowledgeType
+        self._type_paths = self._resolve_type_paths(cfg)
         self._path_to_type: Dict[Path, KnowledgeType] = {
-            v.resolve(): k for k, v in self._type_paths.items()
+            path.resolve(): kt for kt, path in self._type_paths.items()
         }
-
-        self._file_ids:  Dict[str, List[str]] = {}
-        self._ids_lock = threading.Lock()
-
-        # Lazy import: loads tokenizer deps
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-        self._splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self._config.get("chunk_size", 800),
-            chunk_overlap=self._config.get("chunk_overlap", 100),
+        self._splitter = MarkdownHeaderTextSplitter(
+            headers_to_split_on=_MARKDOWN_HEADERS,
+            strip_headers=False,  # keep headings in chunk text for richer embeddings
         )
 
-        self._store    = self._setup_vector_store()
+        # parent_id → full source Document (returned by retrieve())
+        self._parent_store: Dict[str, Document] = {}
+        # resolved file path → list of chunk IDs stored in the vector store
+        self._file_chunk_ids: Dict[str, List[str]] = {}
+        self._store_lock = threading.Lock()
+
+        self._store = self._init_vector_store(cfg)
         self._index_all()
         self._observer = self._start_watchdog()
 
-        logger.info("[KnowledgeModule] Initialized and watching knowledge folders.")
+        logger.info("[KnowledgeModule] Ready — watching %d folders.", len(self._type_paths))
 
-    # ------------------------------------------------------------------
-    # Singleton factory
-    # ------------------------------------------------------------------
+    # ── Singleton ─────────────────────────────────────────────────────────
 
     @classmethod
-    def get_instance(cls, pg_conn_str: Optional[str] = None) -> "KnowledgeModule":
-        """Return the shared KnowledgeModule, creating it on first call.
-
-        Thread-safe. The pg_conn_str is optional: if omitted the connection
-        string is resolved from the environment / YAML (see class docstring).
-        Subsequent calls with a different pg_conn_str are ignored; the first
-        connection string wins for the lifetime of the process.
-
-        Before calling this method, the orchestrator (or main entry point) must
-        have initialized the config system via::
-
-            from src.config.config_manager import get_config_manager
-            get_config_manager("config/iredev_config.yaml")
-
-        Args:
-            pg_conn_str: Optional PostgreSQL connection string override.
-
-        Returns:
-            The singleton KnowledgeModule instance.
-        """
+    def get_instance(cls) -> "KnowledgeModule":
+        """Return (or create) the shared KnowledgeModule. Thread-safe."""
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
-                    cls._instance = cls(pg_conn_str)
+                    cls._instance = cls()
         return cls._instance
 
-    # ------------------------------------------------------------------
-    # Public retrieval API
-    # ------------------------------------------------------------------
+    # ── Public API ────────────────────────────────────────────────────────
 
     def retrieve(
         self,
         query: str,
         phase: ProcessPhase,
         k: int = 5,
-    ) -> List[Any]:
-        """Retrieve the top-k knowledge snippets most relevant to *query*.
+    ) -> List[Document]:
+        """Semantic search filtered by phase; returns full source documents.
 
-        Two-stage filtering:
-          1. ``knowledge_type`` filter pushed to Postgres (fast SQL WHERE).
-          2. ``phases`` list checked in Python.
-
-        Args:
-            query: Natural language question or retrieval query.
-            phase: Current process phase — restricts which knowledge applies.
-            k:     Desired number of results to return.
-
-        Returns:
-            List of Document objects (page_content + metadata).
+        Internally searches over fine-grained header chunks for precision,
+        then resolves each hit back to its parent document. Results are
+        deduplicated and capped at *k* unique files.
         """
-        relevant_types = [kt.value for kt in _PHASE_TYPES.get(phase, set())]
-        if not relevant_types:
-            return []
+        allowed = [kt.value for kt in _PHASE_ALLOWED_TYPES.get(phase, _ALL_KNOWLEDGE_TYPES)]
+        chunks = self._store.similarity_search(
+            query,
+            k=k * _CHUNK_OVERFETCH,
+            filter={"knowledge_type": {"$in": allowed}},
+        )
 
-        pg_filter  = {"knowledge_type": {"$in": relevant_types}}
-        candidates = self._store.similarity_search(query, k=k * 4, filter=pg_filter)
+        seen: Set[str] = set()
+        results: List[Document] = []
+        for chunk in chunks:
+            parent_id = chunk.metadata.get("parent_id", "")
+            if not parent_id or parent_id in seen:
+                continue
+            seen.add(parent_id)
+            parent = self._parent_store.get(parent_id)
+            if parent:
+                results.append(parent)
+            if len(results) >= k:
+                break
 
-        filtered = [
-            doc for doc in candidates
-            if phase.value in doc.metadata.get("phases", [])
-        ]
-        return filtered[:k]
+        return results
 
-    def shutdown(self) -> None:
-        """Stop the watchdog observer on process exit."""
-        if self._observer and self._observer.is_alive():
-            self._observer.stop()
-            self._observer.join()
-            logger.info("[KnowledgeModule] Watchdog stopped.")
+    # ── Initialisation helpers ────────────────────────────────────────────
 
-    # ------------------------------------------------------------------
-    # Internal -- vector store setup
-    # ------------------------------------------------------------------
+    @staticmethod
+    def _resolve_type_paths(cfg: Dict[str, Any]) -> Dict[KnowledgeType, Path]:
+        project_root = Path(__file__).resolve().parents[2]
 
-    def _setup_vector_store(self):
-        """Build the PGVector store using LLMFactory.create_embeddings().
+        def _resolve(p: str) -> Path:
+            path = Path(p)
+            return path if path.is_absolute() else project_root / path
 
-        Raises:
-            ValueError: If the embedding config is invalid (propagated from
-                LLMFactory with a descriptive message).
-            Exception: Re-raised with context if PGVector connection fails.
+        return {
+            KnowledgeType.DOMAIN_KNOWLEDGE: _resolve(cfg["domain_knowledge_path"]),
+            KnowledgeType.METHODOLOGY:      _resolve(cfg["methodology_path"]),
+            KnowledgeType.STANDARDS:        _resolve(cfg["standards_path"]),
+            KnowledgeType.TEMPLATES:        _resolve(cfg["templates_path"]),
+            KnowledgeType.STRATEGIES:       _resolve(cfg["strategies_path"]),
+        }
 
-        Returns:
-            Configured PGVector instance.
-        """
+    def _init_vector_store(self, cfg: Dict[str, Any]):
         from langchain_postgres import PGVector
 
-        embed_cfg = self._config.get("embedding", {})
+        pg_conn_str = cfg.get("pg_connection")
+        logger.info("[KnowledgeModule] Connecting to: %s", pg_conn_str.split("@")[-1])
 
-        try:
-            embeddings = LLMFactory.create_embeddings(embed_cfg)
-        except ValueError as exc:
-            raise ValueError(
-                f"[KnowledgeModule] Embedding setup failed: {exc}\n"
-                "Check the 'knowledge_base.embedding' block in your config YAML, "
-                "or set OLLAMA_BASE_URL / OPENAI_API_KEY in your .env file."
-            ) from exc
+        embeddings = LLMFactory.create_embeddings(cfg.get("embedding", {}))
+        collection = cfg.get("collection_name", "iredev_knowledge")
 
         try:
             store = PGVector(
+                connection=pg_conn_str,
                 embeddings=embeddings,
-                collection_name=self._config.get("collection_name", "iredev_knowledge"),
-                connection=self._pg_conn_str,
+                collection_name=collection,
                 use_jsonb=True,
             )
+            logger.info("[KnowledgeModule] Vector store connected.")
+            return store
         except Exception as exc:
             raise RuntimeError(
                 f"[KnowledgeModule] Failed to connect to PGVector at "
-                f"'{self._pg_conn_str.split('@')[-1]}': {exc}\n"
-                "Check IREDEV_PG_CONNECTION in your .env file."
+                f"'{pg_conn_str.split('@')[-1]}': {exc}"
             ) from exc
 
-        logger.info("[KnowledgeModule] Vector store connected.")
-        return store
-
-    # ------------------------------------------------------------------
-    # Internal -- indexing
-    # ------------------------------------------------------------------
+    # ── Indexing ──────────────────────────────────────────────────────────
 
     def _index_all(self) -> None:
-        """Walk all knowledge type folders and index every supported file."""
-        total_files  = 0
-        empty_folders = []
-
-        for knowledge_type, folder in self._type_paths.items():
+        total = 0
+        for kt, folder in self._type_paths.items():
             if not folder.exists():
-                logger.warning("[KnowledgeModule] Folder not found, skipping: %s", folder)
+                logger.warning("[KnowledgeModule] Folder missing, skipping: %s", folder)
                 continue
-
-            files = [
-                p for p in folder.rglob("*")
-                if p.is_file() and p.suffix in _SUPPORTED_EXTENSIONS
-            ]
-
-            if not files:
-                empty_folders.append(folder)
-                logger.warning(
-                    "[KnowledgeModule] No knowledge files in '%s' "
-                    "(supported: %s). Add .md/.txt/.pdf files here.",
-                    folder, "/".join(_SUPPORTED_EXTENSIONS),
-                )
+            docs = self._load_folder(folder, kt)
+            if not docs:
+                logger.warning("[KnowledgeModule] No documents found in: %s", folder)
                 continue
+            for doc in docs:
+                self._add_document(doc)
+            total += len(docs)
+            logger.debug("[KnowledgeModule] Indexed %d doc(s) from %s.", len(docs), folder)
 
-            for path in files:
-                self._index_file(path, knowledge_type=knowledge_type)
-                total_files += 1
+        logger.info("[KnowledgeModule] Total documents indexed: %d.", total)
 
-        if total_files == 0:
-            logger.warning(
-                "[KnowledgeModule] No knowledge files indexed. "
-                "retrieve() will always return []. "
-                "Populate these folders:\n%s",
-                "\n".join(f"  {f}" for f in self._type_paths.values()),
-            )
-        else:
-            logger.info(
-                "[KnowledgeModule] Indexed %d file(s) across %d folder(s). Empty: %d.",
-                total_files,
-                len(self._type_paths) - len(empty_folders),
-                len(empty_folders),
-            )
+    def _add_document(self, doc: Document) -> None:
+        """Split *doc* into header chunks, index them, and register the parent."""
+        parent_id = str(uuid.uuid4())
+        doc.metadata["parent_id"] = parent_id
 
-    def _index_file(
+        raw_chunks = self._splitter.split_text(doc.page_content)
+        # If no headers found, fall back to indexing the whole document as one chunk.
+        chunk_docs = [
+            Document(page_content=chunk.page_content, metadata={**doc.metadata, **chunk.metadata})
+            for chunk in raw_chunks
+        ] if raw_chunks else [doc]
+
+        ids = self._store.add_documents(chunk_docs)
+        source = doc.metadata.get("source", "")
+
+        with self._store_lock:
+            self._parent_store[parent_id] = doc
+            self._file_chunk_ids.setdefault(source, []).extend(ids)
+
+    def _load_folder(self, folder: Path, kt: KnowledgeType) -> List[Document]:
+        docs: List[Document] = []
+        for path in folder.rglob("*"):
+            if path.suffix in {".md", ".txt"}:
+                docs.extend(self._load_markdown(path, kt))
+            elif path.suffix == ".pdf":
+                docs.extend(self._load_pdf(path, kt))
+        return docs
+
+    def _load_markdown(self, path: Path, kt: KnowledgeType) -> List[Document]:
+        """Load a Markdown/text file; parse YAML front-matter with python-frontmatter."""
+        try:
+            post = frontmatter.load(str(path))
+        except Exception as exc:
+            logger.warning("[KnowledgeModule] Could not parse %s: %s", path, exc)
+            return []
+
+        return [Document(
+            page_content=post.content,
+            metadata=self._build_metadata(path, kt, post.metadata),
+        )]
+
+    def _load_pdf(self, path: Path, kt: KnowledgeType) -> List[Document]:
+        """Load a PDF; all pages share the same base metadata."""
+        docs = PyPDFLoader(str(path)).load()
+        base_meta = self._build_metadata(path, kt)
+        for doc in docs:
+            doc.metadata.update(base_meta)
+        return docs
+
+    def _build_metadata(
         self,
         path: Path,
-        knowledge_type: Optional[KnowledgeType] = None,
-    ) -> None:
-        """Load, parse, chunk, and upsert one knowledge file.
-
-        Args:
-            path: File to index.
-            knowledge_type: Override type inference (inferred from path if None).
-        """
-        if knowledge_type is None:
-            knowledge_type = self._infer_type(path)
-        if knowledge_type is None:
-            logger.debug("[KnowledgeModule] Cannot infer type for %s, skipping.", path)
-            return
-
-        content, front_matter = self._load_file(path)
-        if not content.strip():
-            return
-
+        kt: KnowledgeType,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Construct the standard metadata dict for a knowledge document."""
+        extra = extra or {}
         all_phases = [p.value for p in ProcessPhase]
-        phases: List[str] = front_matter.get("phases", all_phases)
-        title:  str       = front_matter.get("title", path.stem)
-
-        base_metadata = {
-            "source_file":    str(path.resolve()),
-            "knowledge_type": knowledge_type.value,
-            "phases":         phases,
-            "title":          title,
+        return {
+            "source":         str(path.resolve()),
+            "knowledge_type": kt.value,
+            "title":          extra.get("title", path.stem),
+            "phases":         extra.get("phases", all_phases),
         }
 
-        chunks = self._splitter.create_documents(texts=[content], metadatas=[base_metadata])
-        ids    = self._store.add_documents(chunks)
-
-        with self._ids_lock:
-            self._file_ids[str(path.resolve())] = ids
-
-        logger.debug(
-            "[KnowledgeModule] Indexed %d chunks from '%s' (type=%s, phases=%s).",
-            len(chunks), path.name, knowledge_type.value, phases,
-        )
+    # ── Hot-reload ────────────────────────────────────────────────────────
 
     def _reindex_file(self, path: Path) -> None:
+        """Re-index a file's current content, replacing any stale entries.
+
+        Load first so a parse failure leaves the existing index intact.
+        """
+        kt = self._infer_type(path)
+        if kt is None:
+            return
+
+        loader = self._load_markdown if path.suffix in {".md", ".txt"} else self._load_pdf
+        new_docs = loader(path, kt)
+        if not new_docs:
+            logger.warning("[KnowledgeModule] Could not load %s — keeping stale index.", path)
+            return
+
         self._remove_file(path)
-        self._index_file(path)
+        for doc in new_docs:
+            self._add_document(doc)
 
     def _remove_file(self, path: Path) -> None:
-        key = str(path.resolve())
-        with self._ids_lock:
-            ids = self._file_ids.pop(key, [])
-        if ids:
-            self._store.delete(ids=ids)
-            logger.debug("[KnowledgeModule] Removed %d chunks for '%s'.", len(ids), path.name)
+        """Remove all chunks and parent entries for *path* from the stores."""
+        source = str(path.resolve())
+        with self._store_lock:
+            chunk_ids = self._file_chunk_ids.pop(source, [])
+            stale_parent_ids = [
+                pid for pid, doc in self._parent_store.items()
+                if doc.metadata.get("source") == source
+            ]
+            for pid in stale_parent_ids:
+                del self._parent_store[pid]
 
-    # ------------------------------------------------------------------
-    # Internal -- file loading and front-matter parsing
-    # ------------------------------------------------------------------
-
-    def _load_file(self, path: Path):
-        if path.suffix == ".pdf":
-            return self._load_pdf(path), {}
-        if path.suffix in (".yaml", ".yml"):
-            return self._load_yaml(path)
-        raw = path.read_text(encoding="utf-8", errors="ignore")
-        return self._split_front_matter(raw)
-
-    @staticmethod
-    def _load_yaml(path: Path):
-        import yaml as _yaml
-        raw = path.read_text(encoding="utf-8", errors="ignore")
-        try:
-            doc = _yaml.safe_load(raw)
-        except _yaml.YAMLError:
-            return raw, {}
-
-        if isinstance(doc, dict):
-            if "content" in doc:
-                front_matter = {k: v for k, v in doc.items() if k != "content"}
-                return str(doc["content"]), front_matter
-            else:
-                front_matter = {k: doc[k] for k in ("phases", "title") if k in doc}
-                body_dict    = {k: v for k, v in doc.items() if k not in ("phases", "title")}
-                text_body    = _yaml.dump(body_dict, allow_unicode=True, default_flow_style=False)
-                return text_body, front_matter
-
-        return str(doc), {}
-
-    @staticmethod
-    def _load_pdf(path: Path) -> str:
-        from langchain_community.document_loaders import PyPDFLoader
-        loader = PyPDFLoader(str(path))
-        pages  = loader.load()
-        return "\n\n".join(p.page_content for p in pages)
-
-    @staticmethod
-    def _split_front_matter(raw: str):
-        if not raw.startswith("---"):
-            return raw, {}
-        parts = raw.split("---", 2)
-        if len(parts) < 3:
-            return raw, {}
-        try:
-            meta = yaml.safe_load(parts[1]) or {}
-        except yaml.YAMLError:
-            meta = {}
-        return parts[2].strip(), meta
-
-    # ------------------------------------------------------------------
-    # Internal -- type inference from path
-    # ------------------------------------------------------------------
+        if chunk_ids:
+            self._store.delete(ids=chunk_ids)
 
     def _infer_type(self, path: Path) -> Optional[KnowledgeType]:
-        resolved = path.resolve()
-        for parent in [resolved] + list(resolved.parents):
-            kt = self._path_to_type.get(parent)
+        """Walk *path*'s ancestors to find which knowledge folder it belongs to."""
+        for ancestor in [path.resolve(), *path.resolve().parents]:
+            kt = self._path_to_type.get(ancestor)
             if kt is not None:
                 return kt
         return None
 
-    # ------------------------------------------------------------------
-    # Internal -- watchdog setup
-    # ------------------------------------------------------------------
+    # ── Watchdog ──────────────────────────────────────────────────────────
 
     def _start_watchdog(self):
-        from watchdog.events import (
-            FileCreatedEvent,
-            FileDeletedEvent,
-            FileModifiedEvent,
-            FileSystemEventHandler,
-        )
         from watchdog.observers import Observer
 
-        module_ref = self
-
-        class _Handler(FileSystemEventHandler):
-            def on_created(self, event: FileCreatedEvent) -> None:
-                if not event.is_directory and Path(event.src_path).suffix in _SUPPORTED_EXTENSIONS:
-                    logger.info("[KnowledgeModule] New file: %s", event.src_path)
-                    module_ref._index_file(Path(event.src_path))
-
-            def on_modified(self, event: FileModifiedEvent) -> None:
-                if not event.is_directory and Path(event.src_path).suffix in _SUPPORTED_EXTENSIONS:
-                    logger.info("[KnowledgeModule] Modified: %s", event.src_path)
-                    module_ref._reindex_file(Path(event.src_path))
-
-            def on_deleted(self, event: FileDeletedEvent) -> None:
-                if not event.is_directory:
-                    logger.info("[KnowledgeModule] Deleted: %s", event.src_path)
-                    module_ref._remove_file(Path(event.src_path))
-
-        handler  = _Handler()
         observer = Observer()
+        handler = _make_watchdog_handler(self)
         for folder in self._type_paths.values():
             folder.mkdir(parents=True, exist_ok=True)
             observer.schedule(handler, str(folder), recursive=True)

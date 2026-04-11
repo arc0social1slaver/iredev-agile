@@ -45,6 +45,7 @@ function ChatLayout() {
     cancelStream,
     sendArtifactFeedback,
     handleStartProcess,
+    subChat,
   } = useChat();
 
   const bottomRef = useRef(null);
@@ -65,7 +66,13 @@ function ChatLayout() {
       />
 
       <div className="flex-1 flex flex-col min-w-0 h-full bg-[#F4F0E6]">
-        <ChatHeader activeChatId={activeChatId} chats={chats} onNew={newChat} />
+        <ChatHeader
+          activeChatId={activeChatId}
+          chats={chats}
+          onNew={newChat}
+          subChat={subChat}
+          onSelect={selectChat}
+        />
         <ErrorBanner message={error} onDismiss={() => setError(null)} />
 
         <div className="flex-1 overflow-y-auto">
@@ -94,7 +101,7 @@ function ChatLayout() {
 
         <ChatInput
           onSend={sendMessage}
-          disabled={streaming}
+          disabled={streaming || subChat === 0}
           onCancel={cancelStream}
         />
       </div>

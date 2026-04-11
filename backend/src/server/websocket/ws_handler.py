@@ -119,7 +119,6 @@ class WSHandler:
             for node_name, updates in step_output.items():
                 if updates:
                     if node_name != "sprint_agent_turn" and node_name != "review":
-                        log.info(f"The node name is: {node_name}")
                         conversation = updates.get("conversation")
                         if conversation:
                             last = conversation[-1]
@@ -462,6 +461,7 @@ class WSHandler:
             chat_id = frame.get("chatId", "").strip()
             message_id = frame.get("messageId", "").strip()
             content = frame.get("content", "").strip()
+            subChat = int(frame.get("subChat", 0))
 
             if not chat_id or not content:
                 self._send(
@@ -476,11 +476,37 @@ class WSHandler:
 
             self._reset_stop(ws_id, chat_id)
 
-            threading.Thread(
-                target=self._stream_reply,
-                args=(ws, lock, ws_id, user_id, chat_id, message_id, content),
-                daemon=True,
-            ).start()
+            response = ""
+            role = "assistant"
+            if subChat == 1:
+                response = "This is hello from Interviewer"
+                role = "interviewer"
+            elif subChat == 2:
+                response = "This is hello from EndUser"
+                role = "enduser"
+
+            messId = str(uuid.uuid4())
+            accum = self.send_token(
+                ws,
+                lock,
+                chat_id,
+                messId,
+                response,
+                role,
+            )
+            if isinstance(accum, str) and accum.strip():
+                add_message(
+                    chat_id=chat_id,
+                    role=role,
+                    content=accum,
+                    messID=messId,
+                    subChatID=subChat,
+                )
+            # threading.Thread(
+            #     target=self._stream_reply,
+            #     args=(ws, lock, ws_id, user_id, chat_id, message_id, content),
+            #     daemon=True,
+            # ).start()
 
         elif ftype == "stop_stream":
             chat_id = frame.get("chatId", "").strip()

@@ -1,255 +1,184 @@
-# iReDev - Intelligent Requirements Development Framework
+# iReDev-Agile (CARA)
 
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-
-**iReDev** (Intelligent Requirements Development) is an automated requirement engineering system that transforms coarse-grained, unstructured natural language requirement descriptions into high-quality user requirement lists, requirement models, and ISO/IEC/IEEE 29148-compliant Software Requirements Specifications (SRS) through multi-agent collaboration powered by Large Language Models (LLMs).
-
-## 🌟 Key Features
-
-### 🤖 Multi-Agent Collaboration
-- **6 Specialized Agents**: Interviewer, End User, Deployer, Analyst, Archivist, and Reviewer
-- **Clear Role Division**: Each agent simulates a different professional role in real requirement engineering
-- **Event-Driven Architecture**: Agents collaborate through a shared artifact pool rather than direct dialogue
-
-### 🧠 Knowledge-Driven Approach
-- **5 Knowledge Types**: Domain knowledge, methodologies, standards, templates, and strategies
-- **Explicit Knowledge Injection**: Agents apply expert knowledge explicitly rather than relying on implicit model knowledge
-- **Reusable Knowledge Base**: Modular knowledge management system
-
-### 🔄 Chain-of-Thought Reasoning
-- **CoT Engine**: Multi-step reasoning process instead of direct results
-- **Explainability**: Provides intermediate derivation logic and reasoning steps
-- **Reasoning Templates**: Specialized reasoning templates for different task types
-
-### 📦 Shared Artifact Pool
-- **Centralized State Storage**: Unified management of all intermediate and final requirement artifacts
-- **Version Control**: Complete version history and change tracking
-- **Event-Triggered**: Artifact changes automatically trigger relevant agents
-
-### 👤 Human-in-the-Loop
-- **Critical Review Points**: Pauses for human review after generating user requirement lists, requirement models, and SRS documents
-- **Feedback-Driven Revision**: Human feedback is written back to the artifact pool, driving agents to re-analyze and revise
-- **Iterative Improvement**: Supports multiple rounds of iteration and revision
-
-### 📋 Standards Compliance
-- **ISO/IEC/IEEE 29148**: Compliant with international requirement engineering standards
-- **IEEE 830**: Supports IEEE 830 SRS document structure
-- **Automatic Compliance Checking**: Automatically validates document compliance with standard requirements
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Python 3.8 or higher
-- An API key for one of the supported LLM providers:
-  - OpenAI (GPT-4, GPT-4 Turbo, etc.)
-  - Anthropic Claude (Claude 3.5 Sonnet, Claude 3 Opus, etc.)
-  - Google Gemini (Gemini 1.5 Pro, etc.)
-  - HuggingFace (for local models)
-
-### Installation
-
-1. **Clone the repository**
-```bash
-git clone https://github.com/yourusername/iReDev.git
-cd iReDev
-```
-
-2. **Install dependencies**
-```bash
-pip install -r requirements.txt
-```
-
-3. **Configure LLM**
-
-Copy the example configuration file and add your API key:
-
-```bash
-cp config/agent_config.yaml.example config/agent_config.yaml
-```
-
-Then edit `config/agent_config.yaml`:
-
-```yaml
-llm:
-  type: "openai"  # or "claude", "gemini", "huggingface"
-  model: "gpt-4o"
-  api_key: "your-api-key-here"
-  temperature: 0.1
-  max_output_tokens: 4096
-```
-
-**⚠️ Important**: Never commit your `config/agent_config.yaml` file with API keys. It's already in `.gitignore`.
-
-### Running Examples
-
-**Complete workflow example:**
-```bash
-python examples/complete_workflow_example.py
-```
-
-**Individual agent examples:**
-```bash
-# Analyst agent
-python examples/analyst_agent_example.py
-
-# End User agent
-python examples/enduser_agent_example.py
-
-# Deployer agent
-python examples/deployer_agent_example.py
-
-# Archivist agent
-python examples/archivist_agent_example.py
-
-# Reviewer agent
-python examples/reviewer_agent_example.py
-
-# Orchestrator example
-python examples/orchestrator_example.py
-```
-
-### Using the Command Line Interface
-
-```bash
-# Start a new requirement development process
-python run_iReDev.py start --project "My Project" --domain web
-
-# View process status
-python run_iReDev.py status --all
-
-# List pending reviews
-python run_iReDev.py review --list
-
-# Submit review feedback
-python run_iReDev.py review --submit <review_id> --feedback "Your feedback here"
-```
-
-## 🏗️ System Architecture
-
-```
-Initial Requirement Description (coarse-grained, unstructured)
-    ↓
-[Interviewer Agent] → Interview Records
-    ↓
-[End User Agent] → User Personas, Scenarios, Pain Points
-    ↓
-[Deployer Agent] → Deployment Constraints, Security Requirements
-    ↓
-[Analyst Agent] → System Requirements, Requirement Models
-    ↓
-[Human Review] ⏸ → Feedback
-    ↓
-[Archivist Agent] → SRS Document
-    ↓
-[Human Review] ⏸ → Feedback
-    ↓
-[Reviewer Agent] → Quality Validation
-    ↓
-Final SRS Document (ISO/IEC/IEEE 29148 compliant)
-```
-
-## 📚 Core Components
-
-### Agents
-
-- **InterviewerAgent**: Conducts requirement interviews using 5W1H and Socratic questioning
-- **EndUserAgent**: Creates user personas, scenarios, and pain point analysis
-- **DeployerAgent**: Analyzes deployment constraints and security requirements
-- **AnalystAgent**: Performs requirement analysis and modeling
-- **ArchivistAgent**: Generates standard SRS documents
-- **ReviewerAgent**: Performs quality validation and review
-
-### Core Systems
-
-- **RequirementOrchestrator**: Process orchestrator managing the entire workflow
-- **ArtifactPool**: Shared artifact pool for centralized state management
-- **EventBus**: Event bus for asynchronous agent communication
-- **KnowledgeManager**: Knowledge management system with dynamic loading
-- **HumanReviewManager**: Human-in-the-loop review management
-- **ChainOfThoughtEngine**: Multi-step reasoning engine
-
-## 🛠️ Technology Stack
-
-- **Python 3.8+**: Core programming language
-- **Asyncio**: Asynchronous programming for agent coordination
-- **PyYAML**: Configuration management
-- **Flask**: Web interface (optional)
-- **Multiple LLM Providers**: OpenAI, Anthropic, Google, HuggingFace
-
-## 📖 Documentation
-
-- [中文文档 (Chinese Documentation)](README_CN.md)
-- [Contributing Guide](CONTRIBUTING.md): Guidelines for contributing to the project
-- [Examples](examples/): Comprehensive usage examples
-- [Configuration Guide](config/): Configuration file documentation
-
-## 🔧 Configuration
-
-The system uses YAML configuration files:
-
-- `config/agent_config.yaml`: LLM provider and agent settings
-- `config/iredev_config.yaml`: System-wide configuration
-
-See the configuration files for detailed options and examples.
-
-## 💡 Use Cases
-
-- **Software Requirements Engineering**: Automate the creation of SRS documents from initial requirements
-- **Requirements Analysis**: Transform unstructured requirements into structured models
-- **Compliance Documentation**: Generate standards-compliant requirement documents
-- **Requirements Review**: Automated quality assurance and consistency checking
-
-## 📁 Project Structure
-
-```
-iReDev/
-├── src/                    # Source code
-│   ├── agent/             # Agent implementations
-│   │   ├── llm/          # LLM provider integrations
-│   │   └── tool/         # Agent tools
-│   ├── artifact/         # Artifact pool and storage
-│   ├── config/           # Configuration management
-│   ├── knowledge/        # Knowledge base system
-│   ├── orchestrator/     # Process orchestration
-│   ├── visualizer/       # Status visualization
-│   └── web/              # Web interface
-├── config/               # Configuration files
-│   ├── agent_config.yaml # LLM and agent settings
-│   └── iredev_config.yaml # System configuration
-├── knowledge/            # Knowledge base
-│   ├── domains/          # Domain knowledge
-│   ├── methodologies/    # Methodologies
-│   ├── standards/        # Standards definitions
-│   ├── strategies/       # Strategies
-│   └── templates/        # Document templates
-├── prompts/              # Agent prompts and profiles
-├── examples/             # Usage examples
-├── run_iReDev.py        # CLI interface
-└── requirements.txt     # Python dependencies
-```
-
-## 🤝 Contributing
-
-Contributions are welcome! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
-
-For major changes, please open an issue first to discuss what you would like to change.
-
-## 📝 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- Built with modern LLM technologies
-- Inspired by ISO/IEC/IEEE 29148 and IEEE 830 standards
-- Designed following software engineering best practices
-
-## 📧 Contact
-
-For questions, issues, or suggestions, please open an issue on GitHub.
+**CARA** (Collaborative Agile Requirements Agent) is a multi-agent system for automating requirements engineering across the full Agile development lifecycle. Built on top of the iReDev framework, it coordinates specialized LLM-powered agents through LangGraph to produce product backlogs, acceptance criteria, and sprint artifacts — with human review checkpoints at each critical stage.
 
 ---
 
-**Note**: This project requires API keys for LLM providers. Make sure to keep your API keys secure and never commit them to version control.
+## Overview
+
+Traditional requirements engineering in Agile suffers from high-level, ambiguous initial inputs. CARA addresses this by orchestrating a team of agents that elicit, analyze, document, and validate requirements in a structured, traceable way — grounded in domain knowledge and methodology.
+
+The system is built around three ideas:
+- **ReAct loop reasoning** — agents reason step-by-step and select tools dynamically based on context, rather than following a fixed script
+- **Dual-tier knowledge retrieval** — static foundational knowledge (domains, standards, methodologies) indexed in pgvector + phase-adaptive RAG filtering so each agent only retrieves what's relevant to its current task
+- **Two-level orchestration** — a macro supervisor manages phase transitions (Sprint 0 → Sprint N → Sprint Review), while a micro artifact-driven mechanism routes within each phase based on what's been produced vs. what's missing
+
+---
+
+## Agile Workflow
+
+### Sprint 0 — Discovery & Planning
+
+The process starts when a user submits an initial idea or project brief.
+
+1. **InterviewerAgent** conducts a multi-round dialogue with **EndUserAgent**, extracting formalized requirements incrementally after every stakeholder reply. Each requirement captures its type (functional / non-functional / constraint), priority, source turn, and status.
+2. Requirements are conflict-checked in real time. Ambiguous or contradictory items trigger targeted Socratic follow-up questions.
+3. When completeness reaches the threshold (default 0.8), the Interviewer finalizes the `interview_record` artifact.
+4. **SprintAgent** reads the interview record and generates the initial **Product Backlog**.
+5. A human review checkpoint fires. If rejected, the Sprint Agent revises the backlog. Once approved, the Sprint Agent decomposes backlog items into a **Sprint Backlog** for each user story.
+6. The Sprint Backlog also goes through human review before the first sprint begins.
+
+### Sprint N — Execution
+
+Each sprint cycle:
+
+1. **AnalystAgent** *(to be implemented)* generates **Acceptance Criteria** for the scheduled user stories, grounded in the backlog and domain knowledge.
+2. Human review: if revisions are needed, the Analyst updates the criteria.
+3. Developers implement features and submit pull requests.
+4. **ReviewerAgent** *(to be implemented)* compares the submitted work against the Acceptance Criteria. If work does not pass, development continues.
+5. Once passing, **SprintAgent** updates the Product and Sprint Backlogs to reflect completed items.
+6. Human reviewers assess the generated artifacts; Sprint Agent performs further updates if needed.
+
+### Sprint Review — Alignment & Iteration
+
+At the start of each new iteration:
+
+1. A human reviewer evaluates the overall output of the previous sprint.
+2. **InterviewerAgent** operates in **consulting mode**, engaging stakeholders to surface new requirements or conflicts.
+3. If new requirements or scope changes emerge, the Interviewer coordinates with SprintAgent to update the backlog.
+4. If no pending tasks remain, the process terminates.
+
+---
+
+## Agents
+
+| Agent | Role |
+|---|---|
+| **InterviewerAgent** | Conducts requirements interviews, extracts and validates requirements incrementally, produces `interview_record` |
+| **EndUserAgent** | Simulates a stakeholder (product manager / domain expert) responding to interview questions |
+| **SprintAgent** | Converts interview record into Product Backlog; decomposes into Sprint Backlogs; updates backlogs after each sprint |
+| **AnalystAgent** | Generates Acceptance Criteria for user stories in Sprint N |
+| **ReviewerAgent** | Validates pull requests / developer work against Acceptance Criteria |
+
+---
+
+## Architecture
+
+```
+User Input (project brief)
+        ↓
+[Supervisor] ─────────────────────────────────────────┐
+        │                                              │
+        ↓                                             END
+[InterviewerAgent] ↔ [EndUserAgent]
+  (multi-turn interview + incremental extraction)
+        │
+        ↓ interview_record
+[SprintAgent] → Product Backlog
+        │
+   [Human Review] ─── reject → SprintAgent (revise)
+        │ approve
+        ↓
+   Sprint Backlog
+        │
+   [Human Review] ─── reject → SprintAgent (revise)
+        │ approve
+        ↓
+[Sprint N loop]
+  [AnalystAgent] → Acceptance Criteria
+        │
+   [Human Review]
+        │
+  [Developer → PR]
+        │
+  [ReviewerAgent] → pass/fail
+        │ pass
+  [SprintAgent] → update backlogs
+        │
+[Sprint Review]
+  [InterviewerAgent (consulting)] ↔ stakeholders
+  [SprintAgent] → backlog updates
+        │
+  next Sprint N or END
+```
+
+### Core Systems
+
+**Orchestrator** — LangGraph `StateGraph` with a deterministic supervisor. Phase transitions (Sprint 0 → Sprint N → Sprint Review) are governed at the macro level; within each phase, routing is artifact-driven: the supervisor checks which artifacts exist and which are still missing.
+
+**ThinkModule** — per-agent reasoning layer combining Memory-First RAG with the ReAct execution loop. Before each agent turn, relevant knowledge is retrieved from pgvector and injected into the system prompt. The ReAct loop then runs the agent's tools iteratively until a terminal action fires.
+
+**KnowledgeModule** — singleton pgvector store. Knowledge is partitioned by type (domains, methodologies, standards, templates, strategies) and filtered by process phase (elicitation, analysis, specification, validation) at retrieval time.
+
+**MemoryModule** — three memory backends: short-term conversation buffer (session-scoped), episodic memory (per PR / sprint, PostgreSQL), and semantic memory (settled facts, PostgreSQL with vector search).
+
+**ArtifactPool** — all produced artifacts flow through `WorkflowState["artifacts"]`. The supervisor reads this dict to determine what has been produced and what to do next.
+
+---
+
+## Knowledge Base
+
+Five knowledge categories are loaded and indexed at startup:
+
+- **Domains** — software engineering principles, system architecture, security standards
+- **Methodologies** — 5W1H questioning, deployment analysis, security analysis
+- **Standards** — IEEE 830 (SRS structure and quality attributes)
+- **Templates** — SRS document template
+- **Strategies** — MoSCoW prioritization
+
+Knowledge files (YAML/Markdown) are watched by a file-system observer and re-indexed automatically on change.
+
+---
+
+## Human-in-the-Loop
+
+Review checkpoints pause the workflow and wait for human input at:
+- Product Backlog generation (Sprint 0)
+- Sprint Backlog generation (Sprint 0)
+- Acceptance Criteria generation (Sprint N)
+- Sprint output review (Sprint Review)
+
+Rejections at any checkpoint automatically reroute the workflow back to the appropriate refinement stage. The system waits indefinitely (configurable timeout) so reviewers can switch context and return later without losing state.
+
+---
+
+## Tech Stack
+
+**Backend** — Python 3.10+, Flask, Flask-Sock (WebSocket), LangGraph, LangChain, PostgreSQL + pgvector, SQLAlchemy
+
+**Frontend** — React 19, Vite, Tailwind CSS, WebSocket client
+
+**LLM Providers** — OpenAI, Anthropic Claude, Google Gemini, HuggingFace / Ollama (local)
+
+**Infrastructure** — Docker Compose (PostgreSQL + pgvector + pgAdmin)
+
+---
+
+## Project Structure
+
+```
+├── backend/
+│   ├── src/
+│   │   ├── agent/          # InterviewerAgent, EndUserAgent, SprintAgent, BaseAgent
+│   │   ├── orchestrator/   # LangGraph graph, supervisor, workflow state, flow definitions
+│   │   ├── knowledge/      # KnowledgeModule (pgvector indexing + retrieval)
+│   │   ├── memory/         # Short-term, episodic, and semantic memory
+│   │   ├── think/          # ThinkModule (Memory-First RAG + ReAct loop)
+│   │   ├── profile/        # Agent system prompt loader
+│   │   └── server/         # Flask REST API, WebSocket handler, auth
+│   ├── knowledge/          # YAML knowledge files (domains, methodologies, standards, etc.)
+│   ├── prompts/            # Agent profile prompts (.txt)
+│   └── config/             # agent_config.yaml, iredev_config.yaml
+└── frontend/
+    └── src/
+        ├── context/        # AuthContext, ChatContext
+        ├── hooks/          # useChat, useWebSocket
+        ├── services/       # apiClient, chatService, websocketService, tokenStore
+        └── components/     # Chat UI, artifact panel, sidebar, settings
+```
+
+---
+
+## Paper Reference
+
+This implementation is based on **CARA: Collaborative Agile Requirements Agent**, which extends the iReDev framework with dynamic ReAct reasoning, phase-adaptive RAG, and a two-level Agile orchestration model spanning Sprint 0, Sprint N, and Sprint Review phases.

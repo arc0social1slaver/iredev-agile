@@ -18,8 +18,7 @@ venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env
 
-cd src/server
-python mock_app.py
+python -m src.server.app
 ```
 
 Runs at `http://localhost:8000`

@@ -24,13 +24,26 @@ iredev:
 
   # ── Agent configurations ──────────────────────────────────────────────────
   #
-  # llm_config: "default" means the agent inherits the top-level llm block
-  # from agent_config.yaml.  You can override per-agent there if needed.
+  # memory_type must match a MemoryType enum value in memory/types.py:
+  #   none | short_term | episodic | semantic | episodic_semantic | short_term_semantic
+  #
+  # max_react_iterations: max ReAct loop steps per process() call (default 10).
+  # max_turns: max conversation turns before safety-net termination.
+  # custom_params: agent-specific values read via custom.get() in __init__.
   #
   agents:
+
+    # ── Interviewer ──────────────────────────────────────────────────────────
+    # Requires short_term_semantic:
+    #   • short_term  → ConversationBuffer fed to ThinkModule each turn.
+    #   • semantic    → SemanticMemory for belief-state facts per zone
+    #                   (settle_fact / recall_zone / count_zone).
+    # custom_params read by InterviewerAgent.__init__:
+    #   completeness_threshold → _completeness_threshold (default 0.80)
+    #   max_turns              → _max_turns (default 20); also sets state["max_turns"]
     interviewer:
       llm_config: "default"
-      memory_type: "short_term"
+      memory_type: "short_term"          # ← MUST be semantic for belief-state (later)
       knowledge_modules:
         - "requirements_elicitation"
         - "interview_techniques"
@@ -42,9 +55,13 @@ iredev:
       memory_limit_mb: 512
       enabled: true
       custom_params:
+        completeness_threshold: 0.80              # Tier-2 gate; 0.80 = 80% coverage
         conversation_style: "professional"
         follow_up_depth: 3
+        max_turns: 50                             # mirrors max_turns above for _max_turns
 
+    # ── End User ─────────────────────────────────────────────────────────────
+    # Simple buffer — one session, no cross-turn persistence needed.
     enduser:
       llm_config: "default"
       memory_type: "short_term"
@@ -62,79 +79,104 @@ iredev:
         persona_count: 3
         scenario_depth: "detailed"
 
+    # ── Sprint Agent ─────────────────────────────────────────────────────────
+    # Runs three pipelines (A-Draft / A-Refine / B) in sequence.
+    # INVEST evaluation is delegated to AnalystAgent — knowledge_modules updated.
+    # max_react_iterations must cover the longest pipeline (A-Refine: 2 tools,
+    # but some backlogs need multiple apply_analyst_feedback rounds).
     sprint_agent:
       llm_config: "default"
       memory_type: "short_term"
       knowledge_modules:
         - "agile_estimation"
         - "spidr_splitting"
-        - "invest_criteria"
         - "wsjf_prioritization"
+        - "sprint_planning"
       max_react_iterations: 15
       max_turns: 30
       timeout_seconds: 600
       memory_limit_mb: 512
       enabled: true
       custom_params:
-        too_big_threshold: 8
+        too_big_threshold: 8                      # story_points >= this → flag for split
         fibonacci_sequence: [1, 2, 3, 5, 8, 13, 21]
 
+    # ── Analyst ──────────────────────────────────────────────────────────────
+    # NEW: reviews product_backlog_draft with INVEST + NLP + duplicate-risk checks.
+    # Writes analyst_feedback artifact; does NOT modify the backlog.
+    # memory_type: short_term — one-shot review, no cross-session persistence.
+    # max_react_iterations: 2 tools (review_backlog_items + write_analyst_feedback),
+    #   but large backlogs may need multiple batched review_backlog_items calls.
+    analyst:
+      llm_config: "default"
+      memory_type: "short_term"
+      knowledge_modules:
+        - "invest_criteria"
+        - "requirements_analysis"
+        - "acceptance_criteria_patterns"
+        - "agile_story_quality"
+      max_react_iterations: 8
+      max_turns: 20
+      timeout_seconds: 400
+      memory_limit_mb: 256
+      enabled: true
+      custom_params:
+        dup_similarity_threshold: 0.55            # Jaccard threshold for high duplicate risk
+        vague_term_escalate: true                 # vague terms → elevate to medium severity
+
+    # ── Deployer ─────────────────────────────────────────────────────────────
+    # (Future agent — not yet active in the workflow.)
     deployer:
       llm_config: "default"
+      memory_type: "short_term"
       knowledge_modules:
         - "system_architecture"
         - "security_requirements"
         - "compliance_standards"
         - "performance_criteria"
+      max_react_iterations: 10
       max_turns: 20
       timeout_seconds: 300
       memory_limit_mb: 256
-      enabled: true
+      enabled: false                              # disabled until workflow step added
       custom_params:
         security_level: "high"
         compliance_regions: ["GDPR", "SOX"]
 
-    analyst:
-      llm_config: "default"
-      knowledge_modules:
-        - "requirements_analysis"
-        - "system_modeling"
-        - "traceability_management"
-        - "moscow_prioritization"
-      max_turns: 40
-      timeout_seconds: 600
-      memory_limit_mb: 512
-      enabled: true
-      custom_params:
-        modeling_notation: "UML"
-        traceability_depth: "full"
-
+    # ── Archivist ─────────────────────────────────────────────────────────────
+    # (Future agent — not yet active in the workflow.)
     archivist:
       llm_config: "default"
+      memory_type: "short_term"
       knowledge_modules:
         - "ieee_830_standard"
         - "iso_29148_standard"
         - "technical_writing"
         - "document_templates"
+      max_react_iterations: 10
       max_turns: 25
       timeout_seconds: 400
       memory_limit_mb: 256
-      enabled: true
+      enabled: false
       custom_params:
         document_standard: "IEEE_830"
         template_style: "formal"
 
+    # ── Reviewer ─────────────────────────────────────────────────────────────
+    # (Future agent — not yet active in the workflow.)
     reviewer:
       llm_config: "default"
+      memory_type: "short_term"
       knowledge_modules:
         - "quality_assurance"
         - "validation_techniques"
         - "verification_methods"
         - "defect_identification"
+      max_react_iterations: 10
       max_turns: 35
       timeout_seconds: 500
       memory_limit_mb: 256
-      enabled: true
+      enabled: false
       custom_params:
         review_depth: "comprehensive"
         quality_threshold: 0.85
@@ -152,7 +194,7 @@ iredev:
     version_control: true
     backup_enabled: true
 
-    # PostgreSQL / pgvector – connection string comes from .env
+    # PostgreSQL / pgvector — connection string comes from .env
     pg_connection: ${IREDEV_PG_CONNECTION}
 
     # pgvector collection name
@@ -162,14 +204,14 @@ iredev:
     chunk_size: 800
     chunk_overlap: 100
 
-    # ── Embedding options ─────────────────────────────────────────────────
+    # ── Embedding options ──────────────────────────────────────────────────
     #
     # Option A: Local Ollama (default — no cloud key required)
     embedding:
-      type: "openai"               # OpenAI-compatible protocol
-      model: "nomic-embed-text"    # default local Ollama model
-      api_key: "EMPTY"             # Ollama ignores the key
-      base_url: ${OLLAMA_BASE_URL} # e.g. http://localhost:11434/v1
+      type: "openai"                # OpenAI-compatible protocol
+      model: "nomic-embed-text"     # default local Ollama model
+      api_key: "EMPTY"              # Ollama ignores the key
+      base_url: ${OLLAMA_BASE_URL}  # e.g. http://localhost:11434/v1
       dims: 768
 
     # Option B: OpenAI API
@@ -198,9 +240,7 @@ iredev:
   human_in_loop:
     enabled: true
     review_points:
-      - "url_generation"
-      - "model_creation"
-      - "srs_generation"
+      - "interview_record"          # review_turn gate after conduct_requirements_interview
     timeout_minutes: 1440           # 24 hours
     notification_channels:
       - "console"

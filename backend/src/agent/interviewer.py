@@ -426,10 +426,26 @@ class InterviewerAgent(BaseAgent):
             if conflict_of:
                 warnings.append(f"Potential conflict with {conflict_of} for: '{desc[:60]}'.")
 
-            if react_strategy:
-                rat += f"\n\n[Strategy]:\n{react_strategy[:600]}"
+            # ── Mini-LLM: synthesise structured, evidence-based rationale ─────
+            # One dedicated LLM invocation (no tools) that explicitly traces:
+            #   1. The exact stakeholder words that triggered this requirement
+            #   2. The logical inference chain
+            #   3. The ISO 29148 / BABOK methodological basis
+            #   4. The confidence level
+            # This replaces the former pattern of appending the raw [STRATEGY] block.
+            last_eu_msg = next(
+                (t["content"] for t in reversed(state.get("conversation") or [])
+                 if t.get("role") == "enduser"),
+                "",
+            )
+            rat = self._generate_rich_rationale(
+                req_description      = desc,
+                raw_rationale        = rat,
+                strategy_block       = react_strategy,
+                last_stakeholder_msg = last_eu_msg,
+            )
             if is_hitl:
-                rat = f"[HITL] From reviewer: {review_feedback}\n" + rat
+                rat = f"[HITL] From reviewer: {review_feedback}\n\n" + rat
 
             req_id = _next_id(rtype)
             new_req: Dict[str, Any] = {
@@ -936,6 +952,63 @@ class InterviewerAgent(BaseAgent):
             ordering = processed
 
         return {"dependency_graph": dep_graph, "issues": issues, "suggested_order": ordering}
+
+    # ── Mini-LLM rationale synthesis ──────────────────────────────────────────
+
+    def _generate_rich_rationale(
+        self,
+        req_description:      str,
+        raw_rationale:        str,
+        strategy_block:       str,
+        last_stakeholder_msg: str,
+    ) -> str:
+        """Run one dedicated LLM completion to produce a structured, evidence-based
+        rationale for a captured requirement.
+
+        Unlike the former approach (appending raw [STRATEGY] text), this call
+        explicitly traces four dimensions that make the rationale traceable through
+        HITL review and into the product backlog:
+
+          STAKEHOLDER EVIDENCE — the exact quote or paraphrase that triggered the req
+          INFERENCE            — the logical step from stakeholder words to requirement
+          REQUIREMENT BASIS    — the ISO 29148 section or BABOK technique applied
+          CONFIDENCE           — confirmed | inferred | ambiguous, with explanation
+
+        Falls back to ``raw_rationale`` on any LLM failure so the extraction
+        pipeline is never blocked.
+        """
+        if not last_stakeholder_msg and not strategy_block:
+            return raw_rationale  # nothing to enrich — first-turn project description
+
+        evidence = last_stakeholder_msg[:700] if last_stakeholder_msg else "(project description)"
+        reasoning = strategy_block[:500] if strategy_block else raw_rationale[:350]
+
+        prompt = (
+            "You are a requirements analyst. Given a stakeholder statement and a proposed "
+            "requirement, write a structured rationale with EXACTLY the four sections below.\n\n"
+            f"STAKEHOLDER SAID:\n\"{evidence}\"\n\n"
+            f"PROPOSED REQUIREMENT:\n\"{req_description}\"\n\n"
+            f"AGENT REASONING SUMMARY:\n{reasoning}\n\n"
+            "Output EXACTLY four labelled sections — no preamble, no trailing text:\n\n"
+            "STAKEHOLDER EVIDENCE: <the specific words or phrase that triggered this requirement>\n"
+            "INFERENCE: <the logical step — what do the stakeholder's words imply about system needs?>\n"
+            "REQUIREMENT BASIS: <ISO 29148 section or BABOK technique that validates "
+            "classifying this as a requirement>\n"
+            "CONFIDENCE: <confirmed | inferred | ambiguous — and the reason in one sentence>"
+        )
+
+        from langchain_core.messages import HumanMessage as _HM
+        try:
+            resp = self.llm.invoke([_HM(content=prompt)])
+            structured = getattr(resp, "content", str(resp)).strip()
+            if structured:
+                return structured
+        except Exception as exc:
+            logger.warning(
+                "[Interviewer] _generate_rich_rationale LLM call failed (%s) — "
+                "falling back to raw rationale.", exc
+            )
+        return raw_rationale
 
     @staticmethod
     def _check_conflicts(new_req: Dict, draft: List[Dict]) -> Tuple[Optional[str], Optional[str]]:

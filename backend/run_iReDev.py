@@ -369,18 +369,9 @@ if __name__ == "__main__":
                             print(f"  Feedback: {decision['feedback']}")
                             print("  Interview will restart with this feedback.")
 
-                        # Resume the graph with the reviewer's decision.
-                        # Consume the resume step silently (it just triggers
-                        # supervisor routing — nothing meaningful to display).
-                        for resume_output in graph.stream(
-                            Command(resume=decision), config=config
-                        ):
-                            for rnode, rupdates in resume_output.items():
-                                if rnode != "__interrupt__":
-                                    _handle_step(rnode, rupdates)
-
+                        stream_input = Command(resume=decision)
                         interrupted = True
-                        break  # re-enter outer while to continue streaming
+                        break
 
                     else:
                         _handle_step(node_name, updates)
@@ -391,7 +382,6 @@ if __name__ == "__main__":
             if not interrupted:
                 break  # no interrupt → workflow finished
 
-            stream_input = None  # continue from checkpoint on next iteration
 
         _section("Workflow complete")
         print("  interview_record          — full conversation + validated requirements")

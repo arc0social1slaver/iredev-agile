@@ -9,54 +9,44 @@ Graph topology
     ├─► review_turn                           (Sprint Zero step 2)
     │       ├─► supervisor  (approved → reviewed_interview_record written)
     │       └─► supervisor  (rejected → interview_record cleared, feedback set)
-    ├─► sprint_agent_turn → supervisor        (Sprint Zero step 3)
+    ├─► sprint_agent_turn → supervisor        (Sprint Zero steps 3 & 5)
+    │       step 3: produces product_backlog_draft   (Pipeline A-Draft)
+    │       step 5: produces product_backlog          (Pipeline A-Refine)
+    ├─► analyst_turn → supervisor             (Sprint Zero step 4)
+    │       produces analyst_feedback
     └─► END
 
 Stopping design (two-tier, Interviewer-only)
 ─────────────────────────────────────────────
 INTERVIEWER IS THE SOLE AUTHORITY on stopping.  EndUserAgent has no mechanism
-to set interview_complete or to call FINISH.  Its 'respond' tool exits only
-the enduser's own ReAct loop; the LangGraph edge always routes back to
-interviewer_turn after enduser_turn completes.
+to set interview_complete or to call FINISH.
 
-TIER 2 — Marginal IG per domain (primary semantic gate):
-  InterviewerAgent._tool_update_requirements tracks consecutive_dry_calls per
-  zone in goal_tracker.  ig_score degrades to 0.0 after 3 dry calls.
-  check_coverage surfaces these scores so the [STRATEGY] block can reason
-  whether further probing would yield new information.
+TIER 2 — Marginal IG per domain: ig_score degrades to 0.0 after 3 dry calls.
+TIER 3 — Metacognitive Coherence Check: lives in Interviewer's [STRATEGY] block.
 
-TIER 3 — Metacognitive Coherence Check (secondary gate):
-  Enforced entirely in the Interviewer's [STRATEGY] block:
-  "Could an engineer begin designing from this requirements list?"
-  If YES and Tier-2 confirms saturation → write_interview_record is called,
-  setting interview_complete=True.  after_interviewer then routes to supervisor.
-
-SAFETY NET (graph-layer):
-  after_interviewer checks turn_count >= max_turns.
-  Default = _INTERVIEW_SAFETY_MAX_TURNS = 20.
-  This guard fires only when the agent fails to self-terminate.
+SAFETY NET (graph-layer): after_interviewer checks turn_count >= max_turns.
 
 Review node design
 ──────────────────
 review_turn uses LangGraph's interrupt() to pause execution.
-The reviewer supplies a dict:
+Reviewer response dict:
   {"approved": True}                          → approval
   {"approved": False, "feedback": "<text>"}   → rejection
 
-On approval:
-  • reviewed_interview_record artifact written (interview_record + metadata).
-  • Flow advances to sprint_agent_turn.
+Analyst loop
+────────────
+analyst_turn is a pure read-then-write pass:
+  1. Reads product_backlog_draft + requirement rationale from state.
+  2. Calls AnalystAgent.process() — uses BaseAgent.react() infrastructure.
+  3. Writes analyst_feedback artifact.
+  4. Routes back to supervisor → sprint_agent_turn (Pipeline A-Refine).
 
-On rejection:
-  • interview_record removed from artifacts.
-  • review_feedback injected into state.
-  • interview_complete reset to False.
-  • Flow returns to conduct_requirements_interview.
-  • On the next Interviewer turn, process() detects review_feedback and
-    instructs the agent to apply all feedback via update_requirements.
-  • Every HITL-driven change is recorded with action "hitl_modified" /
-    "hitl_added" / "hitl_deleted" in requirement history — permanently
-    traceable in the next review cycle.
+Memory format safety
+────────────────────
+BaseAgent.react() now calls _ensure_lc_messages() before passing memory to
+ThinkModule.  This normalises any dict/serialised-dict format that MemoryModule
+may return into proper LangChain BaseMessage objects.  All agent singletons
+benefit automatically.
 """
 
 from __future__ import annotations
@@ -106,6 +96,12 @@ def _get_sprint_agent():
     return SprintAgent()
 
 
+@lru_cache(maxsize=1)
+def _get_analyst():
+    from ..agent.analyst import AnalystAgent
+    return AnalystAgent()
+
+
 # ── Node functions ────────────────────────────────────────────────────────────
 
 def supervisor_node_fn(state: WorkflowState) -> Dict[str, Any]:
@@ -125,10 +121,9 @@ _ENDUSER_MAX_ATTEMPTS = 3
 def enduser_turn_fn(state: WorkflowState) -> Dict[str, Any]:
     """Run EndUserAgent, retrying if the agent exits without calling 'respond'.
 
-    EndUserAgent.respond sets should_return=True inside ITS OWN ReAct loop
-    only.  It does NOT set interview_complete.  The edge from enduser_turn
-    always returns to interviewer_turn — the enduser can never terminate the
-    interview.
+    EndUserAgent.respond sets should_return=True inside ITS OWN ReAct loop only.
+    It does NOT set interview_complete.  The edge from enduser_turn always returns
+    to interviewer_turn — the enduser can never terminate the interview.
     """
     for attempt in range(1, _ENDUSER_MAX_ATTEMPTS + 1):
         augmented_state = dict(state)
@@ -147,7 +142,7 @@ def enduser_turn_fn(state: WorkflowState) -> Dict[str, Any]:
 
         new_conversation = updates.get("conversation") or state.get("conversation") or []
         if new_conversation and new_conversation[-1].get("role") == "enduser":
-            return updates  # success — respond was called
+            return updates
 
         logger.warning(
             "enduser_turn attempt %d/%d: 'respond' not called. Retrying...",
@@ -162,8 +157,26 @@ def enduser_turn_fn(state: WorkflowState) -> Dict[str, Any]:
 
 
 def sprint_agent_turn_fn(state: WorkflowState) -> Dict[str, Any]:
+    """SprintAgent node — handles both Pipeline A-Draft and Pipeline A-Refine.
+
+    process() auto-detects which pipeline to run:
+      • product_backlog_draft absent → A-Draft  (produces product_backlog_draft)
+      • analyst_feedback present, product_backlog absent → A-Refine (produces product_backlog)
+    """
     updates = _get_sprint_agent().process(state)
     logger.debug("sprint_agent_turn updates: %s", list(updates.keys()))
+    _sync_artifacts_to_store(state, updates)
+    return updates
+
+
+def analyst_turn_fn(state: WorkflowState) -> Dict[str, Any]:
+    """AnalystAgent node — INVEST + NLP review of product_backlog_draft.
+
+    Produces analyst_feedback artifact.  Routes back to supervisor which then
+    routes to sprint_agent_turn (Pipeline A-Refine).
+    """
+    updates = _get_analyst().process(state)
+    logger.debug("analyst_turn updates: %s", list(updates.keys()))
     _sync_artifacts_to_store(state, updates)
     return updates
 
@@ -173,18 +186,17 @@ def sprint_agent_turn_fn(state: WorkflowState) -> Dict[str, Any]:
 def review_turn_fn(state: WorkflowState) -> Dict[str, Any]:
     """Human-in-the-loop review of the interview record.
 
-    Presents every requirement with its rationale (which embeds the [STRATEGY]
-    block from extraction) and full history (which includes all prior HITL edits
-    tagged as hitl_modified / hitl_added / hitl_deleted).
-
-    This gives the reviewer a complete audit trail: not just what was captured,
-    but WHY it was captured and how it evolved across re-interview cycles.
+    Presents every requirement with its structured rationale (4-section mini-LLM
+    synthesis) and full history (HITL edits tagged hitl_modified / hitl_added /
+    hitl_deleted).  The rationale chain is:
+      stakeholder words → mini-LLM synthesis → rationale field →
+      HITL review payload → recorded in history on every edit.
     """
-    artifacts = dict(state.get("artifacts") or {})
-    record    = artifacts.get("interview_record", {})
+    artifacts    = dict(state.get("artifacts") or {})
+    record       = artifacts.get("interview_record", {})
     requirements = record.get("requirements_identified", [])
 
-    review_payload = _format_review_payload(record, requirements)
+    review_payload    = _format_review_payload(record, requirements)
     reviewer_response: Dict[str, Any] = interrupt(review_payload)
 
     approved = bool(reviewer_response.get("approved", False))
@@ -205,7 +217,6 @@ def review_turn_fn(state: WorkflowState) -> Dict[str, Any]:
             "review_feedback": None,
         }
 
-    # Rejection: remove record so supervisor re-routes to conduct_requirements_interview
     artifacts.pop("interview_record", None)
     logger.info("[Review] REJECTED. Feedback: %s", feedback or "(none)")
     return {
@@ -224,7 +235,8 @@ def _format_review_payload(
 
     Each requirement is shown with:
       • description  — the testable statement
-      • rationale    — WHY it was identified (includes [STRATEGY] block excerpt)
+      • rationale    — structured 4-section synthesis (STAKEHOLDER EVIDENCE /
+                       INFERENCE / REQUIREMENT BASIS / CONFIDENCE)
       • history      — every edit with its reason, including prior HITL changes
     """
     req_summaries = []
@@ -253,9 +265,10 @@ def _format_review_payload(
         "review_prompt": (
             "Please review the interview record.\n"
             "For each requirement you will see:\n"
-            "  • description — the testable requirement\n"
-            "  • rationale   — why identified (includes interviewer strategy reasoning)\n"
-            "  • history     — how it evolved; HITL edits are tagged [hitl_modified] etc.\n\n"
+            "  • description — the testable requirement statement\n"
+            "  • rationale   — 4-section synthesis: STAKEHOLDER EVIDENCE / INFERENCE / "
+            "REQUIREMENT BASIS / CONFIDENCE\n"
+            "  • history     — how it evolved; HITL edits tagged [hitl_modified] etc.\n\n"
             "Respond with:\n"
             "  {\"approved\": true}                              to approve\n"
             "  {\"approved\": false, \"feedback\": \"<text>\"}  to request changes"
@@ -325,14 +338,10 @@ def get_artifact_from_store(session_id: str, artifact_name: str) -> Optional[Any
 def after_interviewer(state: WorkflowState) -> str:
     """Route after each interviewer turn.
 
-    Primary path  – interview_complete=True  (set only by Interviewer via
-                    write_interview_record).  Routes to supervisor.
-    Safety net    – turn_count >= max_turns.  Routes to supervisor with a
-                    warning.  The record may be incomplete.
-    Guard         – no interviewer message posted (tool error on first turn).
-                    Routes back to interviewer_turn for retry.
-    Normal        – routes to enduser_turn.  EndUserAgent CANNOT prevent this;
-                    the edge is deterministic from the graph, not from the agent.
+    Primary path  – interview_complete=True  → supervisor.
+    Safety net    – turn_count >= max_turns  → supervisor.
+    Guard         – no message posted        → interviewer_turn (retry).
+    Normal        – routes to enduser_turn.
     """
     if state.get("interview_complete", False):
         logger.info("Tier-2/3 stop: interview_complete=True → supervisor.")
@@ -351,9 +360,8 @@ def after_interviewer(state: WorkflowState) -> str:
     last_role = conversation[-1].get("role") if conversation else None
 
     if last_role != "interviewer":
-        # Interviewer failed to post — retry the turn instead of advancing
         logger.warning(
-            "after_interviewer: no new message posted (last_role=%r) — retrying interviewer_turn.",
+            "after_interviewer: no new message posted (last_role=%r) — retrying.",
             last_role,
         )
         return "interviewer_turn"
@@ -368,10 +376,20 @@ def build_graph(store=None, checkpointer=None):
     """Compile the LangGraph workflow.
 
     Sprint Zero chain:
-      interviewer_turn ↔ enduser_turn  (loop until interview_complete or max_turns)
-      → supervisor → review_turn → supervisor → sprint_agent_turn → END
+      interviewer_turn ↔ enduser_turn  (until interview_complete or max_turns)
+      → supervisor → review_turn
+      → supervisor → sprint_agent_turn  (Pipeline A-Draft → product_backlog_draft)
+      → supervisor → analyst_turn       (AnalystAgent review → analyst_feedback)
+      → supervisor → sprint_agent_turn  (Pipeline A-Refine → product_backlog)
+      → supervisor → END
 
-    review_turn uses interrupt() — a checkpointer is required for production.
+    review_turn uses interrupt() — a checkpointer is required in production.
+
+    Note on sprint_agent_turn reuse
+    ────────────────────────────────
+    The same node (sprint_agent_turn) handles both A-Draft and A-Refine.
+    SprintAgent.process() inspects artifact state to determine which pipeline to run.
+    This keeps the graph topology simple and avoids a separate node for each pipeline.
     """
     if store is None:
         store = _default_store()
@@ -384,14 +402,17 @@ def build_graph(store=None, checkpointer=None):
 
     g = StateGraph(WorkflowState)
 
+    # ── Nodes ─────────────────────────────────────────────────────────────
     g.add_node("supervisor",        supervisor_node_fn)
     g.add_node("interviewer_turn",  interviewer_turn_fn)
     g.add_node("enduser_turn",      enduser_turn_fn)
     g.add_node("review_turn",       review_turn_fn)
     g.add_node("sprint_agent_turn", sprint_agent_turn_fn)
+    g.add_node("analyst_turn",      analyst_turn_fn)      # ← NEW
 
     g.set_entry_point("supervisor")
 
+    # ── Edges ─────────────────────────────────────────────────────────────
     g.add_conditional_edges(
         "supervisor",
         supervisor_router,
@@ -399,6 +420,7 @@ def build_graph(store=None, checkpointer=None):
             "interviewer_turn":  "interviewer_turn",
             "review_turn":       "review_turn",
             "sprint_agent_turn": "sprint_agent_turn",
+            "analyst_turn":      "analyst_turn",           # ← NEW
             "__end__":           END,
         },
     )
@@ -408,12 +430,13 @@ def build_graph(store=None, checkpointer=None):
         {
             "supervisor":       "supervisor",
             "enduser_turn":     "enduser_turn",
-            "interviewer_turn": "interviewer_turn",  # first-turn retry
+            "interviewer_turn": "interviewer_turn",
         },
     )
     g.add_edge("enduser_turn",      "interviewer_turn")
     g.add_edge("review_turn",       "supervisor")
     g.add_edge("sprint_agent_turn", "supervisor")
+    g.add_edge("analyst_turn",      "supervisor")          # ← NEW
 
     compile_kwargs: Dict[str, Any] = {"store": store}
     if checkpointer is not None:

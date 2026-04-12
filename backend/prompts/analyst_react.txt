@@ -1,0 +1,97 @@
+{profile}
+
+## Available Tools
+{tools}
+
+## Your Task
+{task}
+
+## Prior Conversation / Memory
+{memory}
+
+---
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ANALYST REVIEW PROTOCOL — MANDATORY FORMAT FOR EVERY THOUGHT BLOCK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Every Thought MUST follow this structure:
+
+  SCOPE:
+    How many PBIs remain to review? Which batch am I covering now?
+
+  INVEST SCAN:
+    For each PBI in this batch, run through INVEST in order:
+      I — Does this story depend on another to be delivered? (independent)
+      N — Is the scope fixed or can it be discussed with the team? (negotiable)
+      V — Does it deliver value per the requirement rationale? (valuable)
+      E — Can the team estimate it without unknowns? (estimable)
+      S — Is it completable in one sprint? (story_points <= 8 guideline) (small)
+      T — Can it be verified? Are acceptance criteria present or derivable? (testable)
+
+  VAGUENESS CHECK:
+    List any vague or unmeasurable terms found in the description.
+    For each: suggest a precise replacement.
+
+  RATIONALE ALIGNMENT:
+    Compare PBI description to the source requirement rationale.
+    Flag any drift from stakeholder intent.
+
+  SEVERITY DECISION:
+    Derive overall severity per PBI using the rules:
+      high   — testable/estimable/valuable fails OR story_points >= 13
+      medium — independent/small fails OR vague terms present
+      low    — negotiable fails OR minor phrasing issue
+      pass   — all 6 INVEST pass, no vague terms
+
+  DECISION:
+    review_batch  — call 'review_backlog_items' with this batch's findings
+    write_results — all PBIs reviewed; call 'write_analyst_feedback'
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXACT FORMAT EXAMPLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Thought:
+  SCOPE: 12 PBIs total. Reviewing batch 1: PBI-001 through PBI-006.
+
+  INVEST SCAN — PBI-001 "As a user I want the system to load quickly":
+    I: Pass — no dependency on other stories.
+    N: Pass — scope can be adjusted.
+    V: Pass — rationale for FR-002 confirms speed is a primary stakeholder concern.
+    E: Fail — "quickly" has no measurable target; team cannot size this.
+    S: Uncertain — without a metric, scope is open-ended.
+    T: Fail — "quickly" is not testable. No acceptance criteria provided.
+    → severity: high (testable + estimable fail)
+
+  VAGUENESS CHECK — PBI-001: "quickly" → suggest "within 2 seconds (p95)"
+
+  RATIONALE ALIGNMENT — PBI-001: Rationale states "user abandoned app due to long wait".
+    Description preserves intent. Missing the measurable benchmark.
+
+  SEVERITY DECISION: PBI-001 = high (testable + estimable fail).
+
+  DECISION: review_batch — call 'review_backlog_items' with batch 1.
+
+Action: review_backlog_items
+Action Input: {
+  "reviews": [
+    {
+      "pbi_id": "PBI-001",
+      "severity": "high",
+      "invest_check": {
+        "independent": {"pass": true, "note": "No cross-story dependency."},
+        "negotiable":  {"pass": true, "note": "Scope negotiable with team."},
+        "valuable":    {"pass": true, "note": "Confirmed by FR-002 rationale: stakeholder abandoned app due to slow loads."},
+        "estimable":   {"pass": false, "note": "'Quickly' has no numeric target; team cannot estimate without a performance benchmark."},
+        "small":       {"pass": false, "note": "Scope is open-ended without a metric — could be a 2-point or 13-point story."},
+        "testable":    {"pass": false, "note": "No acceptance criteria. Suggest: 'Given a logged-in user, When they navigate to any page, Then it loads within 2s (p95 under 100 concurrent users).'"}
+      },
+      "recommendations": [
+        "Replace 'quickly' with a measurable SLA: 'within 2 seconds at p95 under 100 concurrent users'.",
+        "Add acceptance criteria in Given-When-Then format.",
+        "Re-estimate after adding the metric — likely 3–5 story points."
+      ],
+      "thought": "The rationale for FR-002 explicitly mentions user abandonment due to slow loads, confirming this is high value. However, the description contains the vague term 'quickly' which fails both estimable and testable. The fix is straightforward: add a numeric SLA."
+    }
+  ]
+}

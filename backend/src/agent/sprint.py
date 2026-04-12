@@ -1,54 +1,56 @@
 """
-sprint.py – SprintAgent  (Sprint Zero step 3 + Sprint Execution step B)
+sprint.py – SprintAgent  (Sprint Zero step 3a/3b/3c + Sprint Execution step B)
 
 Role
 ────
 The SprintAgent has ONE entry point — process() — which detects its current
-task from state and runs the appropriate ReAct pipeline:
+task from state and runs the appropriate pipeline:
 
-  Pipeline A — Build Product Backlog
-  ────────────────────────────────────
-  Triggered when: product_backlog is NOT yet in artifacts.
+  Pipeline A-Draft — Build Product Backlog Draft
+  ───────────────────────────────────────────────
+  Triggered when: product_backlog_draft is NOT yet in artifacts.
   Input : reviewed_interview_record
+  Output: product_backlog_draft
+
+  Steps (one ReAct tool per step):
+    1. triage_and_estimate   — Fibonacci scoring ONLY (INVEST delegated to Analyst)
+    2. prioritize_backlog    — WSJF scoring + rank
+    3. write_product_backlog_draft — persist draft artifact
+
+  Pipeline A-Refine — Apply Analyst Feedback → Final Backlog
+  ───────────────────────────────────────────────────────────
+  Triggered when: product_backlog_draft IN artifacts AND
+                  analyst_feedback      IN artifacts AND
+                  product_backlog       NOT in artifacts.
+  Input : product_backlog_draft + analyst_feedback + (optional) requirement rationale
   Output: product_backlog
 
-  Steps (prompt-driven, one ReAct tool per step):
-    1. triage_and_estimate   — Fibonacci scoring + INVEST validation
-    2. prioritize_backlog    — WSJF scoring + rank
-    3. write_product_backlog — persist artifact
+  Steps:
+    1. apply_analyst_feedback — apply per-PBI analyst recommendations;
+                                may query requirement rationale from interview record
+    2. write_product_backlog  — persist final product_backlog artifact
 
   Pipeline B — Plan Sprint Backlog
   ──────────────────────────────────
   Triggered when: product_backlog IS in artifacts AND
-                  _sprint_feedback_ready sentinel IS in artifacts.
-  Input : product_backlog + sprint_feedback (from state)
-  Output: sprint_backlog_<N>  (e.g. sprint_backlog_1, sprint_backlog_2)
+                  _sprint_feedback_ready IS in artifacts.
+  Input : product_backlog + sprint_feedback
+  Output: sprint_backlog_<N>
 
-  Steps (prompt-driven, one ReAct tool per step):
-    1. analyse_dependencies  — map hard/soft dependency links between PBIs
-    2. write_sprint_backlog  — capacity-aware, dependency-respecting selection;
-                               persists artifact and removes _sprint_feedback_ready
+  Steps:
+    1. analyse_dependencies  — map hard/soft dependency links
+    2. write_sprint_backlog  — capacity-aware, dependency-respecting selection
 
-Both pipelines share the same ReAct loop infrastructure from BaseAgent.
+Rationale access
+────────────────
+In Pipeline A-Refine, the task prompt embeds the full rationale of each
+source requirement so the agent can cross-check analyst findings against
+the original elicitation reasoning before modifying a PBI.
 
-Artifact naming
-───────────────
-Sprint backlogs are named sprint_backlog_<sprint_number> so multiple sprints
-coexist in the artifact store without collision:
-  sprint_backlog_1, sprint_backlog_2, sprint_backlog_3, ...
-
-The current sprint number is read from state["current_sprint_number"]
-(default 1 if absent).
-
-State fields used
-─────────────────
-  backlog_draft         — Pipeline A working list (PBI items being triaged)
-  sprint_draft          — Pipeline B working list (PBIs + dependency info)
-  sprint_feedback       — dict supplied by sprint_feedback_turn interrupt:
-                          { sprint_goal, capacity_points, completed_pbi_ids,
-                            plan_another }
-  current_sprint_number — which sprint is being planned (int, default 1)
-  artifacts             — shared artifact store (read + write)
+INVEST handoff
+──────────────
+INVEST quality criteria are fully delegated to AnalystAgent.
+SprintAgent is responsible for Fibonacci estimation and WSJF prioritisation only.
 """
 
 from __future__ import annotations
@@ -62,46 +64,58 @@ from .base import BaseAgent, Tool, ToolResult
 
 logger = logging.getLogger(__name__)
 
-# ── Fibonacci sequence for estimation ─────────────────────────────────────────
+# ── Fibonacci sequence ────────────────────────────────────────────────────────
 _FIBONACCI = {1, 2, 3, 5, 8, 13, 21}
 
-# ── INVEST criteria names ─────────────────────────────────────────────────────
-_INVEST_CRITERIA = [
-    "independent", "negotiable", "valuable",
-    "estimable", "small", "testable",
-]
-
-# ── Default sprint capacity if caller does not specify ────────────────────────
+# ── Default sprint capacity ───────────────────────────────────────────────────
 _DEFAULT_SPRINT_CAPACITY = 20
 
 
 class SprintAgent(BaseAgent):
-    """
-    Unified agent for product backlog creation (Pipeline A) and sprint
-    backlog planning (Pipeline B).
+    """Unified agent for product backlog creation and sprint backlog planning."""
 
-    process() auto-detects which pipeline to run based on artifacts in state.
-    """
+    # ── Inline profile snippets ───────────────────────────────────────────────
+    # NOTE: These are injected into the task string, not the system prompt.
+    # The system prompt comes from sprint_agent_react.txt via ProfileModule.
 
-    # ── Profiles ──────────────────────────────────────────────────────────────
-
-    _PROFILE_A = """You are an expert Agile Product Backlog Manager.
+    _PROFILE_A_DRAFT = """You are an expert Agile Product Backlog Manager.
 
 Mission:
 Transform validated requirements into a well-structured, prioritised Product
-Backlog using industry-standard estimation, quality-gating, and ranking
-techniques.
+Backlog draft using Fibonacci estimation and WSJF ranking.
+
+NOTE: INVEST quality-gate is handled by a dedicated Analyst Agent AFTER this
+draft. Your job here is accurate estimation and WSJF prioritisation only.
 
 You MUST follow this pipeline IN ORDER:
 1. TRIAGE     — Call 'triage_and_estimate' with ALL requirements scored.
 2. PRIORITIZE — Call 'prioritize_backlog' to compute WSJF and rank.
-3. FINALIZE   — Call 'write_product_backlog' with summary notes.
+3. DRAFT      — Call 'write_product_backlog_draft' with summary notes.
 
 Key principles:
 • Fibonacci estimation: 1, 2, 3, 5, 8, 13, 21 only.
 • Three scoring dimensions: Complexity (1-5), Effort (1-5), Uncertainty (1-5).
-• INVEST: Independent, Negotiable, Valuable, Estimable, Small, Testable.
+• You MAY consult the requirement rationale (provided below) to understand
+  scope before estimating.
 • WSJF = (BusinessValue + TimeCriticality + RiskReduction) / StoryPoints."""
+
+    _PROFILE_A_REFINE = """You are an expert Agile Product Backlog Manager.
+
+Mission:
+Apply AnalystAgent feedback to improve a Product Backlog draft and produce
+the final, publication-quality Product Backlog artifact.
+
+You MUST follow this pipeline IN ORDER:
+1. APPLY  — Call 'apply_analyst_feedback' with ALL revisions to address
+             analyst recommendations. You MAY use the requirement rationale
+             (provided below) to validate or override analyst suggestions.
+2. WRITE  — Call 'write_product_backlog' to persist the final artifact.
+
+Key principles:
+• You have full authority to disagree with analyst suggestions IF the
+  original requirement rationale supports the current description.
+• When splitting stories, preserve WSJF ordering for sub-stories.
+• All revisions must cite the analyst recommendation being addressed."""
 
     _PROFILE_B = """You are an expert Agile Sprint Planner.
 
@@ -117,7 +131,7 @@ You MUST follow this pipeline IN ORDER:
 Key principles:
 • Highest-priority items (lowest priority_rank number) go first.
 • A PBI with unsatisfied HARD dependencies MUST NOT be selected unless all
-  its dependencies are also selected in the same sprint or already completed.
+  its dependencies are also selected or already completed.
 • Do not exceed the sprint capacity (story points).
 • Record your reasoning for every include / exclude decision."""
 
@@ -130,37 +144,32 @@ Key principles:
 
     def _register_tools(self) -> None:
 
-        # ── Pipeline A ────────────────────────────────────────────────────
+        # ── Pipeline A-Draft ──────────────────────────────────────────────
         self.register_tool(Tool(
             name="triage_and_estimate",
             description=(
-                "Pipeline A — Step 1: Score each requirement using Fibonacci "
-                "story points and validate INVEST quality criteria.\n"
-                "Assess Complexity (1-5), Effort (1-5), Uncertainty (1-5) for "
-                "each requirement; map the sum to the nearest Fibonacci number.\n"
-                "Evaluate all 6 INVEST criteria (true/false) for each story.\n\n"
+                "Pipeline A-Draft — Step 1: Score each requirement using Fibonacci "
+                "story points.\n"
+                "Assess Complexity (1-5), Effort (1-5), Uncertainty (1-5) for each "
+                "requirement; map the sum to the nearest Fibonacci number.\n"
+                "NOTE: INVEST criteria are NOT evaluated here — they are handled by "
+                "the dedicated Analyst Agent in the next workflow step.\n\n"
                 "Input: {\n"
                 "  \"stories\": [\n"
                 "    {\n"
                 "      \"source_req_id\": \"FR-001\",\n"
                 "      \"title\":         \"<story title>\",\n"
-                "      \"description\":   \"<story description>\",\n"
+                "      \"description\":   \"<user story: As a ... I want ... So that ...>\",\n"
                 "      \"type\":          \"functional\" | \"non_functional\" | \"constraint\",\n"
                 "      \"complexity\":    <1-5>,\n"
                 "      \"effort\":        <1-5>,\n"
                 "      \"uncertainty\":   <1-5>,\n"
-                "      \"story_points\":  <Fibonacci>,\n"
-                "      \"independent\":   true|false,\n"
-                "      \"negotiable\":    true|false,\n"
-                "      \"valuable\":      true|false,\n"
-                "      \"estimable\":     true|false,\n"
-                "      \"small\":         true|false,\n"
-                "      \"testable\":      true|false,\n"
-                "      \"thought\":       \"<reasoning>\"\n"
+                "      \"story_points\":  <Fibonacci: 1|2|3|5|8|13|21>,\n"
+                "      \"thought\":       \"<estimation reasoning>\"\n"
                 "    }, ...\n"
                 "  ]\n"
                 "}\n"
-                "Does NOT end the turn."
+                "Does NOT end the turn — call 'prioritize_backlog' next."
             ),
             func=self._tool_triage_and_estimate,
         ))
@@ -168,8 +177,8 @@ Key principles:
         self.register_tool(Tool(
             name="prioritize_backlog",
             description=(
-                "Pipeline A — Step 2: Calculate WSJF scores and rank all stories.\n"
-                "WSJF = (BusinessValue + TimeCriticality + RiskReduction) / StoryPoints\n"
+                "Pipeline A-Draft — Step 2: Calculate WSJF scores and rank all stories.\n"
+                "WSJF = (BusinessValue + TimeCriticality + RiskReduction) / StoryPoints.\n"
                 "All component scores are 1-10.\n\n"
                 "Input: {\n"
                 "  \"scores\": [\n"
@@ -182,18 +191,69 @@ Key principles:
                 "    }, ...\n"
                 "  ]\n"
                 "}\n"
-                "Does NOT end the turn."
+                "Does NOT end the turn — call 'write_product_backlog_draft' next."
             ),
             func=self._tool_prioritize_backlog,
         ))
 
         self.register_tool(Tool(
+            name="write_product_backlog_draft",
+            description=(
+                "Pipeline A-Draft — Step 3: Persist the initial product_backlog_draft artifact.\n"
+                "This is the PRE-analyst version. After this, the Analyst Agent will review\n"
+                "and return feedback, then you will refine it into the final product_backlog.\n\n"
+                "Input: {\"notes\": \"<2-3 sentence summary>\"}\n"
+                "This tool ENDS the draft turn."
+            ),
+            func=self._tool_write_product_backlog_draft,
+        ))
+
+        # ── Pipeline A-Refine ─────────────────────────────────────────────
+        self.register_tool(Tool(
+            name="apply_analyst_feedback",
+            description=(
+                "Pipeline A-Refine — Step 1: Apply AnalystAgent recommendations to "
+                "the backlog draft.\n"
+                "For each PBI with analyst findings, you may:\n"
+                "  • Rewrite the title or description\n"
+                "  • Add acceptance criteria (Given-When-Then format preferred)\n"
+                "  • Adjust story points\n"
+                "  • Split a large story into sub-stories\n"
+                "  • Override analyst suggestion (cite requirement rationale as basis)\n\n"
+                "You MAY consult the requirement rationale table in the task prompt to\n"
+                "validate or override analyst suggestions before applying them.\n\n"
+                "Input: {\n"
+                "  \"revisions\": [\n"
+                "    {\n"
+                "      \"pbi_id\":              \"PBI-001\",\n"
+                "      \"title\":               \"<new title or omit to keep>\",\n"
+                "      \"description\":         \"<new description or omit to keep>\",\n"
+                "      \"acceptance_criteria\": [\"Given ... When ... Then ...\", ...],\n"
+                "      \"story_points\":        <Fibonacci or omit>,\n"
+                "      \"split_into\": [\n"
+                "        {\"title\": \"...\", \"description\": \"...\",\n"
+                "         \"complexity\": 2, \"effort\": 2, \"uncertainty\": 1,\n"
+                "         \"story_points\": 3,\n"
+                "         \"acceptance_criteria\": [\"...\"]},\n"
+                "        ...\n"
+                "      ],\n"
+                "      \"analyst_recommendation_addressed\": \"<which finding this resolves>\",\n"
+                "      \"thought\": \"<your reasoning>\"\n"
+                "    }, ...\n"
+                "  ]\n"
+                "}\n"
+                "Does NOT end the turn — call 'write_product_backlog' next."
+            ),
+            func=self._tool_apply_analyst_feedback,
+        ))
+
+        self.register_tool(Tool(
             name="write_product_backlog",
             description=(
-                "Pipeline A — Step 3: Finalize and persist the product_backlog artifact.\n"
-                "Reads backlog_draft from state automatically. Only provide notes.\n\n"
-                "Input: {\"notes\": \"<2-3 sentence summary>\"}\n"
-                "This tool ENDS the turn."
+                "Pipeline A-Refine — Step 2: Persist the FINAL product_backlog artifact.\n"
+                "This is the post-analyst, publication-quality backlog.\n\n"
+                "Input: {\"notes\": \"<2-3 sentence summary of changes from draft>\"}\n"
+                "This tool ENDS the refine turn."
             ),
             func=self._tool_write_product_backlog,
         ))
@@ -220,8 +280,7 @@ Key principles:
                 "    }, ...\n"
                 "  ]\n"
                 "}\n"
-                "Does NOT end the turn.\n"
-                "NEXT: Call 'write_sprint_backlog'."
+                "Does NOT end the turn — call 'write_sprint_backlog' next."
             ),
             func=self._tool_analyse_dependencies,
         ))
@@ -231,7 +290,7 @@ Key principles:
             description=(
                 "Pipeline B — Step 2: Select PBIs for a sprint and persist the artifact.\n\n"
                 "Selection rules (enforced by the tool):\n"
-                "  1. Work through PBIs by priority_rank ascending (1 = highest priority).\n"
+                "  1. Work through PBIs by priority_rank ascending (1 = highest).\n"
                 "  2. Skip any PBI whose hard dependencies are not completed or selected.\n"
                 "  3. Stop when adding the next item would exceed capacity_points.\n\n"
                 "Input: {\n"
@@ -254,7 +313,7 @@ Key principles:
         ))
 
     # =========================================================================
-    # Pipeline A — Product Backlog tools
+    # Pipeline A-Draft — tools
     # =========================================================================
 
     def _tool_triage_and_estimate(
@@ -263,38 +322,30 @@ Key principles:
         state: Dict = None,
         **_,
     ) -> ToolResult:
-        """Step 1 (Pipeline A): Score requirements, validate INVEST, populate backlog_draft."""
+        """Step 1 (Pipeline A-Draft): Fibonacci estimation only — no INVEST."""
         stories = stories or []
         if not stories:
             return ToolResult(
                 observation=(
-                    "No stories provided. You must provide a 'stories' list "
-                    "with all requirements scored."
+                    "No stories provided. Supply a 'stories' list with all "
+                    "requirements scored."
                 ),
             )
 
         react_thought = (state.get("_last_react_thought") or "").strip()
         draft: List[Dict] = list(state.get("backlog_draft") or [])
         created_ids: List[str] = []
-        invest_warnings: List[str] = []
 
         for i, story in enumerate(stories, start=len(draft) + 1):
             story_id = f"PBI-{i:03d}"
-            points = story.get("story_points", 5)
-            thought = story.get("thought", "").strip() or react_thought
+            points   = story.get("story_points", 5)
+            thought  = story.get("thought", "").strip() or react_thought
 
-            # Snap to nearest Fibonacci if not valid
+            # Snap to nearest Fibonacci
             if points not in _FIBONACCI:
                 nearest = min(_FIBONACCI, key=lambda f: abs(f - points))
-                thought += f" (snapped {points} -> {nearest})"
-                points = nearest
-
-            invest_results = {c: story.get(c, True) for c in _INVEST_CRITERIA}
-            failed_criteria = [c for c, v in invest_results.items() if not v]
-            if failed_criteria:
-                invest_warnings.append(
-                    f"{story_id} failed INVEST: {failed_criteria}."
-                )
+                thought += f" (snapped {points}→{nearest})"
+                points   = nearest
 
             item = {
                 "id":             story_id,
@@ -306,12 +357,13 @@ Key principles:
                 "effort":         story.get("effort", 3),
                 "uncertainty":    story.get("uncertainty", 3),
                 "story_points":   points,
-                "invest":         invest_results,
+                "acceptance_criteria": [],
+                # INVEST + WSJF filled by Analyst + prioritize_backlog respectively
+                "invest":         None,   # filled by AnalystAgent
                 "status":         "estimated",
                 "priority":       None,
                 "wsjf_score":     None,
                 "priority_rank":  None,
-                "acceptance_criteria": [],
                 # dependency fields — populated by Pipeline B
                 "depends_on": [],
                 "enables":    [],
@@ -320,23 +372,19 @@ Key principles:
                     "action": "created",
                     "step":   "triage",
                     "reason": thought or f"Estimated from {story.get('source_req_id', '?')}.",
-                    "invest_results": invest_results,
                 }],
             }
-
             draft.append(item)
             created_ids.append(story_id)
 
-        obs_parts = [f"Backlog draft: {len(draft)} stories created."]
-        if invest_warnings:
-            obs_parts.append("INVEST warnings:\n" + "\n".join(f"  {w}" for w in invest_warnings))
-        obs_parts.append("\nNEXT: Call 'prioritize_backlog' to compute WSJF scores.")
-
-        logger.info("[SprintAgent/A] triage: %d stories, %d INVEST warnings.",
-                    len(created_ids), len(invest_warnings))
+        logger.info("[SprintAgent/A-Draft] triage: %d stories.", len(created_ids))
 
         return ToolResult(
-            observation="\n".join(obs_parts),
+            observation=(
+                f"Backlog draft: {len(draft)} stories created.\n"
+                f"Note: INVEST evaluation is delegated to the Analyst Agent.\n"
+                f"\nNEXT: Call 'prioritize_backlog' to compute WSJF scores."
+            ),
             state_updates={"backlog_draft": draft},
         )
 
@@ -348,7 +396,7 @@ Key principles:
         state: Dict = None,
         **_,
     ) -> ToolResult:
-        """Step 2 (Pipeline A): WSJF scoring and ranking."""
+        """Step 2 (Pipeline A-Draft): WSJF scoring and ranking."""
         scores = scores or []
         react_thought = (state.get("_last_react_thought") or "").strip()
 
@@ -360,7 +408,7 @@ Key principles:
         draft: List[Dict] = list(state.get("backlog_draft") or [])
         draft_by_id = {s.get("id", ""): s for s in draft}
         scored_ids: List[str] = []
-        warnings: List[str] = []
+        warnings:   List[str] = []
 
         for score in scores:
             sid    = score.get("story_id", "")
@@ -416,12 +464,232 @@ Key principles:
             )
         if warnings:
             obs_parts.append("\nWarnings:\n" + "\n".join(f"  {w}" for w in warnings))
-        obs_parts.append("\nNEXT: Call 'write_product_backlog' with summary notes.")
+        obs_parts.append("\nNEXT: Call 'write_product_backlog_draft' with summary notes.")
 
-        logger.info("[SprintAgent/A] prioritize: %d stories ranked.", len(scored_ids))
+        logger.info("[SprintAgent/A-Draft] prioritize: %d stories ranked.", len(scored_ids))
 
         return ToolResult(
             observation="\n".join(obs_parts),
+            state_updates={"backlog_draft": draft},
+        )
+
+    # ------------------------------------------------------------------
+
+    def _tool_write_product_backlog_draft(
+        self,
+        notes: str = "",
+        state: Dict = None,
+        **_,
+    ) -> ToolResult:
+        """Step 3 (Pipeline A-Draft): Persist product_backlog_draft artifact.
+
+        This is the PRE-analyst version. The Analyst Agent will review it and
+        return per-PBI feedback. The final product_backlog is written in Pipeline A-Refine.
+        """
+        draft: List[Dict] = list(state.get("backlog_draft") or [])
+        final_stories = sorted(
+            draft,
+            key=lambda s: s.get("priority_rank") or 999,
+        )
+
+        artifacts  = dict(state.get("artifacts") or {})
+        session_id = state.get("session_id", str(uuid.uuid4()))
+
+        product_backlog_draft = {
+            "session_id":      session_id,
+            "source_artifact": "reviewed_interview_record",
+            "status":          "draft_pending_analyst_review",
+            "total_items":     len(final_stories),
+            "items":           final_stories,
+            "methodology": {
+                "estimation":     "Fibonacci (Complexity + Effort + Uncertainty)",
+                "quality_gate":   "Pending — AnalystAgent INVEST review",
+                "prioritization": "WSJF = (BV + TC + RR) / StoryPoints",
+            },
+            "notes":      notes,
+            "created_at": datetime.now().isoformat(),
+        }
+        artifacts["product_backlog_draft"] = product_backlog_draft
+
+        logger.info(
+            "[SprintAgent/A-Draft] product_backlog_draft written — %d items. "
+            "Awaiting Analyst review.", len(final_stories)
+        )
+
+        return ToolResult(
+            observation=(
+                f"product_backlog_draft written with {len(final_stories)} stories "
+                f"ranked by WSJF descending.\n"
+                f"The Analyst Agent will now review this draft and return per-PBI feedback."
+            ),
+            state_updates={"artifacts": artifacts},
+            should_return=True,
+        )
+
+    # =========================================================================
+    # Pipeline A-Refine — tools
+    # =========================================================================
+
+    def _tool_apply_analyst_feedback(
+        self,
+        revisions: List[Dict] = None,
+        state: Dict = None,
+        **_,
+    ) -> ToolResult:
+        """Step 1 (Pipeline A-Refine): Apply analyst feedback revisions to backlog_draft.
+
+        Seeds backlog_draft from product_backlog_draft if working list is empty.
+        Supports: title/description rewrite, acceptance_criteria addition,
+        story_points adjustment, and splitting into sub-stories.
+        """
+        revisions = revisions or []
+
+        # Seed backlog_draft from product_backlog_draft if first refine call
+        draft: List[Dict] = list(state.get("backlog_draft") or [])
+        if not draft:
+            artifacts  = state.get("artifacts") or {}
+            pb_draft   = artifacts.get("product_backlog_draft") or {}
+            draft      = [dict(item) for item in (pb_draft.get("items") or [])]
+
+        if not draft:
+            return ToolResult(
+                observation=(
+                    "No backlog_draft found and product_backlog_draft artifact is empty. "
+                    "Cannot apply analyst feedback."
+                ),
+            )
+
+        draft_by_id     = {s.get("id", ""): s for s in draft}
+        updated_ids:    List[str] = []
+        split_children: List[Dict] = []
+        split_parents:  set       = set()
+
+        for rev in revisions:
+            pid    = rev.get("pbi_id", "")
+            thought = rev.get("thought", "").strip()
+            addressed = rev.get("analyst_recommendation_addressed", "")
+
+            if pid not in draft_by_id:
+                logger.warning("[SprintAgent/A-Refine] revision PBI '%s' not found — skipped.", pid)
+                continue
+
+            story = draft_by_id[pid]
+            hist_entry_base = {
+                "action":     "analyst_revised",
+                "step":       "apply_analyst_feedback",
+                "addressed":  addressed,
+                "reason":     thought,
+            }
+
+            # Title rewrite
+            if rev.get("title"):
+                story.setdefault("history", []).append({
+                    **hist_entry_base, "field": "title",
+                    "old_value": story.get("title"),
+                })
+                story["title"] = rev["title"]
+
+            # Description rewrite
+            if rev.get("description"):
+                story.setdefault("history", []).append({
+                    **hist_entry_base, "field": "description",
+                    "old_value": story.get("description"),
+                })
+                story["description"] = rev["description"]
+
+            # Story point adjustment
+            if rev.get("story_points") is not None:
+                pts = int(rev["story_points"])
+                if pts not in _FIBONACCI:
+                    pts = min(_FIBONACCI, key=lambda f: abs(f - pts))
+                story.setdefault("history", []).append({
+                    **hist_entry_base, "field": "story_points",
+                    "old_value": story.get("story_points"),
+                })
+                story["story_points"] = pts
+
+            # Acceptance criteria
+            if rev.get("acceptance_criteria"):
+                story["acceptance_criteria"] = list(rev["acceptance_criteria"])
+                story.setdefault("history", []).append({
+                    **hist_entry_base, "field": "acceptance_criteria",
+                    "new_value": story["acceptance_criteria"],
+                })
+
+            # Story split
+            if rev.get("split_into"):
+                split_parents.add(pid)
+                story.setdefault("history", []).append({
+                    **hist_entry_base, "action": "analyst_split",
+                    "sub_count": len(rev["split_into"]),
+                })
+                base_rank  = story.get("priority_rank") or 999
+                base_wsjf  = story.get("wsjf_score")
+                for sub_idx, sub in enumerate(rev["split_into"], start=1):
+                    sub_id   = f"{pid}-S{sub_idx}"
+                    sub_pts  = int(sub.get("story_points", 3))
+                    if sub_pts not in _FIBONACCI:
+                        sub_pts = min(_FIBONACCI, key=lambda f: abs(f - sub_pts))
+                    sub_story = {
+                        "id":                  sub_id,
+                        "source_req_id":       story.get("source_req_id"),
+                        "title":               sub.get("title", f"Sub-story {sub_idx} of {pid}"),
+                        "description":         sub.get("description", ""),
+                        "type":                story.get("type", "functional"),
+                        "complexity":          sub.get("complexity", 2),
+                        "effort":              sub.get("effort", 2),
+                        "uncertainty":         sub.get("uncertainty", 1),
+                        "story_points":        sub_pts,
+                        "acceptance_criteria": sub.get("acceptance_criteria", []),
+                        "invest":              None,   # analyst already reviewed parent
+                        "status":              "estimated",
+                        "wsjf_score":          base_wsjf,
+                        "priority_rank":       base_rank + (sub_idx * 0.1),  # keep near parent
+                        "business_value":      story.get("business_value"),
+                        "time_criticality":    story.get("time_criticality"),
+                        "risk_reduction":      story.get("risk_reduction"),
+                        "depends_on":          [],
+                        "enables":             [],
+                        "dep_type":            "none",
+                        "history": [{
+                            "action":  "analyst_split_from",
+                            "source":  pid,
+                            "reason":  thought,
+                            "step":    "apply_analyst_feedback",
+                        }],
+                    }
+                    split_children.append(sub_story)
+
+            updated_ids.append(pid)
+
+        # Remove split parent stories; add sub-stories
+        draft = [s for s in draft if s.get("id") not in split_parents]
+        draft.extend(split_children)
+
+        # Re-rank preserving WSJF order
+        with_wsjf    = sorted(
+            [s for s in draft if s.get("wsjf_score") is not None],
+            key=lambda s: (s.get("priority_rank") or 999, -(s.get("wsjf_score") or 0)),
+        )
+        without_wsjf = [s for s in draft if s.get("wsjf_score") is None]
+        for rank, story in enumerate(with_wsjf, start=1):
+            story["priority_rank"] = rank
+        draft = with_wsjf + without_wsjf
+
+        logger.info(
+            "[SprintAgent/A-Refine] apply_analyst_feedback: %d revised, "
+            "%d split (→%d sub-stories). Draft now %d items.",
+            len(updated_ids), len(split_parents), len(split_children), len(draft),
+        )
+
+        return ToolResult(
+            observation=(
+                f"Analyst feedback applied:\n"
+                f"  {len(updated_ids)} PBIs revised\n"
+                f"  {len(split_parents)} stories split into {len(split_children)} sub-stories\n"
+                f"  Final backlog draft: {len(draft)} items\n\n"
+                f"NEXT: Call 'write_product_backlog' with notes summarising the changes."
+            ),
             state_updates={"backlog_draft": draft},
         )
 
@@ -433,25 +701,46 @@ Key principles:
         state: Dict = None,
         **_,
     ) -> ToolResult:
-        """Step 3 (Pipeline A): Finalize the product_backlog artifact."""
+        """Step 2 (Pipeline A-Refine): Persist the FINAL product_backlog artifact."""
         draft: List[Dict] = list(state.get("backlog_draft") or [])
+
+        # Seed from draft artifact if working list not yet loaded
+        if not draft:
+            artifacts = state.get("artifacts") or {}
+            pb_draft  = artifacts.get("product_backlog_draft") or {}
+            draft     = [dict(item) for item in (pb_draft.get("items") or [])]
+
         final_stories = sorted(
-            [s for s in draft if s.get("status") != "invest_failed"],
+            draft,
             key=lambda s: s.get("priority_rank") or 999,
         )
 
         artifacts  = dict(state.get("artifacts") or {})
         session_id = state.get("session_id", str(uuid.uuid4()))
 
+        # Compute INVEST pass rate from analyst-populated invest fields
+        invest_passed = sum(
+            1 for s in final_stories
+            if isinstance(s.get("invest"), dict)
+            and all(v.get("pass", True) for v in s["invest"].values())
+        )
+        invest_total  = sum(1 for s in final_stories if isinstance(s.get("invest"), dict))
+
         product_backlog = {
             "session_id":      session_id,
-            "source_artifact": "reviewed_interview_record",
-            "status":          "draft",
+            "source_artifact": "product_backlog_draft",
+            "analyst_reviewed": True,
+            "status":          "approved",
             "total_items":     len(final_stories),
+            "invest_summary":  {
+                "evaluated": invest_total,
+                "passed":    invest_passed,
+                "pass_rate": round(invest_passed / invest_total, 2) if invest_total else None,
+            },
             "items":           final_stories,
             "methodology": {
-                "estimation":    "Fibonacci (Complexity + Effort + Uncertainty)",
-                "quality_gate":  "INVEST",
+                "estimation":     "Fibonacci (Complexity + Effort + Uncertainty)",
+                "quality_gate":   "INVEST (by AnalystAgent)",
                 "prioritization": "WSJF = (BV + TC + RR) / StoryPoints",
             },
             "notes":      notes,
@@ -459,12 +748,16 @@ Key principles:
         }
         artifacts["product_backlog"] = product_backlog
 
-        logger.info("[SprintAgent/A] product_backlog written — %d items.", len(final_stories))
+        logger.info(
+            "[SprintAgent/A-Refine] product_backlog (final) written — %d items, "
+            "INVEST %d/%d passed.",
+            len(final_stories), invest_passed, invest_total,
+        )
 
         return ToolResult(
             observation=(
-                f"Product backlog written. "
-                f"{len(final_stories)} stories ranked by WSJF descending.\n"
+                f"Final product_backlog written: {len(final_stories)} stories.\n"
+                f"INVEST coverage: {invest_passed}/{invest_total} items evaluated by Analyst.\n"
                 f"The workflow will now advance to sprint planning."
             ),
             state_updates={"artifacts": artifacts},
@@ -481,11 +774,10 @@ Key principles:
         state: Dict = None,
         **_,
     ) -> ToolResult:
-        """Step 1 (Pipeline B): Map dependency links between PBIs into sprint_draft."""
+        """Step 1 (Pipeline B): Map dependency links between PBIs."""
         dependencies = dependencies or []
         react_thought = (state.get("_last_react_thought") or "").strip()
 
-        # Load sprint_draft, seeding from product_backlog if first time
         sprint_draft: List[Dict] = list(state.get("sprint_draft") or [])
         if not sprint_draft:
             artifacts = state.get("artifacts") or {}
@@ -502,7 +794,7 @@ Key principles:
 
         draft_by_id = {s.get("id", ""): s for s in sprint_draft}
         updated_ids: List[str] = []
-        warnings: List[str] = []
+        warnings:    List[str] = []
 
         for dep in dependencies:
             sid    = dep.get("story_id", "")
@@ -546,8 +838,7 @@ Key principles:
             dtype   = story.get("dep_type", "none")
             obs_parts.append(
                 f"  [{sid}] ({dtype})  "
-                f"depends_on={dep_on or '—'}  "
-                f"enables={enables or '—'}"
+                f"depends_on={dep_on or '—'}  enables={enables or '—'}"
                 f"  — {story.get('title','')[:55]}"
             )
 
@@ -582,17 +873,14 @@ Key principles:
         completed_pbi_ids = set(completed_pbi_ids or [])
         selections        = selections or []
 
-        # Load sprint_draft
         sprint_draft: List[Dict] = list(state.get("sprint_draft") or [])
         if not sprint_draft:
             artifacts = state.get("artifacts") or {}
             pb = artifacts.get("product_backlog") or {}
             sprint_draft = [dict(item) for item in (pb.get("items") or [])]
 
-        draft_by_id = {s.get("id", ""): s for s in sprint_draft}
-
-        # Build include/exclude sets from LLM selections
-        included_ids: set = set()
+        draft_by_id      = {s.get("id", ""): s for s in sprint_draft}
+        included_ids:    set = set()
         selection_reasons: Dict[str, str] = {}
         for sel in selections:
             sid = sel.get("story_id", "")
@@ -600,7 +888,6 @@ Key principles:
             if sel.get("included", False):
                 included_ids.add(sid)
 
-        # Process PBIs in priority order
         sorted_draft = sorted(
             sprint_draft,
             key=lambda s: s.get("priority_rank") or 999,
@@ -609,7 +896,7 @@ Key principles:
         final_selected: List[Dict] = []
         total_points   = 0
         enforcement_log: List[str] = []
-        satisfied_ids   = set(completed_pbi_ids)  # grows as items are selected
+        satisfied_ids   = set(completed_pbi_ids)
 
         for story in sorted_draft:
             sid   = story.get("id", "")
@@ -626,7 +913,6 @@ Key principles:
                 )
                 continue
 
-            # Hard dependency check
             if dtype == "hard":
                 unmet = [d for d in dep_on if d not in satisfied_ids]
                 if unmet:
@@ -636,7 +922,6 @@ Key principles:
                     )
                     continue
 
-            # Capacity check
             if total_points + pts > capacity_points:
                 enforcement_log.append(
                     f"  OVER  #{rank} [{sid}] '{title}'"
@@ -646,9 +931,9 @@ Key principles:
 
             sprint_item = {
                 **story,
-                "sprint_number":     sprint_number,
-                "sprint_status":     "planned",
-                "inclusion_reason":  selection_reasons.get(sid, "Selected by priority."),
+                "sprint_number":    sprint_number,
+                "sprint_status":    "planned",
+                "inclusion_reason": selection_reasons.get(sid, "Selected by priority."),
             }
             sprint_item.setdefault("history", []).append({
                 "action":        "sprint_planned",
@@ -665,28 +950,26 @@ Key principles:
                 f"(total={total_points}/{capacity_points}) '{title}'"
             )
 
-        # Persist artifact
         artifact_key = f"sprint_backlog_{sprint_number}"
         artifacts    = dict(state.get("artifacts") or {})
         session_id   = state.get("session_id", str(uuid.uuid4()))
 
-        # Read plan_another from sprint_feedback
         sprint_feedback = state.get("sprint_feedback") or {}
         plan_another    = bool(sprint_feedback.get("plan_another", False))
 
         sprint_backlog = {
-            "session_id":         session_id,
-            "source_artifact":    "product_backlog",
-            "sprint_number":      sprint_number,
-            "sprint_goal":        sprint_goal,
-            "status":             "planned",
-            "capacity_points":    capacity_points,
-            "allocated_points":   total_points,
-            "remaining_points":   capacity_points - total_points,
-            "total_items":        len(final_selected),
-            "completed_pbi_ids":  list(completed_pbi_ids),
-            "plan_another":       plan_another,
-            "items":              final_selected,
+            "session_id":       session_id,
+            "source_artifact":  "product_backlog",
+            "sprint_number":    sprint_number,
+            "sprint_goal":      sprint_goal,
+            "status":           "planned",
+            "capacity_points":  capacity_points,
+            "allocated_points": total_points,
+            "remaining_points": capacity_points - total_points,
+            "total_items":      len(final_selected),
+            "completed_pbi_ids": list(completed_pbi_ids),
+            "plan_another":     plan_another,
+            "items":            final_selected,
             "methodology": {
                 "selection":     "Priority rank (WSJF) + dependency analysis + capacity fit",
                 "dependency":    "Hard deps block selection; soft deps inform order",
@@ -697,12 +980,8 @@ Key principles:
         }
 
         artifacts[artifact_key] = sprint_backlog
-
-        # Remove the _sprint_feedback_ready sentinel so the supervisor
-        # knows this sprint has been consumed and re-evaluates the loop.
         artifacts.pop("_sprint_feedback_ready", None)
 
-        # Build observation summary
         obs_parts = [
             f"━━━  Sprint Backlog {sprint_number} written  ━━━",
             f"  Artifact key   : {artifact_key}",
@@ -750,42 +1029,50 @@ Key principles:
         )
 
     # =========================================================================
-    # Unified process() — auto-detects Pipeline A vs Pipeline B
+    # Unified process() — auto-detects pipeline
     # =========================================================================
 
     def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        LangGraph node entry point — called by graph.py's sprint_agent_turn_fn.
+        """LangGraph node entry point — called by graph.py's sprint_agent_turn_fn.
 
         Detection logic
         ───────────────
-        • product_backlog NOT in artifacts  → run Pipeline A (build backlog)
+        • product_backlog_draft NOT in artifacts            → Pipeline A-Draft
+        • product_backlog_draft IN artifacts AND
+          analyst_feedback      IN artifacts AND
+          product_backlog       NOT in artifacts             → Pipeline A-Refine
         • product_backlog IN artifacts AND
-          _sprint_feedback_ready IN artifacts → run Pipeline B (plan sprint)
-        • Otherwise: log a warning and return empty (supervisor will re-route).
+          _sprint_feedback_ready IN artifacts               → Pipeline B
+        • Otherwise: log warning, return empty.
         """
         artifacts = state.get("artifacts") or {}
 
+        has_draft            = "product_backlog_draft" in artifacts
+        has_analyst_feedback = "analyst_feedback" in artifacts
         has_backlog          = "product_backlog" in artifacts
         has_sprint_feedback  = "_sprint_feedback_ready" in artifacts
 
-        if not has_backlog:
-            return self._run_pipeline_a(state)
+        if not has_draft:
+            return self._run_pipeline_a_draft(state)
+
+        if has_analyst_feedback and not has_backlog:
+            return self._run_pipeline_a_refine(state)
 
         if has_sprint_feedback:
             return self._run_pipeline_b(state)
 
         logger.warning(
             "[SprintAgent] process() called but no pipeline applies: "
-            "has_backlog=%s, has_sprint_feedback=%s. Returning empty.",
-            has_backlog, has_sprint_feedback,
+            "has_draft=%s, has_analyst_feedback=%s, has_backlog=%s, "
+            "has_sprint_feedback=%s. Returning empty.",
+            has_draft, has_analyst_feedback, has_backlog, has_sprint_feedback,
         )
         return {}
 
-    # ── Pipeline A entry ──────────────────────────────────────────────────────
+    # ── Pipeline A-Draft entry ─────────────────────────────────────────────────
 
-    def _run_pipeline_a(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """Build the product backlog from reviewed_interview_record."""
+    def _run_pipeline_a_draft(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Build the initial product_backlog_draft from reviewed_interview_record."""
         artifacts    = state.get("artifacts") or {}
         record = (
             artifacts.get("reviewed_interview_record")
@@ -801,7 +1088,7 @@ Key principles:
                 f"  [{r.get('id','?')}] ({r.get('type','?')}, "
                 f"prio={r.get('priority','?')}) "
                 f"{r.get('description','')[:120]}\n"
-                f"    rationale: {r.get('rationale','(none)')[:100]}"
+                f"    rationale: {r.get('rationale','(none)')[:120]}"
             )
         req_summary = "\n".join(req_lines) or "  (no requirements found)"
 
@@ -814,24 +1101,11 @@ Key principles:
                 f"Continue from where you left off.\n"
             )
 
-        # Inject reviewer feedback if this is a rebuild after rejection
-        product_backlog_feedback = (state.get("product_backlog_feedback") or "").strip()
-        feedback_block = ""
-        if product_backlog_feedback:
-            feedback_block = (
-                f"{'━'*16}  REVIEWER FEEDBACK (previous backlog was REJECTED)  {'━'*16}\n"
-                f"{product_backlog_feedback}\n\n"
-                "You MUST address ALL points above when re-building the backlog.\n"
-                "Pay special attention to story points, WSJF scores, INVEST "
-                "criteria, and priority rankings.\n\n"
-            )
-
         task = (
-            f"{self._PROFILE_A}\n\n"
+            f"{self._PROFILE_A_DRAFT}\n\n"
             f"{'━'*16}  PROJECT  {'━'*16}\n"
             f"{project_desc}\n\n"
-            + feedback_block
-            + f"{'━'*16}  REQUIREMENTS ({len(requirements)})  {'━'*16}\n"
+            f"{'━'*16}  REQUIREMENTS ({len(requirements)}) WITH RATIONALE  {'━'*16}\n"
             f"{req_summary}\n\n"
             + draft_info
             + f"{'━'*16}  YOUR PIPELINE  {'━'*16}\n"
@@ -840,22 +1114,109 @@ Key principles:
             "  • Create a user story for each requirement.\n"
             "  • Assess Complexity (1-5), Effort (1-5), Uncertainty (1-5).\n"
             "  • Map to nearest Fibonacci story points (1,2,3,5,8,13,21).\n"
-            "  • Evaluate INVEST criteria (true/false) for each story.\n"
+            "  • You MAY use the requirement rationale above to gauge scope.\n"
             "  • Provide 'thought' explaining your scoring rationale.\n\n"
             "STEP 2 — Call 'prioritize_backlog':\n"
             "  • Score each story: business_value, time_criticality, "
             "risk_reduction (all 1-10).\n"
             "  • WSJF is computed automatically.\n"
             "  • Provide 'thought' for each score.\n\n"
-            "STEP 3 — Call 'write_product_backlog':\n"
+            "STEP 3 — Call 'write_product_backlog_draft':\n"
             "  • Provide a brief summary in 'notes'.\n\n"
             "RULES:\n"
             "• ONE tool per ReAct step.\n"
             "• Always provide 'thought' explaining your reasoning.\n"
             "• Fibonacci values only: 1, 2, 3, 5, 8, 13, 21.\n"
+            "• Do NOT evaluate INVEST — this is handled by the Analyst Agent next.\n"
         )
 
-        logger.info("[SprintAgent] Running Pipeline A — build product backlog.")
+        logger.info("[SprintAgent] Running Pipeline A-Draft — build product_backlog_draft.")
+        return self.react(state, task)
+
+    # ── Pipeline A-Refine entry ────────────────────────────────────────────────
+
+    def _run_pipeline_a_refine(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply AnalystAgent feedback and write the final product_backlog."""
+        artifacts       = state.get("artifacts") or {}
+        analyst_feedback = artifacts.get("analyst_feedback") or {}
+        pb_draft         = artifacts.get("product_backlog_draft") or {}
+        record = (
+            artifacts.get("reviewed_interview_record")
+            or artifacts.get("interview_record")
+            or {}
+        )
+
+        # Build per-PBI analyst feedback summary
+        pbi_reviews = analyst_feedback.get("pbi_reviews") or []
+        feedback_lines = []
+        for review in pbi_reviews:
+            if review.get("severity", "pass") == "pass":
+                continue
+            invest_issues = []
+            for crit, result in (review.get("invest_check") or {}).items():
+                if not result.get("pass", True):
+                    invest_issues.append(f"{crit}: {result.get('note', '')}")
+            line = (
+                f"  [{review['pbi_id']}] severity={review['severity']}\n"
+                f"    vague_terms: {review.get('vague_terms', [])}\n"
+                f"    INVEST issues: {invest_issues or '(none)'}\n"
+                f"    duplicate_risk: {review.get('duplicate_risk', 'low')}\n"
+                f"    recommendations: {review.get('recommendations', [])}"
+            )
+            feedback_lines.append(line)
+
+        feedback_block = "\n".join(feedback_lines) or "  (no critical issues — minor fixes only)"
+
+        # Build requirement rationale table for context
+        requirements = record.get("requirements_identified") or []
+        rationale_lines = []
+        for r in requirements:
+            rationale_lines.append(
+                f"  [{r.get('id','?')}] → {r.get('rationale','(none)')[:200]}"
+            )
+        rationale_table = "\n".join(rationale_lines) or "  (no rationale available)"
+
+        # Draft summary
+        draft_items = pb_draft.get("items") or []
+        draft_lines = []
+        for item in draft_items:
+            draft_lines.append(
+                f"  #{item.get('priority_rank','?')} [{item['id']}] "
+                f"pts={item.get('story_points','?')} WSJF={item.get('wsjf_score','?')}"
+                f" — {item.get('title','')[:60]}"
+            )
+        draft_summary = "\n".join(draft_lines) or "  (empty draft)"
+
+        task = (
+            f"{self._PROFILE_A_REFINE}\n\n"
+            f"{'━'*16}  ANALYST FEEDBACK SUMMARY  {'━'*16}\n"
+            f"Overall quality score : {analyst_feedback.get('overall_quality_score', 'N/A')}\n"
+            f"Critical issues       : {analyst_feedback.get('critical_issues', 0)}\n"
+            f"Analyst conclusion    : {analyst_feedback.get('notes', '(none)')}\n\n"
+            f"Per-PBI issues (only items with severity != pass shown):\n"
+            f"{feedback_block}\n\n"
+            f"{'━'*16}  CURRENT BACKLOG DRAFT ({len(draft_items)} items)  {'━'*16}\n"
+            f"{draft_summary}\n\n"
+            f"{'━'*16}  REQUIREMENT RATIONALE TABLE  {'━'*16}\n"
+            f"(Use these to validate or override analyst suggestions)\n"
+            f"{rationale_table}\n\n"
+            f"{'━'*16}  YOUR PIPELINE  {'━'*16}\n"
+            "Execute these steps IN ORDER:\n\n"
+            "STEP 1 — Call 'apply_analyst_feedback':\n"
+            "  • Provide a 'revisions' list for EVERY PBI that has analyst issues.\n"
+            "  • For each revision: address the specific recommendation.\n"
+            "  • You MAY override analyst suggestions — cite the requirement rationale.\n"
+            "  • Use split_into for stories flagged as too large (INVEST 'small' fail).\n"
+            "  • Add acceptance_criteria for stories flagged as not testable.\n\n"
+            "STEP 2 — Call 'write_product_backlog':\n"
+            "  • Summarise what changed from draft to final in 'notes'.\n\n"
+            "RULES:\n"
+            "• ONE tool per ReAct step.\n"
+            "• Address EVERY high-severity analyst finding.\n"
+            "• Fibonacci values only: 1, 2, 3, 5, 8, 13, 21.\n"
+        )
+
+        logger.info("[SprintAgent] Running Pipeline A-Refine — apply analyst feedback.")
         return self.react(state, task)
 
     # ── Pipeline B entry ──────────────────────────────────────────────────────
@@ -867,15 +1228,14 @@ Key principles:
         items           = pb.get("items") or []
         sprint_feedback = state.get("sprint_feedback") or {}
 
-        sprint_number      = state.get("current_sprint_number", 1)
-        capacity_points    = sprint_feedback.get("capacity_points", _DEFAULT_SPRINT_CAPACITY)
-        sprint_goal        = sprint_feedback.get("sprint_goal", "")
-        completed_pbi_ids  = sprint_feedback.get("completed_pbi_ids") or []
-        plan_another       = sprint_feedback.get("plan_another", False)
-        planner_notes      = sprint_feedback.get("notes", "")
+        sprint_number     = state.get("current_sprint_number", 1)
+        capacity_points   = sprint_feedback.get("capacity_points", _DEFAULT_SPRINT_CAPACITY)
+        sprint_goal       = sprint_feedback.get("sprint_goal", "")
+        completed_pbi_ids = sprint_feedback.get("completed_pbi_ids") or []
+        plan_another      = sprint_feedback.get("plan_another", False)
+        planner_notes     = sprint_feedback.get("notes", "")
         done_str = ", ".join(completed_pbi_ids) if completed_pbi_ids else "(none)"
 
-        # Build a readable backlog summary
         backlog_lines = []
         for item in items:
             rank  = item.get("priority_rank", "?")
@@ -889,16 +1249,13 @@ Key principles:
             )
         backlog_summary = "\n".join(backlog_lines) or "  (empty backlog)"
 
-        # Inject sprint backlog feedback if this is a replan after rejection
         sprint_backlog_feedback = (state.get("sprint_backlog_feedback") or "").strip()
         sprint_feedback_block = ""
         if sprint_backlog_feedback:
             sprint_feedback_block = (
-                f"{'━'*16}  REVIEWER FEEDBACK (previous sprint backlog was REJECTED)  {'━'*16}\n"
+                f"{'━'*16}  REVIEWER FEEDBACK (previous sprint backlog REJECTED)  {'━'*16}\n"
                 f"{sprint_backlog_feedback}\n\n"
-                "You MUST address ALL points above in this replan.\n"
-                "Adjust item selection, capacity allocation, or dependency "
-                "handling as required by the feedback.\n\n"
+                "You MUST address ALL points above in this replan.\n\n"
             )
 
         task = (
@@ -914,27 +1271,21 @@ Key principles:
             + f"\n{'━'*16}  PRODUCT BACKLOG ({len(items)} items)  {'━'*16}\n"
             f"{backlog_summary}\n\n"
             f"{'━'*16}  YOUR PIPELINE  {'━'*16}\n"
-            "Execute these steps IN ORDER:\n\n"
             "STEP 1 — Call 'analyse_dependencies':\n"
             "  • For EVERY PBI, declare depends_on, enables, and dep_type.\n"
             "  • Hard dependency = cannot start without the prerequisite.\n"
-            "  • Soft dependency = preferred order, not a blocker.\n"
             "  • Provide 'thought' explaining each dependency relationship.\n\n"
             "STEP 2 — Call 'write_sprint_backlog':\n"
             f"  • sprint_number      = {sprint_number}\n"
             f"  • capacity_points    = {capacity_points}\n"
             f"  • completed_pbi_ids  = {completed_pbi_ids!r}\n"
             "  • For EACH PBI: story_id, included (true/false), reason.\n"
-            "  • Select highest-priority items fitting within capacity.\n"
-            "  • Exclude items with unmet hard dependencies.\n"
-            f"  • sprint_goal: \"{sprint_goal or 'propose a concise sprint goal'}\"\n"
-            "  • Provide a 'notes' summary of the sprint backlog.\n\n"
+            f"  • sprint_goal: \"{sprint_goal or 'propose a concise sprint goal'}\"\n\n"
             "RULES:\n"
             "• ONE tool per ReAct step.\n"
             "• Always provide 'thought' and 'reason' for every decision.\n"
             "• Do NOT exceed the capacity.\n"
-            "• The 'plan_another' field in write_sprint_backlog must reflect "
-            f"the planner's intent: {plan_another}.\n"
+            f"• The 'plan_another' field must reflect: {plan_another}.\n"
         )
 
         logger.info(

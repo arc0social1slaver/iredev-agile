@@ -3,9 +3,52 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
+
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Memory format guard
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _ensure_lc_messages(messages: Any) -> List[BaseMessage]:
+    """Convert any message format to a list of LangChain BaseMessage objects.
+
+    MemoryModule implementations differ: some return proper BaseMessage objects,
+    others return plain dicts ({"role": "user"|"assistant", "content": "..."})
+    or LangChain serialised dicts ({"type": "human", "content": "..."}).
+    This guard normalises all of them so ThinkModule.run_react() always receives
+    proper BaseMessage instances — the only format .invoke() / bind_tools() accept.
+    """
+    if not messages:
+        return []
+
+    result: List[BaseMessage] = []
+    for m in messages:
+        if isinstance(m, BaseMessage):
+            result.append(m)
+            continue
+        if not isinstance(m, dict):
+            # Fallback: stringify unknown objects
+            result.append(HumanMessage(content=str(m)))
+            continue
+
+        # Handle both {"role": ..., "content": ...} and {"type": ..., "content": ...}
+        role    = m.get("role") or m.get("type") or "user"
+        content = m.get("content", "")
+        if role in ("user", "human"):
+            result.append(HumanMessage(content=content))
+        elif role in ("assistant", "ai"):
+            result.append(AIMessage(content=content))
+        elif role == "system":
+            result.append(SystemMessage(content=content))
+        else:
+            result.append(HumanMessage(content=content))
+
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -86,8 +129,6 @@ class BaseAgent(ABC):
         self.memory = MemoryModule(memory_type=MemoryType(str(agent_section.get("memory_type"))))
 
         # ── Module 3: Knowledge ──────────────────────────────────────────
-        # Kept as a reference so subclasses can use it inside tool functions
-        # (e.g. search_knowledge).  ThinkModule no longer touches it.
         self.knowledge = None
         try:
             from ..knowledge.knowledge_module import KnowledgeModule
@@ -134,6 +175,12 @@ class BaseAgent(ABC):
         task             : natural-language description of what to accomplish this turn
         tool_choice      : 'auto', 'required', or a specific tool dict (enforce tool usage)
         profile_addendum : Extra instructions to append to the base profile prompt
+
+        Memory format fix
+        -----------------
+        Calls _ensure_lc_messages() on the raw memory output so that any format
+        (dict, serialised dict, or proper BaseMessage) is normalised to LangChain
+        BaseMessage objects before being passed to ThinkModule.
         """
         if self.think is None:
             logger.warning(
@@ -141,15 +188,16 @@ class BaseAgent(ABC):
             )
             return {}
 
-        # 1. Retrieve the full message history from memory.
-        memory_messages = self.memory.take().get("messages", [])
+        # 1. Retrieve message history and normalise to LangChain format.
+        raw_memory      = self.memory.take().get("messages", [])
+        memory_messages = _ensure_lc_messages(raw_memory)
 
-        # 2. Combine base prompt with any agent-specific rules (e.g. Stopping Addendum)
+        # 2. Combine base prompt with any agent-specific addendum.
         final_profile = self.profile.prompt
         if profile_addendum:
             final_profile += f"\n\n{profile_addendum}"
 
-        # 3. Run ThinkModule
+        # 3. Run ThinkModule.
         state_updates = self.think.run_react(
             task=task,
             tools_dict=self.tools,
@@ -170,8 +218,4 @@ class BaseAgent(ABC):
 
     @abstractmethod
     def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """LangGraph node entry point.
-
-        Receives the current WorkflowState, returns a partial dict of
-        state keys to update.
-        """
+        """LangGraph node entry point."""

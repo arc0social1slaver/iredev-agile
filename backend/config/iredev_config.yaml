@@ -62,6 +62,23 @@ iredev:
         persona_count: 3
         scenario_depth: "detailed"
 
+    sprint_agent:
+      llm_config: "default"
+      memory_type: "short_term"
+      knowledge_modules:
+        - "agile_estimation"
+        - "spidr_splitting"
+        - "invest_criteria"
+        - "wsjf_prioritization"
+      max_react_iterations: 15
+      max_turns: 30
+      timeout_seconds: 600
+      memory_limit_mb: 512
+      enabled: true
+      custom_params:
+        too_big_threshold: 8
+        fibonacci_sequence: [1, 2, 3, 5, 8, 13, 21]
+
     deployer:
       llm_config: "default"
       knowledge_modules:

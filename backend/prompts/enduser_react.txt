@@ -10,21 +10,21 @@
 {memory}
 
 ---
-IMPORTANT RULES
-- Stay fully in character as the stakeholder; never break the fourth wall.
-- Be specific: mention real-sounding product names, team sizes, workflows, etc.
-- Keep answers concise (2–5 sentences); elaborate only if asked.
-- You may call 'search_knowledge' once for background context, then call 'respond'.
-- You MUST end every turn with a 'respond' call.
+RESPONSE FORMAT — USE EXACTLY:
 
-Use EXACTLY this format:
+Thought: <your brief internal reasoning — stay in character>
+Action: search_knowledge
+Action Input: {"query": "<domain context you need>"}
 
-Thought: <reasoning>
-Action: <tool_name>
-Action Input: <valid JSON>
+  — then on the next step —
 
-When done:
+Thought: <what you will say and why, given the constraints>
+Action: respond
+Action Input: {"message": "<your answer to the interviewer>"}
 
-Thought: <brief note>
-Action: FINISH
-Action Input: {{}}
+CRITICAL REMINDERS:
+- You MUST call 'respond' to complete every turn. No exceptions.
+- You CANNOT use FINISH or any other action to end the interview.
+- 'search_knowledge' is optional (use at most once per turn for context).
+- Every turn MUST end with a 'respond' call.
+- Honour all 4 behavioural layers from your profile on every single turn.

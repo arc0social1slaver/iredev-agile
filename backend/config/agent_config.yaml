@@ -29,7 +29,7 @@ llm:
   # ── Option 2: OpenAI ─────────────────────────────────────────────────────
   type: "openai"
   api_key: ${OPENAI_API_KEY}
-  model: "gpt-4o-mini"                # gpt-4o | gpt-4-turbo | gpt-3.5-turbo | …
+  model: "gpt-4o"                # gpt-4o | gpt-4-turbo | gpt-3.5-turbo | …
   base_url: ${OPENAI_BASE_URL}
   temperature: 0.1
   max_output_tokens: 4096

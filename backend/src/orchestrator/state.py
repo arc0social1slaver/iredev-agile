@@ -2,34 +2,59 @@
 state.py
 
 WorkflowState – single source of truth flowing through the LangGraph graph.
-SystemPhase   – top-level phases of the workflow (hard sequential progression).
+SystemPhase   – top-level phases (hard sequential progression).
 ProcessPhase  – knowledge-retrieval scopes used by ThinkModule.
 
-Design
-──────
-Phases advance strictly in sequence (hard flow):
-  Sprint Zero Planning → Sprint Execution → Sprint Review
+Stopping mechanism (two-tier, Interviewer-only)
+───────────────────────────────────────────────
+Only InterviewerAgent can set interview_complete=True.  EndUserAgent has no
+mechanism to end the interview.
 
-Within each phase, routing is artifact-driven:
-  The supervisor inspects (system_phase, artifacts) and selects the next
-  ArtifactStep whose prerequisites are met but whose output is absent.
+TIER 2 — Marginal Information Gain per domain (primary semantic gate):
+  Tracked via goal_tracker (see below).  After each update_requirements call,
+  the agent computes an ig_score per zone.  When all required zones have
+  ig_score == 0.0 (≥ 3 consecutive calls with no new requirements), Tier 2
+  signals saturation.  The Interviewer's [STRATEGY] block interprets this
+  and decides whether to finalise.
 
-Requirements elicitation sub-state
-───────────────────────────────────
-``requirements_draft`` is the live, incrementally-updated requirement list
-maintained by InterviewerAgent throughout the interview loop.
-  • Populated by: InterviewerAgent._tool_update_requirements  (per turn)
-  • Finalised by: InterviewerAgent._tool_write_interview_record
-    (copies draft → interview_record artifact; does NOT clear the draft)
+TIER 3 — Metacognitive Coherence Check (secondary gate):
+  Enforced entirely inside the Interviewer's [STRATEGY] block.  Before calling
+  write_interview_record, the agent must explicitly answer: "Could a software
+  engineer start designing from this requirements list without further questions?"
+  If the answer is no, the agent must continue probing regardless of Tier 2.
 
-Each item follows the schema:
+Requirements schema
+───────────────────
+Each item in requirements_draft:
   {
     "id":          "FR-001" | "NFR-001" | "CON-001",
     "type":        "functional" | "non_functional" | "constraint",
     "description": "<precise, testable statement>",
     "priority":    "high" | "medium" | "low",
-    "source_turn": <int, 0-based index in conversation list>,
+    "source_turn": <int, 0-based conversation index>,
     "status":      "confirmed" | "inferred" | "ambiguous",
+    "rationale":   "<why identified — cites stakeholder words + [STRATEGY] reasoning>",
+    "history":     [
+                     {
+                       "action":    "created" | "modified" | "deleted"
+                                    | "hitl_modified" | "hitl_added" | "hitl_deleted",
+                       "turn":      <int>,
+                       "reason":    "<explanation — for HITL actions, includes reviewer feedback>",
+                       "old_value": "<previous value if modified>",
+                     }, ...
+                   ]
+  }
+
+goal_tracker schema
+───────────────────
+  {
+    "<zone_id>": {
+      "consecutive_dry_calls": <int>,   # update_requirements calls with 0 new reqs for this zone
+      "total_calls":           <int>,   # total update_requirements calls so far
+      "last_new_req_turn":     <int>,   # conversation turn when last new req was mapped here
+      "ig_score":              <float>, # 0.0–1.0; 0.0 = zone saturated (Tier-2 signal)
+    },
+    ...
   }
 """
 
@@ -38,101 +63,82 @@ from typing import Any, Dict, List, Optional
 from typing_extensions import TypedDict
 
 
-# ---------------------------------------------------------------------------
-# SystemPhase – top-level phase sequencing (hard flow between phases)
-# ---------------------------------------------------------------------------
-
-
 class SystemPhase(str, Enum):
-    """
-    Top-level workflow phases.  Progress is strictly sequential: once a phase
-    is complete (all its artifact steps are done) the workflow advances to the
-    next phase and never returns.
-    """
-
-    SPRINT_ZERO_PLANNING = "sprint_zero_planning"  # discovery + initial backlog
-    SPRINT_EXECUTION = "sprint_execution"  # sprint N iterations
-    SPRINT_REVIEW = "sprint_review"  # review + retrospective
-
-
-# ---------------------------------------------------------------------------
-# ProcessPhase – knowledge-retrieval scopes (used by ThinkModule internally)
-# ---------------------------------------------------------------------------
+    SPRINT_ZERO_PLANNING = "sprint_zero_planning"
+    SPRINT_EXECUTION     = "sprint_execution"
+    SPRINT_REVIEW        = "sprint_review"
 
 
 class ProcessPhase(str, Enum):
-    """Scopes used by KnowledgeModule / ThinkModule for retrieval filtering."""
-
-    ELICITATION = "elicitation"
-    ANALYSIS = "analysis"
+    ELICITATION   = "elicitation"
+    ANALYSIS      = "analysis"
     SPECIFICATION = "specification"
-    VALIDATION = "validation"
-
-
-# ---------------------------------------------------------------------------
-# Typed conversation turn
-# ---------------------------------------------------------------------------
+    VALIDATION    = "validation"
 
 
 class ConversationTurn(TypedDict):
-    role: str  # "interviewer" | "enduser"
-    content: str
+    role:      str   # "interviewer" | "enduser"
+    content:   str
     timestamp: str
-
-
-# ---------------------------------------------------------------------------
-# WorkflowState
-#
-# Every node receives the full state and returns a *partial* dict that
-# LangGraph merges via reducer.  Fields are total=False (all optional) so
-# nodes only need to return the keys they actually change.
-# ---------------------------------------------------------------------------
 
 
 class WorkflowState(TypedDict, total=False):
 
-    # ── Session ───────────────────────────────────────────────────────────
-    session_id: str
-    project_description: str  # raw brief provided by the user / caller
+    # ── Session ────────────────────────────────────────────────────────────
+    session_id:          str
+    project_description: str
 
-    # ── Phase management (hard sequential flow) ───────────────────────────
-    # Stores a SystemPhase value (string).  Defaults to SPRINT_ZERO_PLANNING
-    # when absent.  Updated by the supervisor when the phase advances.
+    # ── Phase management ───────────────────────────────────────────────────
     system_phase: str
 
-    # ── Artifact store (artifact-driven intra-phase routing) ──────────────
-    # All produced artifacts live here, keyed by their logical name.
-    # e.g. {"interview_record": {...}, "product_backlog": {...}}
-    artifacts: Dict[str, Any]
-
-    # Optional parallel store of LangGraph store IDs for cross-session lookup.
+    # ── Artifact store ─────────────────────────────────────────────────────
+    artifacts:    Dict[str, Any]
     artifact_ids: Dict[str, str]
 
-    # ── Supervisor routing signal ─────────────────────────────────────────
-    # Set by supervisor_node; read by supervisor_router to pick the next edge.
+    # ── Supervisor routing ─────────────────────────────────────────────────
     next_node: str
 
-    # ── Interview sub-state (Sprint Zero – step 1) ────────────────────────
-    conversation: List[ConversationTurn]
-    turn_count: int
-    max_turns: int
-    interview_complete: (
-        bool  # set True by InterviewerAgent._tool_write_interview_record
-    )
+    # ── Interview sub-state ────────────────────────────────────────────────
+    conversation:       List[ConversationTurn]
+    turn_count:         int
+    max_turns:          int
+    interview_complete: bool   # set True ONLY by InterviewerAgent
 
-    # ── Live requirements draft (Sprint Zero – step 1) ────────────────────
-    # Incrementally built by InterviewerAgent._tool_update_requirements.
-    # Each entry: {id, type, description, priority, source_turn, status}
-    # Copied into interview_record["requirements_identified"] when finalised.
-    # Persists in state for downstream inspection (e.g. SprintAgent).
+    # ── Requirements draft ─────────────────────────────────────────────────
+    # Built incrementally by InterviewerAgent._tool_update_requirements.
+    # Finalised by _tool_write_interview_record (copied into artifact).
     requirements_draft: List[Dict[str, Any]]
 
-    # ── Human-review gate ─────────────────────────────────────────────────
-    awaiting_review: bool
-    review_approved: bool
-    review_feedback: Optional[str]
+    # ── Coverage map ───────────────────────────────────────────────────────
+    # Keyed by zone_id.  Built once via propose_zones, updated on every
+    # update_requirements call.
+    coverage_map: Dict[str, Any]
 
-    # ── Error accumulation ────────────────────────────────────────────────
+    # ── Goal tracker (Tier-2 stopping) ─────────────────────────────────────
+    # Per-zone Information Gain tracking.  Updated by update_requirements.
+    # Zone is considered IG-saturated when ig_score == 0.0.
+    # See module docstring for full schema.
+    goal_tracker: Dict[str, Any]
+
+    # ── Conflict and dependency logs ───────────────────────────────────────
+    conflict_log:     List[Dict[str, Any]]
+    dependency_graph: Dict[str, Any]
+
+    # ── Backlog draft ──────────────────────────────────────────────────────
+    backlog_draft: List[Dict[str, Any]]
+
+    # ── HITL review gate ───────────────────────────────────────────────────
+    # review_feedback is injected into InterviewerAgent's task on re-interview
+    # so all edits driven by feedback are recorded with that context.
+    awaiting_review:  bool
+    review_approved:  bool
+    review_feedback:  Optional[str]
+
+    # ── ReAct internals (transient, not persisted across sessions) ─────────
+    # Set by ThinkModule.tools_node; consumed by update_requirements to attach
+    # the agent's Strategy Factorization reasoning to requirement rationale.
+    _last_react_thought: str
+    _react_strategy:     str   # content of [STRATEGY]...[/STRATEGY] block
+
+    # ── Error accumulation ─────────────────────────────────────────────────
     errors: List[str]
-
-    metadata: Optional[Dict[str, Any]]

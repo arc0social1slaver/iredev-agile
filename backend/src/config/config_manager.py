@@ -1,27 +1,4 @@
-"""
-Configuration management system for iReDev framework.
-
-File responsibilities
----------------------
-iredev_config.yaml  (base layer, committed to VCS)
-    Framework-level settings that rarely change between deployments:
-    agent definitions, knowledge-base topology, human-in-the-loop gates,
-    artifact storage, and docstring options.
-
-agent_config.yaml  (override layer, gitignored / user-managed)
-    Deployment/environment choices that vary per user or per machine:
-    LLM provider & model, API tier rate limits, flow-control tuning,
-    and optional Perplexity web-search credentials.
-
-Load order (later layer wins)
-------------------------------
-  1. iredev_config.yaml  — framework defaults / fallback
-  2. agent_config.yaml   — user overrides (priority)
-
-Both files are deep-merged so agent_config only needs to specify the keys
-it overrides.  A missing or broken file is treated as {} and the system
-always returns something usable.
-"""
+"""Configuration management system for iReDev framework."""
 
 import os
 import re
@@ -32,10 +9,6 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Load .env once at import time — must happen before any os.path.expandvars
-# ---------------------------------------------------------------------------
-
 try:
     from dotenv import load_dotenv
     load_dotenv(override=False)   # real env vars always win over .env values
@@ -44,80 +17,18 @@ except ImportError:
     logger.debug("[config_manager] python-dotenv not installed; skipping .env load.")
 
 
-# ---------------------------------------------------------------------------
-# ConfigurationError
-# ---------------------------------------------------------------------------
-
-class ConfigurationError(Exception):
-    """Raised for configuration-related errors."""
-
-
-# ---------------------------------------------------------------------------
-# ConfigManager
-# ---------------------------------------------------------------------------
-
 class ConfigManager:
-    """Loads config by merging two YAML files.
-
-    Layer 1 — ``iredev_config.yaml`` (base, committed to VCS)
-        Framework behaviour: agent definitions, knowledge-base topology,
-        human-in-the-loop review gates, artifact storage, docstring options.
-        Edit this when the framework itself changes.
-
-    Layer 2 — ``agent_config.yaml`` (override, user-managed / gitignored)
-        Deployment choices: LLM provider & model, API tier rate limits,
-        flow-control tuning, Perplexity credentials.
-        Edit this when you switch providers or tune for your API tier.
-
-    Deep-merge rules
-    ----------------
-    - Dict values are merged key-by-key (layer 2 wins on conflicts).
-    - Non-dict values (strings, lists, numbers) are replaced wholesale
-      by the layer-2 value.
-    - A missing or unparseable file is treated as ``{}``; the system
-      always returns something usable.
-
-    Env-var placeholders (``${VAR}``) in both files are expanded before
-    parsing.  Unresolved placeholders are replaced with ``None``.
-    """
-
-    _AGENT_CANDIDATES: List[str] = [
-        "config/agent_config.yaml",
-        "agent_config.yaml",
-    ]
-    _IREDEV_CANDIDATES: List[str] = [
-        "config/iredev_config.yaml",
-        "iredev_config.yaml",
-        os.path.expanduser("~/.iredev/config.yaml"),
-    ]
+    """Loads config by merging two YAML files."""
 
     def __init__(
         self,
-        agent_config_path:  Optional[str] = None,
         iredev_config_path: Optional[str] = None,
-        # Legacy single-path arg — treated as agent_config_path
-        config_path:        Optional[str] = None,
+        agent_config_path:  Optional[str] = None,
     ) -> None:
-        self._agent_path: Optional[str] = (
-            agent_config_path or config_path
-            or self._find_file(self._AGENT_CANDIDATES)
-        )
-        self._iredev_path: Optional[str] = (
-            iredev_config_path or self._find_file(self._IREDEV_CANDIDATES)
-        )
+        self._agent_path: str = iredev_config_path or "config/agent_config.yaml"
+        self._iredev_path: str = agent_config_path or "config/iredev_config.yaml"
         self._cache: Optional[Dict[str, Any]] = None
 
-    # ------------------------------------------------------------------ #
-    #  Path discovery                                                      #
-    # ------------------------------------------------------------------ #
-
-    @staticmethod
-    def _find_file(candidates: List[str]) -> Optional[str]:
-        """Return the first existing path from *candidates*, or ``None``."""
-        for path in candidates:
-            if os.path.exists(path):
-                return path
-        return None
 
     # ------------------------------------------------------------------ #
     #  YAML helpers                                                        #
@@ -251,17 +162,15 @@ _config_manager: Optional[ConfigManager] = None
 
 
 def get_config_manager(
-    config_path:        Optional[str] = None,
     agent_config_path:  Optional[str] = None,
     iredev_config_path: Optional[str] = None,
 ) -> ConfigManager:
     """Return the global ConfigManager, creating it on first call.
 
     Passing any path argument always creates a fresh instance (useful during
-    initialisation or testing).
+    initialization or testing).
 
     Args:
-        config_path:        Legacy single-path arg; treated as agent_config_path.
         agent_config_path:  Explicit path to agent_config.yaml (deployment layer).
         iredev_config_path: Explicit path to iredev_config.yaml (framework layer).
 
@@ -270,10 +179,9 @@ def get_config_manager(
     """
     global _config_manager
     if _config_manager is None or any(
-        p is not None for p in (config_path, agent_config_path, iredev_config_path)
+        p is not None for p in (agent_config_path, iredev_config_path)
     ):
         _config_manager = ConfigManager(
-            config_path=config_path,
             agent_config_path=agent_config_path,
             iredev_config_path=iredev_config_path,
         )
@@ -281,28 +189,12 @@ def get_config_manager(
 
 
 def get_config(
-    config_path:        Optional[str] = None,
     agent_config_path:  Optional[str] = None,
     iredev_config_path: Optional[str] = None,
     force_reload:       bool = False,
 ) -> Dict[str, Any]:
-    """Return the merged YAML config as a plain dict with all ${ENV_VAR} expanded.
-
-    Merges ``iredev_config.yaml`` (framework layer) with ``agent_config.yaml``
-    (deployment override layer).  Either file failing to load is treated as an
-    empty dict so the system always returns something usable.
-
-    Args:
-        config_path:        Legacy single-path arg; treated as agent_config_path.
-        agent_config_path:  Explicit path to agent_config.yaml.
-        iredev_config_path: Explicit path to iredev_config.yaml.
-        force_reload:       Re-read both files even if already cached.
-
-    Returns:
-        Deep-merged YAML dict (empty dict if both files are unavailable).
-    """
+    """Return the final config dict"""
     return get_config_manager(
-        config_path=config_path,
         agent_config_path=agent_config_path,
         iredev_config_path=iredev_config_path,
     ).get_raw(force_reload=force_reload)

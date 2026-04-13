@@ -199,59 +199,59 @@ Key principles:
         ))
 
         # ── Pipeline B ────────────────────────────────────────────────────
-        self.register_tool(Tool(
-            name="analyse_dependencies",
-            description=(
-                "Pipeline B — Step 1: Identify dependency links between PBIs.\n\n"
-                "For each PBI declare:\n"
-                "  depends_on — list of PBI IDs that MUST finish before this one\n"
-                "               (hard dep: blocks selection if unmet)\n"
-                "  enables    — list of PBI IDs this item unlocks (informational)\n"
-                "  dep_type   — 'hard' | 'soft' | 'none'\n"
-                "  thought    — your reasoning\n\n"
-                "Input: {\n"
-                "  \"dependencies\": [\n"
-                "    {\n"
-                "      \"story_id\":   \"PBI-001\",\n"
-                "      \"depends_on\": [\"PBI-005\"],\n"
-                "      \"enables\":    [\"PBI-002\"],\n"
-                "      \"dep_type\":   \"hard\",\n"
-                "      \"thought\":    \"<why>\"\n"
-                "    }, ...\n"
-                "  ]\n"
-                "}\n"
-                "Does NOT end the turn.\n"
-                "NEXT: Call 'write_sprint_backlog'."
-            ),
-            func=self._tool_analyse_dependencies,
-        ))
+        # self.register_tool(Tool(
+        #     name="analyse_dependencies",
+        #     description=(
+        #         "Pipeline B — Step 1: Identify dependency links between PBIs.\n\n"
+        #         "For each PBI declare:\n"
+        #         "  depends_on — list of PBI IDs that MUST finish before this one\n"
+        #         "               (hard dep: blocks selection if unmet)\n"
+        #         "  enables    — list of PBI IDs this item unlocks (informational)\n"
+        #         "  dep_type   — 'hard' | 'soft' | 'none'\n"
+        #         "  thought    — your reasoning\n\n"
+        #         "Input: {\n"
+        #         "  \"dependencies\": [\n"
+        #         "    {\n"
+        #         "      \"story_id\":   \"PBI-001\",\n"
+        #         "      \"depends_on\": [\"PBI-005\"],\n"
+        #         "      \"enables\":    [\"PBI-002\"],\n"
+        #         "      \"dep_type\":   \"hard\",\n"
+        #         "      \"thought\":    \"<why>\"\n"
+        #         "    }, ...\n"
+        #         "  ]\n"
+        #         "}\n"
+        #         "Does NOT end the turn.\n"
+        #         "NEXT: Call 'write_sprint_backlog'."
+        #     ),
+        #     func=self._tool_analyse_dependencies,
+        # ))
 
-        self.register_tool(Tool(
-            name="write_sprint_backlog",
-            description=(
-                "Pipeline B — Step 2: Select PBIs for a sprint and persist the artifact.\n\n"
-                "Selection rules (enforced by the tool):\n"
-                "  1. Work through PBIs by priority_rank ascending (1 = highest priority).\n"
-                "  2. Skip any PBI whose hard dependencies are not completed or selected.\n"
-                "  3. Stop when adding the next item would exceed capacity_points.\n\n"
-                "Input: {\n"
-                "  \"sprint_number\":      <int>,\n"
-                "  \"sprint_goal\":        \"<one-sentence goal>\",\n"
-                "  \"capacity_points\":    <int>,\n"
-                "  \"completed_pbi_ids\": [\"PBI-xxx\", ...],\n"
-                "  \"selections\": [\n"
-                "    {\n"
-                "      \"story_id\": \"PBI-001\",\n"
-                "      \"included\": true|false,\n"
-                "      \"reason\":   \"<why included or excluded>\"\n"
-                "    }, ...\n"
-                "  ],\n"
-                "  \"notes\": \"<brief sprint summary>\"\n"
-                "}\n"
-                "This tool ENDS the turn."
-            ),
-            func=self._tool_write_sprint_backlog,
-        ))
+        # self.register_tool(Tool(
+        #     name="write_sprint_backlog",
+        #     description=(
+        #         "Pipeline B — Step 2: Select PBIs for a sprint and persist the artifact.\n\n"
+        #         "Selection rules (enforced by the tool):\n"
+        #         "  1. Work through PBIs by priority_rank ascending (1 = highest priority).\n"
+        #         "  2. Skip any PBI whose hard dependencies are not completed or selected.\n"
+        #         "  3. Stop when adding the next item would exceed capacity_points.\n\n"
+        #         "Input: {\n"
+        #         "  \"sprint_number\":      <int>,\n"
+        #         "  \"sprint_goal\":        \"<one-sentence goal>\",\n"
+        #         "  \"capacity_points\":    <int>,\n"
+        #         "  \"completed_pbi_ids\": [\"PBI-xxx\", ...],\n"
+        #         "  \"selections\": [\n"
+        #         "    {\n"
+        #         "      \"story_id\": \"PBI-001\",\n"
+        #         "      \"included\": true|false,\n"
+        #         "      \"reason\":   \"<why included or excluded>\"\n"
+        #         "    }, ...\n"
+        #         "  ],\n"
+        #         "  \"notes\": \"<brief sprint summary>\"\n"
+        #         "}\n"
+        #         "This tool ENDS the turn."
+        #     ),
+        #     func=self._tool_write_sprint_backlog,
+        # ))
 
     # =========================================================================
     # Pipeline A — Product Backlog tools
@@ -444,6 +444,7 @@ Key principles:
         session_id = state.get("session_id", str(uuid.uuid4()))
 
         product_backlog = {
+            "id":               str(uuid.uuid4()),
             "session_id":      session_id,
             "source_artifact": "reviewed_interview_record",
             "status":          "draft",
@@ -827,7 +828,7 @@ Key principles:
             )
 
         task = (
-            f"{self._PROFILE_A}\n\n"
+            # f"{self._PROFILE_A}\n\n"
             f"{'━'*16}  PROJECT  {'━'*16}\n"
             f"{project_desc}\n\n"
             + feedback_block
@@ -856,7 +857,7 @@ Key principles:
         )
 
         logger.info("[SprintAgent] Running Pipeline A — build product backlog.")
-        return self.react(state, task)
+        return self.react(state, task, tool_choice="required")
 
     # ── Pipeline B entry ──────────────────────────────────────────────────────
 

@@ -248,11 +248,10 @@ class WSHandler:
             "language": "json",
         }
 
-        summary_mess_id = str(uuid.uuid4())
-        accum = self._send_token_stream(ws, lock, chat_id, summary_mess_id, json.dumps(record_content, indent=4), "interviewer")
+        accum = self._send_token_stream(ws, lock, chat_id, mess_id, json.dumps(record_content, indent=4), "interviewer")
         if accum.strip():
             add_message(chat_id=chat_id, role="interviewer", content=accum,
-                        messID=summary_mess_id)
+                        messID=mess_id)
 
         enriched = {**artifact_display, "awaitingFeedback": True}
 
@@ -411,100 +410,104 @@ class WSHandler:
         before the review interrupt fires.
         """
         artifacts = updates.get("artifacts") or {}
-        review_approved = updates.get("review_approved")
-        review_feedback = updates.get("review_feedback")
+        # review_approved = updates.get("review_approved")
+        # review_feedback = updates.get("review_feedback")
 
-        # Find the new artifact key
-        artifact_priority = [
-            "product_backlog",
-            *[f"sprint_backlog_{i}" for i in range(1, 20)],
-        ]
-        new_key = None
-        for key in artifact_priority:
-            if key in artifacts and key not in known_artifact_keys:
-                new_key = key
-                known_artifact_keys.add(key)
-                break
+        # # Find the new artifact key
+        # artifact_priority = [
+        #     "product_backlog",
+        #     *[f"sprint_backlog_{i}" for i in range(1, 20)],
+        # ]
+        # new_key = None
+        # for key in artifact_priority:
+        #     if key in artifacts and key not in known_artifact_keys:
+        #         new_key = key
+        #         known_artifact_keys.add(key)
+        #         break
 
-        if new_key is None:
-            return
+        # if new_key is None:
+        #     return
 
-        artifact_data = artifacts[new_key]
-        artifact_id = artifact_data.get("id") or f"{new_key}_{chat_id}"
-        ctx = self._artifact_ctx.get(chat_id, {})
-        prev_artifact_id = ctx.get("artifact_id")
-        prev_mess_id = ctx.get("message_id")
-        iteration = ctx.get("iteration", 0)
+        # artifact_data = artifacts[new_key]
+        # artifact_id = artifact_data.get("id") or f"{new_key}_{chat_id}"
+        # ctx = self._artifact_ctx.get(chat_id, {})
+        # prev_artifact_id = ctx.get("artifact_id")
+        # prev_mess_id = ctx.get("message_id")
+        # iteration = ctx.get("iteration", 0)
 
         # ── Case A: This is a HITL-rejected artifact being re-built ───────
-        if review_feedback and review_approved is False and prev_artifact_id:
-            new_iter = iteration + 1
-            new_mess_id = str(uuid.uuid4())
-            artifact_display = _make_artifact_display(new_key, artifact_data, artifact_id)
-            enriched = {**artifact_display, "awaitingFeedback": True, "revising": False}
+        # if review_feedback and review_approved is False and prev_artifact_id:
+        #     new_iter = iteration + 1
+        #     new_mess_id = str(uuid.uuid4())
+        #     artifact_display = _make_artifact_display(new_key, artifact_data, artifact_id)
+        #     enriched = {**artifact_display, "awaitingFeedback": True, "revising": False}
 
-            self._send(ws, lock, {
-                "type": "artifact_revised",
-                "chatId": chat_id,
-                "messageId": new_mess_id,
-                "artifact": enriched,
-                "awaitingFeedback": True,
-                "iteration": new_iter,
-                "maxIterations": MAX_REVISIONS,
-                "revising": False,
-            })
+        #     self._send(ws, lock, {
+        #         "type": "artifact_revised",
+        #         "chatId": chat_id,
+        #         "messageId": new_mess_id,
+        #         "artifact": enriched,
+        #         "awaitingFeedback": True,
+        #         "iteration": new_iter,
+        #         "maxIterations": MAX_REVISIONS,
+        #         "revising": False,
+        #     })
 
-            self._artifact_ctx[chat_id] = {
-                "artifact_key": new_key,
-                "artifact_id": artifact_id,
-                "message_id": new_mess_id,
-                "iteration": new_iter,
-            }
+        #     self._artifact_ctx[chat_id] = {
+        #         "artifact_key": new_key,
+        #         "artifact_id": artifact_id,
+        #         "message_id": new_mess_id,
+        #         "iteration": new_iter,
+        #     }
 
-            save_artifact(chat_id, new_mess_id, enriched)
-            if prev_mess_id:
-                update_message_artifact(prev_mess_id, enriched)
-            return
+        #     save_artifact(chat_id, new_mess_id, enriched)
+        #     if prev_mess_id:
+        #         update_message_artifact(prev_mess_id, enriched)
+        #     return
 
-        # ── Case B: HITL approved — previous artifact should be marked done
-        if review_approved is True and prev_artifact_id:
-            done_display = _make_artifact_display(new_key, artifact_data, artifact_id)
-            enriched_done = {**done_display, "accepted": True, "awaitingFeedback": False}
+        # # ── Case B: HITL approved — previous artifact should be marked done
+        # if review_approved is True and prev_artifact_id:
+        #     done_display = _make_artifact_display(new_key, artifact_data, artifact_id)
+        #     enriched_done = {**done_display, "accepted": True, "awaitingFeedback": False}
 
-            self._send(ws, lock, {
-                "type": "artifact_accepted",
-                "chatId": chat_id,
-                "messageId": prev_mess_id or str(uuid.uuid4()),
-                "artifactId": prev_artifact_id,
-            })
+        #     self._send(ws, lock, {
+        #         "type": "artifact_accepted",
+        #         "chatId": chat_id,
+        #         "messageId": prev_mess_id or str(uuid.uuid4()),
+        #         "artifactId": prev_artifact_id,
+        #     })
 
-            if prev_mess_id:
-                save_artifact(chat_id, prev_mess_id, enriched_done)
-                update_message_artifact(prev_mess_id, enriched_done)
-            self._artifact_ctx.pop(chat_id, None)
-            return
+        #     if prev_mess_id:
+        #         save_artifact(chat_id, prev_mess_id, enriched_done)
+        #         update_message_artifact(prev_mess_id, enriched_done)
+        #     self._artifact_ctx.pop(chat_id, None)
+        #     return
 
         # ── Case C: Fresh new artifact ─────────────────────────────────────
-        summary = _build_artifact_summary(new_key, artifact_data)
-        artifact_display = _make_artifact_display(new_key, artifact_data, artifact_id)
+        # summary = _build_artifact_summary(new_key, artifact_data)
 
-        # Stream summary text
-        if summary:
-            summary_mess_id = str(uuid.uuid4())
-            accum = self._send_token_stream(ws, lock, chat_id, summary_mess_id,
-                                             summary, "Sprint Agent")
-            if accum.strip():
-                add_message(chat_id=chat_id, role="Sprint Agent",
-                            content=accum, messID=summary_mess_id)
+        artifact_id = updates.get("artifacts", {}).get("product_backlog", {}).get("id", f"product_backlog_{chat_id}")
+        product_backlog_content = json.dumps(updates.get("artifacts", {}).get("product_backlog"), indent=2, ensure_ascii=False)
+        artifact_display = {
+                "id": artifact_id,
+                "content": product_backlog_content,
+                "language": "json",
+            }
 
         # Emit artifact card
-        new_mess_id = str(uuid.uuid4())
+        mess_id = str(uuid.uuid4())
         enriched = {**artifact_display, "awaitingFeedback": True}
+
+        accum = self._send_token_stream(ws, lock, chat_id, mess_id,
+                                             product_backlog_content, "Sprint Agent")
+        if accum.strip():
+            add_message(chat_id=chat_id, role="Sprint Agent",
+                        content=accum, messID=mess_id)
 
         self._send(ws, lock, {
             "type": "artifact",
             "chatId": chat_id,
-            "messageId": new_mess_id,
+            "messageId": mess_id,
             "artifact": enriched,
             "awaitingFeedback": True,
             "iteration": 1,
@@ -512,20 +515,13 @@ class WSHandler:
         })
 
         self._artifact_ctx[chat_id] = {
-            "artifact_key": new_key,
+            "artifact_key": "product_backlog",
             "artifact_id": artifact_id,
-            "message_id": new_mess_id,
+            "message_id": mess_id,
             "iteration": 1,
         }
 
-        save_artifact(chat_id, new_mess_id, enriched)
-        add_message(
-            chat_id=chat_id,
-            role="Sprint Agent",
-            content=summary or f"{_artifact_title(new_key)} generated.",
-            artifact=enriched,
-            messID=new_mess_id,
-        )
+        save_artifact(chat_id, mess_id, enriched)
 
     # =========================================================================
     # Per-connection state

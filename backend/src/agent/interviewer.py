@@ -664,6 +664,7 @@ class InterviewerAgent(BaseAgent):
         con_n = sum(1 for r in requirements if r["type"] == "constraint")
 
         record: Dict[str, Any] = {
+            "id": str(uuid.uuid4()),
             "session_id": state.get("session_id", str(uuid.uuid4())),
             "project_description": state.get("project_description", ""),
             "conversation": conversation,

@@ -71,6 +71,7 @@ from typing import Any, Dict, Optional
 
 from langgraph.graph import END, StateGraph
 from langgraph.store.memory import InMemoryStore
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import interrupt
 
 from .state import WorkflowState
@@ -78,7 +79,7 @@ from .supervisor import supervisor_node, supervisor_router
 
 logger = logging.getLogger(__name__)
 
-_INTERVIEW_SAFETY_MAX_TURNS = 20
+_INTERVIEW_SAFETY_MAX_TURNS = 3
 
 
 # ── Lazy agent singletons ─────────────────────────────────────────────────────
@@ -147,7 +148,7 @@ def enduser_turn_fn(state: WorkflowState) -> Dict[str, Any]:
 
         new_conversation = updates.get("conversation") or state.get("conversation") or []
         if new_conversation and new_conversation[-1].get("role") == "enduser":
-            return updates  # success — respond was called
+            return updates
 
         logger.warning(
             "enduser_turn attempt %d/%d: 'respond' not called. Retrying...",
@@ -171,21 +172,39 @@ def sprint_agent_turn_fn(state: WorkflowState) -> Dict[str, Any]:
 # ── Review node ───────────────────────────────────────────────────────────────
 
 def review_turn_fn(state: WorkflowState) -> Dict[str, Any]:
-    """Human-in-the-loop review of the interview record.
+    """Human-in-the-loop review gate.
 
-    Presents every requirement with its rationale (which embeds the [STRATEGY]
-    block from extraction) and full history (which includes all prior HITL edits
-    tagged as hitl_modified / hitl_added / hitl_deleted).
+    The interrupt() value contains the full interview_record so that
+    ws_handler can extract it from __interrupt__ and emit a WebSocket
+    artifact event to the frontend without reading graph state directly.
 
-    This gives the reviewer a complete audit trail: not just what was captured,
-    but WHY it was captured and how it evolved across re-interview cycles.
+    Structure of interrupt value:
+    {
+        "review_type":   "interview_record",
+        "artifact_key":  "interview_record",
+        "artifact_data": <full interview_record dict>,
+        "review_payload": <human-readable summary>,
+    }
+
+    After resume:
+      approved=True  → write reviewed_interview_record, flow → sprint_agent
+      approved=False → remove interview_record, inject feedback, flow → interviewer
     """
     artifacts = dict(state.get("artifacts") or {})
-    record    = artifacts.get("interview_record", {})
+    record = artifacts.get("interview_record", {})
     requirements = record.get("requirements_identified", [])
 
     review_payload = _format_review_payload(record, requirements)
-    reviewer_response: Dict[str, Any] = interrupt(review_payload)
+
+    # ── Pause — ws_handler will emit artifact event on __interrupt__ ──────
+    # We embed the full record so ws_handler has everything it needs.
+    interrupt_value = {
+        "review_type":   "interview_record",
+        "artifact_key":  "interview_record",
+        "artifact_data": record,
+        "review_payload": review_payload,
+    }
+    reviewer_response: Dict[str, Any] = interrupt(interrupt_value)
 
     approved = bool(reviewer_response.get("approved", False))
     feedback = (reviewer_response.get("feedback") or "").strip()
@@ -220,21 +239,14 @@ def _format_review_payload(
     record: Dict[str, Any],
     requirements: list,
 ) -> Dict[str, Any]:
-    """Build the structured payload presented to the human reviewer.
-
-    Each requirement is shown with:
-      • description  — the testable statement
-      • rationale    — WHY it was identified (includes [STRATEGY] block excerpt)
-      • history      — every edit with its reason, including prior HITL changes
-    """
     req_summaries = []
     for r in requirements:
         history_lines = []
         for h in r.get("history") or []:
             action = h.get("action", "?")
-            turn   = h.get("turn", "?")
+            turn = h.get("turn", "?")
             reason = h.get("reason", "")
-            line   = f"    [{action}] turn {turn}: {reason}"
+            line = f"    [{action}] turn {turn}: {reason}"
             if h.get("old_value"):
                 line += f"  (was: {str(h['old_value'])[:120]})"
             history_lines.append(line)
@@ -262,7 +274,6 @@ def _format_review_payload(
         ),
         "project_description": record.get("project_description", ""),
         "completeness_score":  record.get("completeness_score"),
-        "ig_summary":          record.get("ig_summary", {}),
         "gaps":                record.get("gaps_identified", []),
         "notes":               record.get("notes", ""),
         "total_turns":         record.get("total_turns"),
@@ -323,17 +334,6 @@ def get_artifact_from_store(session_id: str, artifact_name: str) -> Optional[Any
 # ── Conditional edge: after interviewer ──────────────────────────────────────
 
 def after_interviewer(state: WorkflowState) -> str:
-    """Route after each interviewer turn.
-
-    Primary path  – interview_complete=True  (set only by Interviewer via
-                    write_interview_record).  Routes to supervisor.
-    Safety net    – turn_count >= max_turns.  Routes to supervisor with a
-                    warning.  The record may be incomplete.
-    Guard         – no interviewer message posted (tool error on first turn).
-                    Routes back to interviewer_turn for retry.
-    Normal        – routes to enduser_turn.  EndUserAgent CANNOT prevent this;
-                    the edge is deterministic from the graph, not from the agent.
-    """
     if state.get("interview_complete", False):
         logger.info("Tier-2/3 stop: interview_complete=True → supervisor.")
         return "supervisor"
@@ -342,7 +342,7 @@ def after_interviewer(state: WorkflowState) -> str:
     max_turns  = state.get("max_turns", _INTERVIEW_SAFETY_MAX_TURNS)
     if turn_count >= max_turns:
         logger.warning(
-            "Safety net: turn_count=%d >= max_turns=%d → supervisor (incomplete record).",
+            "Safety net: turn_count=%d >= max_turns=%d → supervisor.",
             turn_count, max_turns,
         )
         return "supervisor"
@@ -351,9 +351,8 @@ def after_interviewer(state: WorkflowState) -> str:
     last_role = conversation[-1].get("role") if conversation else None
 
     if last_role != "interviewer":
-        # Interviewer failed to post — retry the turn instead of advancing
         logger.warning(
-            "after_interviewer: no new message posted (last_role=%r) — retrying interviewer_turn.",
+            "after_interviewer: no new message (last_role=%r) — retrying.",
             last_role,
         )
         return "interviewer_turn"
@@ -365,14 +364,7 @@ def after_interviewer(state: WorkflowState) -> str:
 # ── Build graph ───────────────────────────────────────────────────────────────
 
 def build_graph(store=None, checkpointer=None):
-    """Compile the LangGraph workflow.
-
-    Sprint Zero chain:
-      interviewer_turn ↔ enduser_turn  (loop until interview_complete or max_turns)
-      → supervisor → review_turn → supervisor → sprint_agent_turn → END
-
-    review_turn uses interrupt() — a checkpointer is required for production.
-    """
+    """Compile the LangGraph workflow."""
     if store is None:
         store = _default_store()
 
@@ -381,6 +373,7 @@ def build_graph(store=None, checkpointer=None):
             "build_graph: no checkpointer. review_turn uses interrupt() which "
             "requires persistent storage in production."
         )
+        checkpointer = InMemorySaver()
 
     g = StateGraph(WorkflowState)
 
@@ -408,7 +401,7 @@ def build_graph(store=None, checkpointer=None):
         {
             "supervisor":       "supervisor",
             "enduser_turn":     "enduser_turn",
-            "interviewer_turn": "interviewer_turn",  # first-turn retry
+            "interviewer_turn": "interviewer_turn",
         },
     )
     g.add_edge("enduser_turn",      "interviewer_turn")

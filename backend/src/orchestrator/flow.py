@@ -1,44 +1,36 @@
 """
-flow.py – Workflow phase and step definitions.
+flow.py – Workflow phase and step definitions (Sprint 0 + Phase 2 Backlog Refinement).
 
-Sprint Zero artifact chain
+Sprint Zero artifact chain (Phase 1)
+──────────────────────────────────────
+  Step 1 – conduct_requirements_interview   → interview_record
+  Step 2 – review_interview_record          → reviewed_interview_record
+  Step 3 – build_product_backlog            → product_backlog
+
+Backlog Refinement artifact chain (Phase 2) ← NEW
+──────────────────────────────────────────────
+  Step 1 – analyst_invest_validation        → analyst_invest_report
+  Step 2 – review_invest_report             → analyst_invest_done   (HITL)
+  Step 3 – analyst_ac_synthesis             → analyst_ac_report
+  Step 4 – review_ac_report                 → analyst_ac_done       (HITL)
+
+Sprint Execution (Phase 3) — extended incrementally
+──────────────────────────────────────────────────────
+  _sprint_feedback_ready sentinel → sprint_backlog_<N>
+  (Sprint loop continues while plan_another=True)
+
+Supervisor routing
+──────────────────
+get_next_action() scans WORKFLOW_PHASES in order, returning the first step
+whose prerequisites are met (all requires_artifacts present) but whose
+output is absent (produces_artifact not yet in artifacts).
+
+Sentinel naming (Phase 2)
 ──────────────────────────
-  Step 1 – conduct_requirements_interview
-    Agent : InterviewerAgent ↔ EndUserAgent
-    Input : (none)
-    Output: interview_record
-
-    InterviewerAgent calls update_requirements after EVERY stakeholder turn.
-    Each requirement carries a ``rationale`` field explaining why it was
-    identified and a ``history`` list recording every modification reason.
-    Conflicts are resolved INLINE via Socratic follow-up — not post-hoc.
-    Stops when interview_complete=True (completeness ≥ threshold, LLM-driven)
-    or max_turns (safety net).
-
-  Step 2 – review_interview_record          ← NEW human-in-the-loop gate
-    Agent : human reviewer (LangGraph interrupt)
-    Input : interview_record
-    Output: reviewed_interview_record
-
-    A human reviewer inspects every requirement together with its rationale
-    and modification history.  Two outcomes:
-      • Approved  → reviewed_interview_record artifact is written; flow
-                    advances to step 3.
-      • Rejected  → interview_record is removed; review_feedback is injected
-                    into state; the flow returns to step 1 (re-interview with
-                    context of what needs improving).
-
-  Step 3 – build_product_backlog
-    Agent : SprintAgent
-    Input : reviewed_interview_record        ← was interview_record
-    Output: product_backlog
-
-Design rationale (no separate extraction step)
-───────────────────────────────────────────────
-Extraction is now incremental and conflict-aware. The interview_record
-already contains a clean requirements_identified list built turn-by-turn,
-each entry annotated with its rationale and history.
-A separate extraction pass would duplicate work and lose conflict context.
+  analyst_invest_report  — raw INVEST result (pending review)
+  analyst_invest_done    — review approved (gate for AC synthesis)
+  analyst_ac_report      — raw AC (pending PO review)
+  analyst_ac_done        — AC approved, all PBIs status='ready' (gate for Sprint N)
 """
 
 from __future__ import annotations
@@ -68,6 +60,7 @@ class PhaseDefinition:
 
 WORKFLOW_PHASES: List[PhaseDefinition] = [
 
+    # ── Phase 1: Sprint Zero ──────────────────────────────────────────────────
     PhaseDefinition(
         phase_name="sprint_zero_planning",
         display_name="Sprint Zero — Discovery & Planning",
@@ -88,15 +81,9 @@ WORKFLOW_PHASES: List[PhaseDefinition] = [
                     "InterviewerAgent conducts a multi-turn dialogue. "
                     "After EACH stakeholder reply, calls update_requirements "
                     "to extract, merge, and conflict-check incrementally. "
-                    "Every requirement is stored with a 'rationale' (why it "
-                    "was identified) and a 'history' list (modifications + "
-                    "reasons).  Conflicts trigger inline Socratic clarification. "
-                    "Stops when completeness ≥ threshold (interview_complete=True) "
-                    "or max_turns safety net is reached."
+                    "Stops when interview_complete=True or max_turns reached."
                 ),
             ),
-
-            # ── NEW step ─────────────────────────────────────────────────
             ArtifactStep(
                 step_name="review_interview_record",
                 node_name="review_turn",
@@ -104,44 +91,101 @@ WORKFLOW_PHASES: List[PhaseDefinition] = [
                 produces_artifact="reviewed_interview_record",
                 agent_name="human_reviewer",
                 description=(
-                    "Human reviewer inspects every requirement together with "
-                    "its rationale and modification history. "
-                    "• Approved  → reviewed_interview_record artifact written. "
-                    "• Rejected  → interview_record removed; review_feedback "
-                    "  injected; flow returns to conduct_requirements_interview."
+                    "Human reviewer inspects requirements with rationale and history. "
+                    "• Approved → reviewed_interview_record written. "
+                    "• Rejected → re-interview with feedback."
                 ),
             ),
-
             ArtifactStep(
                 step_name="build_product_backlog",
                 node_name="sprint_agent_turn",
-                # Changed prerequisite: requires the *reviewed* record so the
-                # backlog is only built after human approval.
                 requires_artifacts=["reviewed_interview_record"],
                 produces_artifact="product_backlog",
                 agent_name="sprint_agent",
                 description=(
-                    "SprintAgent reads reviewed_interview_record (which includes "
-                    "requirement rationale and history) and generates the initial "
-                    "product backlog."
+                    "SprintAgent generates the initial product backlog "
+                    "with Fibonacci estimation, INVEST, and WSJF prioritization."
+                ),
+            ),
+        ],
+        next_phase="backlog_refinement",
+    ),
+
+    # ── Phase 2: Backlog Refinement ────────────────────────────────────────────
+    PhaseDefinition(
+        phase_name="backlog_refinement",
+        display_name="Backlog Refinement — Analyst as Advisor",
+        description=(
+            "In a single pass, the AnalystAgent validates every PBI against INVEST "
+            "and synthesizes Given-When-Then Acceptance Criteria. "
+            "The output is validated_product_backlog — the product backlog enriched "
+            "with quality notes and AC, ready for a single HITL approval gate."
+        ),
+        steps=[
+            ArtifactStep(
+                step_name="groom_backlog",
+                node_name="analyst_turn",
+                requires_artifacts=["product_backlog"],
+                produces_artifact="validated_product_backlog",
+                agent_name="analyst",
+                description=(
+                    "AnalystAgent runs check_invest_quality → write_acceptance_criteria "
+                    "→ publish_validated_backlog in one ReAct turn. "
+                    "Output: validated_product_backlog with every PBI enriched "
+                    "(invest_validation + acceptance_criteria + status='ready')."
+                ),
+            ),
+            ArtifactStep(
+                step_name="review_validated_backlog",
+                node_name="analyst_review_turn",
+                requires_artifacts=["validated_product_backlog"],
+                produces_artifact="analyst_review_done",
+                agent_name="human_reviewer",
+                description=(
+                    "Product Owner reviews the validated_product_backlog in one gate. "
+                    "• Approved → analyst_review_done sentinel; Sprint N can begin. "
+                    "• Rejected → validated_product_backlog removed; analyst_feedback "
+                    "  injected; flow returns to groom_backlog (full re-groom)."
                 ),
             ),
         ],
         next_phase="sprint_execution",
     ),
 
+    # ── Phase 3: Sprint Execution ──────────────────────────────────────────────
     PhaseDefinition(
         phase_name="sprint_execution",
         display_name="Sprint N — Execution",
-        description="Iterative sprint cycles.",
-        steps=[],
+        description=(
+            "Iterative sprint cycles. Sprint Agent plans sprint backlogs from "
+            "'Ready' PBIs. Reviewer Agent verifies PRs against AC. "
+            "Continues while plan_another=True."
+        ),
+        steps=[
+            # ArtifactStep(
+            #     step_name="plan_sprint_backlog",
+            #     node_name="sprint_agent_turn",
+            #     requires_artifacts=["analyst_review_done"],
+            #     produces_artifact="_sprint_backlog_planned",   # resolved dynamically
+            #     agent_name="sprint_agent",
+            #     description=(
+            #         "SprintAgent (Pipeline B) selects 'Ready' PBIs for the current sprint. "
+            #         "Respects capacity, dependencies, and priority rank. "
+            #         "Writes sprint_backlog_<N> artifact."
+            #     ),
+            # ),
+        ],
         next_phase="sprint_review",
     ),
 
+    # ── Phase 4: Sprint Review ─────────────────────────────────────────────────
     PhaseDefinition(
         phase_name="sprint_review",
         display_name="Sprint Review & Retrospective",
-        description="Evaluate sprint outcomes and retrospective.",
+        description=(
+            "Human evaluates sprint output. Interviewer Agent (consulting mode) "
+            "collects stakeholder feedback. Analyst Agent updates AC if changes needed."
+        ),
         steps=[],
         next_phase=None,
     ),
@@ -155,6 +199,20 @@ def get_next_action(
     artifacts: Dict,
     current_phase: Optional[str] = None,
 ) -> Optional[Tuple[str, str, str]]:
+    """
+    Scan phases from current_phase onward.
+    Return (phase_name, step_name, node_name) for the first executable step,
+    or None if all phases are complete.
+
+    A step is executable when:
+      • All requires_artifacts are present in artifacts.
+      • produces_artifact is NOT yet present in artifacts.
+
+    Special case — sprint_execution "plan_sprint_backlog":
+      _sprint_feedback_ready is a dynamic sentinel managed by ws_handler.
+      The step is skipped here if _sprint_feedback_ready is absent;
+      ws_handler injects it before calling graph.stream(Command(resume=...)).
+    """
     start_idx = 0
     if current_phase and current_phase in PHASE_INDEX:
         try:

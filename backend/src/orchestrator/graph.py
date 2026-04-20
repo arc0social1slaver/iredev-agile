@@ -64,6 +64,7 @@ from __future__ import annotations
 import json
 import shutil
 import logging
+import uuid
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -105,6 +106,12 @@ def _get_enduser():
 def _get_sprint_agent():
     from ..agent.sprint import SprintAgent
     return SprintAgent()
+
+@lru_cache(maxsize=1)
+def _get_analyst():
+    from ..agent.analyst import AnalystAgent
+    return AnalystAgent()
+ 
 
 
 # ── Node functions ────────────────────────────────────────────────────────────
@@ -280,6 +287,133 @@ def _format_review_payload(
         "requirements":        req_summaries,
     }
 
+def analyst_turn_fn(state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Run AnalystAgent.process().
+ 
+    The agent performs INVEST quality check + AC synthesis + publish in a
+    single ReAct turn, emitting validated_product_backlog into artifacts.
+    """
+    updates = _get_analyst().process(state)
+    logger.debug("analyst_turn updates: %s", list(updates.keys()))
+    _sync_artifacts_to_store(state, updates)
+    return updates
+
+def analyst_review_turn_fn(state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    HITL gate: Product Owner reviews the validated_product_backlog.
+ 
+    Approval  → writes analyst_review_done sentinel.
+                Supervisor will route to sprint_agent_turn (Sprint N).
+    Rejection → removes validated_product_backlog from artifacts;
+                injects analyst_feedback into state;
+                supervisor re-routes to analyst_turn (full re-groom).
+    """
+    artifacts = dict(state.get("artifacts") or {})
+    validated = artifacts.get("validated_product_backlog") or {}
+ 
+    payload = _build_review_payload(validated)
+    interrupt_value = {
+        "review_type": "validated_product_backlog",
+        "artifact_key": "validated_product_backlog",
+        "artifact_data": validated,
+        "review_payload": payload,
+    }
+    reviewer_response: Dict[str, Any] = interrupt(interrupt_value)
+ 
+    approved = bool(reviewer_response.get("approved", False))
+    feedback = (reviewer_response.get("feedback") or "").strip()
+ 
+    if approved:
+        sentinel = {
+            "id":          str(uuid.uuid4()),
+            "session_id":  state.get("session_id", ""),
+            "approved_at": datetime.now().isoformat(),
+            "review_notes": feedback or None,
+            "ready_pbis":  [
+                item["id"]
+                for item in (validated.get("items") or [])
+                if item.get("status") == "ready"
+            ],
+        }
+        artifacts["analyst_review_done"] = sentinel
+ 
+        logger.info(
+            "[AnalystReview] APPROVED — %d ready PBIs, %d total AC.",
+            len(sentinel["ready_pbis"]),
+            validated.get("refinement_stats", {}).get("total_ac", 0),
+        )
+        return {
+            "artifacts":       artifacts,
+            "analyst_feedback": None,
+        }
+ 
+    # Rejection: remove validated backlog so supervisor re-routes to analyst_turn
+    artifacts.pop("validated_product_backlog", None)
+    logger.info("[AnalystReview] REJECTED. Feedback: %s", feedback or "(none)")
+    return {
+        "artifacts":       artifacts,
+        "analyst_feedback": feedback or "The reviewer did not provide specific feedback.",
+    }
+ 
+ 
+# ── Review payload ────────────────────────────────────────────────────────────
+ 
+def _build_review_payload(validated: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build the structured payload presented to the Product Owner.
+ 
+    For each PBI the reviewer sees:
+      • description + type + story points + priority rank
+      • invest_validation — per-criterion results and any flagged issues
+      • acceptance_criteria — all Given-When-Then criteria
+    """
+    items = validated.get("items") or []
+ 
+    pbi_summaries = []
+    for item in items:
+        iv      = item.get("invest_validation") or {}
+        ac      = item.get("acceptance_criteria") or []
+        issues  = iv.get("issues") or []
+ 
+        pbi_summaries.append({
+            "id":           item.get("id"),
+            "title":        item.get("title"),
+            "type":         item.get("type"),
+            "description":  item.get("description"),
+            "story_points": item.get("story_points"),
+            "priority_rank": item.get("priority_rank"),
+            "status":       item.get("status"),
+            "invest_validation": {
+                "failed_criteria": iv.get("failed_criteria", []),
+                "issues": [
+                    {
+                        "criterion":  iss.get("criterion"),
+                        "severity":   iss.get("severity"),
+                        "message":    iss.get("message"),
+                        "suggestion": iss.get("suggestion"),
+                    }
+                    for iss in issues
+                ],
+            },
+            "acceptance_criteria": [
+                {
+                    "id":    c.get("id"),
+                    "type":  c.get("type"),
+                    "given": c.get("given"),
+                    "when":  c.get("when"),
+                    "then":  c.get("then"),
+                }
+                for c in ac
+            ],
+        })
+ 
+    return {
+        "refinement_summary": validated.get("refinement_summary", ""),
+        "refinement_stats":   validated.get("refinement_stats", {}),
+        "pbis":               pbi_summaries,
+    }
+
 
 # ── Artifact persistence ──────────────────────────────────────────────────────
 
@@ -382,6 +516,8 @@ def build_graph(store=None, checkpointer=None):
     g.add_node("enduser_turn",      enduser_turn_fn)
     g.add_node("review_turn",       review_turn_fn)
     g.add_node("sprint_agent_turn", sprint_agent_turn_fn)
+    g.add_node("analyst_turn",        analyst_turn_fn)
+    g.add_node("analyst_review_turn", analyst_review_turn_fn)
 
     g.set_entry_point("supervisor")
 
@@ -392,6 +528,8 @@ def build_graph(store=None, checkpointer=None):
             "interviewer_turn":  "interviewer_turn",
             "review_turn":       "review_turn",
             "sprint_agent_turn": "sprint_agent_turn",
+            "analyst_turn":        "analyst_turn",
+            "analyst_review_turn": "analyst_review_turn",
             "__end__":           END,
         },
     )
@@ -407,6 +545,9 @@ def build_graph(store=None, checkpointer=None):
     g.add_edge("enduser_turn",      "interviewer_turn")
     g.add_edge("review_turn",       "supervisor")
     g.add_edge("sprint_agent_turn", "supervisor")
+    g.add_edge("analyst_turn",        "supervisor")
+    g.add_edge("analyst_review_turn", "supervisor")
+ 
 
     compile_kwargs: Dict[str, Any] = {"store": store}
     if checkpointer is not None:

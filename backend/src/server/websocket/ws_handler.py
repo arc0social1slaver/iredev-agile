@@ -55,62 +55,6 @@ FEEDBACK_TIMEOUT = 0  # 0 = wait forever (user controls when to respond)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _artifact_title(key: str) -> str:
-    if key == "product_backlog":
-        return "Product Backlog"
-    if key == "interview_record":
-        return "Interview Record"
-    if key == "reviewed_interview_record":
-        return "Reviewed Interview Record"
-    if key.startswith("sprint_backlog_"):
-        n = key.replace("sprint_backlog_", "")
-        return f"Sprint {n} Backlog"
-    return key.replace("_", " ").title()
-
-
-def _build_artifact_summary(key: str, data: dict) -> str:
-    if key == "interview_record":
-        reqs = data.get("requirements_identified") or []
-        score = data.get("completeness_score", 0)
-        return (
-            f"Requirements interview complete. "
-            f"**{len(reqs)} requirements** captured "
-            f"(completeness score: {score:.0%}). "
-            "Please review and accept or request changes."
-        )
-    if key == "product_backlog":
-        total = data.get("total_items", 0)
-        return (
-            f"Product Backlog generated with **{total} items**. "
-            "Please review and accept or request changes."
-        )
-    if key.startswith("sprint_backlog_"):
-        n = key.replace("sprint_backlog_", "")
-        total = data.get("total_items", 0)
-        pts = data.get("allocated_points", 0)
-        cap = data.get("capacity_points", 0)
-        return (
-            f"Sprint {n} Backlog planned: **{total} items**, "
-            f"{pts}/{cap} story points. "
-            "Please review and accept or request changes."
-        )
-    return ""
-
-
-def _make_artifact_display(key: str, data: dict, artifact_id: str) -> dict:
-    return {
-        "id": artifact_id,
-        "type": "json",
-        "title": _artifact_title(key),
-        "language": "json",
-        "content": json.dumps(data, indent=2, ensure_ascii=False),
-    }
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # WSHandler
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -248,10 +192,10 @@ class WSHandler:
             "language": "json",
         }
 
-        accum = self._send_token_stream(ws, lock, chat_id, mess_id, json.dumps(record_content, indent=4), "interviewer")
-        if accum.strip():
-            add_message(chat_id=chat_id, role="interviewer", content=accum,
-                        messID=mess_id)
+        # accum = self._send_token_stream(ws, lock, chat_id, mess_id, json.dumps(record_content, indent=4), "interviewer")
+        # if accum.strip():
+        #     add_message(chat_id=chat_id, role="interviewer", content=accum,
+        #                 messID=mess_id)
 
         enriched = {**artifact_display, "awaitingFeedback": True}
 
@@ -269,7 +213,7 @@ class WSHandler:
 
         # Update context
         self._artifact_ctx[chat_id] = {
-            "artifact_key": "interview_record",
+            "artifact_key": payloads.get("artifact_key", "interview_record"),
             "artifact_id": artifact_id,
             "message_id": mess_id
         }
@@ -294,6 +238,11 @@ class WSHandler:
 
         elif node_name == "sprint_agent_turn":
             self._handle_sprint_agent(updates, chat_id, ws, lock, known_artifact_keys)
+        elif node_name == "analyst_turn":
+            self._handle_analyst_turn(updates, chat_id, ws, lock)
+        elif node_name == "analyst_review_turn":
+            pass  # not implemented yet
+
 
     def _handle_conversation_turn(self, updates: Dict, chat_id: str, ws, lock):
         """Stream the last conversation turn (interviewer or enduser)."""
@@ -372,27 +321,8 @@ class WSHandler:
 
         else:
             log.info("[WS] Review REJECTED chat=%s", chat_id)
-            # feedback = updates.get("review_feedback", "")
-            # iteration = ctx.get("iteration", 1)
 
-            # # Notify frontend that revision is underway
-            # new_mess_id = str(uuid.uuid4())
-            # self._send(ws, lock, {
-            #     "type": "revision_start",
-            #     "chatId": chat_id,
-            #     "messageId": new_mess_id,
-            #     "comment": feedback,
-            #     "iteration": iteration + 1,
-            # })
-
-            # # Bump iteration counter for next interrupt
-            # self._artifact_ctx[chat_id] = {
-            #     **ctx,
-            #     "iteration": iteration,  # will be incremented in _on_graph_interrupt
-            # }
-
-    def _handle_sprint_agent(self, updates: Dict, chat_id: str, ws, lock,
-                              known_artifact_keys: set):
+    def _handle_sprint_agent(self, updates: Dict, chat_id: str, ws, lock):
         """
         Handle SprintAgent output.
 
@@ -409,82 +339,6 @@ class WSHandler:
         For now we emit the artifact immediately when sprint_agent produces it,
         before the review interrupt fires.
         """
-        artifacts = updates.get("artifacts") or {}
-        # review_approved = updates.get("review_approved")
-        # review_feedback = updates.get("review_feedback")
-
-        # # Find the new artifact key
-        # artifact_priority = [
-        #     "product_backlog",
-        #     *[f"sprint_backlog_{i}" for i in range(1, 20)],
-        # ]
-        # new_key = None
-        # for key in artifact_priority:
-        #     if key in artifacts and key not in known_artifact_keys:
-        #         new_key = key
-        #         known_artifact_keys.add(key)
-        #         break
-
-        # if new_key is None:
-        #     return
-
-        # artifact_data = artifacts[new_key]
-        # artifact_id = artifact_data.get("id") or f"{new_key}_{chat_id}"
-        # ctx = self._artifact_ctx.get(chat_id, {})
-        # prev_artifact_id = ctx.get("artifact_id")
-        # prev_mess_id = ctx.get("message_id")
-        # iteration = ctx.get("iteration", 0)
-
-        # ── Case A: This is a HITL-rejected artifact being re-built ───────
-        # if review_feedback and review_approved is False and prev_artifact_id:
-        #     new_iter = iteration + 1
-        #     new_mess_id = str(uuid.uuid4())
-        #     artifact_display = _make_artifact_display(new_key, artifact_data, artifact_id)
-        #     enriched = {**artifact_display, "awaitingFeedback": True, "revising": False}
-
-        #     self._send(ws, lock, {
-        #         "type": "artifact_revised",
-        #         "chatId": chat_id,
-        #         "messageId": new_mess_id,
-        #         "artifact": enriched,
-        #         "awaitingFeedback": True,
-        #         "iteration": new_iter,
-        #         "maxIterations": MAX_REVISIONS,
-        #         "revising": False,
-        #     })
-
-        #     self._artifact_ctx[chat_id] = {
-        #         "artifact_key": new_key,
-        #         "artifact_id": artifact_id,
-        #         "message_id": new_mess_id,
-        #         "iteration": new_iter,
-        #     }
-
-        #     save_artifact(chat_id, new_mess_id, enriched)
-        #     if prev_mess_id:
-        #         update_message_artifact(prev_mess_id, enriched)
-        #     return
-
-        # # ── Case B: HITL approved — previous artifact should be marked done
-        # if review_approved is True and prev_artifact_id:
-        #     done_display = _make_artifact_display(new_key, artifact_data, artifact_id)
-        #     enriched_done = {**done_display, "accepted": True, "awaitingFeedback": False}
-
-        #     self._send(ws, lock, {
-        #         "type": "artifact_accepted",
-        #         "chatId": chat_id,
-        #         "messageId": prev_mess_id or str(uuid.uuid4()),
-        #         "artifactId": prev_artifact_id,
-        #     })
-
-        #     if prev_mess_id:
-        #         save_artifact(chat_id, prev_mess_id, enriched_done)
-        #         update_message_artifact(prev_mess_id, enriched_done)
-        #     self._artifact_ctx.pop(chat_id, None)
-        #     return
-
-        # ── Case C: Fresh new artifact ─────────────────────────────────────
-        # summary = _build_artifact_summary(new_key, artifact_data)
 
         artifact_id = updates.get("artifacts", {}).get("product_backlog", {}).get("id", f"product_backlog_{chat_id}")
         product_backlog_content = json.dumps(updates.get("artifacts", {}).get("product_backlog"), indent=2, ensure_ascii=False)
@@ -498,11 +352,11 @@ class WSHandler:
         mess_id = str(uuid.uuid4())
         enriched = {**artifact_display, "awaitingFeedback": True}
 
-        accum = self._send_token_stream(ws, lock, chat_id, mess_id,
-                                             product_backlog_content, "Sprint Agent")
-        if accum.strip():
-            add_message(chat_id=chat_id, role="Sprint Agent",
-                        content=accum, messID=mess_id)
+        # accum = self._send_token_stream(ws, lock, chat_id, mess_id,
+        #                                      product_backlog_content, "Sprint Agent")
+        # if accum.strip():
+        #     add_message(chat_id=chat_id, role="Sprint Agent",
+        #                 content=accum, messID=mess_id)
 
         self._send(ws, lock, {
             "type": "artifact",
@@ -522,6 +376,39 @@ class WSHandler:
         }
 
         save_artifact(chat_id, mess_id, enriched)
+
+    def _handle_analyst_turn(self, updates: Dict, chat_id: str, ws, lock):
+        artifact = updates.get("artifacts", {}).get("validated_product_backlog", {})
+        validated_backlog_content = json.dumps(artifact, indent=2, ensure_ascii=False)
+        artifact_display = {
+                "id": artifact.get("id", f"validated_backlog_{chat_id}"),
+                "content": validated_backlog_content,
+                "language": "json",
+        }
+        mess_id = str(uuid.uuid4())
+        # accum = self._send_token_stream(ws, lock, chat_id, mess_id,
+        #                                      validated_backlog_content, "Analyst Agent")
+        # if accum.strip():
+        #     add_message(chat_id=chat_id, role="Analyst Agent",
+        #                 content=accum, messID=mess_id)
+        enriched = {**artifact_display, "awaitingFeedback": True}
+        self._send(ws, lock, {
+            "type": "artifact",
+            "chatId": chat_id,
+            "messageId": mess_id,
+            "artifact": enriched,
+            "awaitingFeedback": True,
+            "iteration": 1,
+            "maxIterations": MAX_REVISIONS,
+        })
+        self._artifact_ctx[chat_id] = {
+            "artifact_key": "validated_product_backlog",
+            "artifact_id": artifact.get("id", f"validated_backlog_{chat_id}"),
+            "message_id": mess_id,
+            "iteration": 1,
+        }
+        save_artifact(chat_id, mess_id, enriched)
+
 
     # =========================================================================
     # Per-connection state

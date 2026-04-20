@@ -65,6 +65,7 @@ from typing_extensions import TypedDict
 
 class SystemPhase(str, Enum):
     SPRINT_ZERO_PLANNING = "sprint_zero_planning"
+    BACKLOG_REFINEMENT   = "backlog_refinement"     # ← Phase 2
     SPRINT_EXECUTION     = "sprint_execution"
     SPRINT_REVIEW        = "sprint_review"
 
@@ -77,7 +78,7 @@ class ProcessPhase(str, Enum):
 
 
 class ConversationTurn(TypedDict):
-    role:      str   # "interviewer" | "enduser"
+    role:      str
     content:   str
     timestamp: str
 
@@ -102,22 +103,15 @@ class WorkflowState(TypedDict, total=False):
     conversation:       List[ConversationTurn]
     turn_count:         int
     max_turns:          int
-    interview_complete: bool   # set True ONLY by InterviewerAgent
+    interview_complete: bool
 
     # ── Requirements draft ─────────────────────────────────────────────────
-    # Built incrementally by InterviewerAgent._tool_update_requirements.
-    # Finalised by _tool_write_interview_record (copied into artifact).
     requirements_draft: List[Dict[str, Any]]
 
     # ── Coverage map ───────────────────────────────────────────────────────
-    # Keyed by zone_id.  Built once via propose_zones, updated on every
-    # update_requirements call.
     coverage_map: Dict[str, Any]
 
-    # ── Goal tracker (Tier-2 stopping) ─────────────────────────────────────
-    # Per-zone Information Gain tracking.  Updated by update_requirements.
-    # Zone is considered IG-saturated when ig_score == 0.0.
-    # See module docstring for full schema.
+    # ── Goal tracker ───────────────────────────────────────────────────────
     goal_tracker: Dict[str, Any]
 
     # ── Conflict and dependency logs ───────────────────────────────────────
@@ -127,18 +121,32 @@ class WorkflowState(TypedDict, total=False):
     # ── Backlog draft ──────────────────────────────────────────────────────
     backlog_draft: List[Dict[str, Any]]
 
-    # ── HITL review gate ───────────────────────────────────────────────────
-    # review_feedback is injected into InterviewerAgent's task on re-interview
-    # so all edits driven by feedback are recorded with that context.
+    # ── Sprint 0 HITL ──────────────────────────────────────────────────────
     awaiting_review:  bool
     review_approved:  bool
     review_feedback:  Optional[str]
 
-    # ── ReAct internals (transient, not persisted across sessions) ─────────
-    # Set by ThinkModule.tools_node; consumed by update_requirements to attach
-    # the agent's Strategy Factorization reasoning to requirement rationale.
+    # ── Phase 2: Backlog Refinement ───────────────────────────────────────────
+    # analyst_feedback: set by analyst_review_turn on rejection.
+    # Consumed by AnalystAgent._run_grooming() to add reviewer context to the
+    # re-groom task prompt.
+    analyst_feedback: Optional[str]
+
+    # AnalystAgent transient accumulators (cleared at start of each new groom).
+    # Holds intermediate tool results within a single ReAct turn.
+    _invest_scratch: List[Dict[str, Any]]   # output of check_invest_quality
+    _ac_scratch:     List[Dict[str, Any]]   # output of write_acceptance_criteria
+
+    # ── Sprint execution ────────────────────────────────────────────────────
+    sprint_feedback:        Dict[str, Any]   # capacity, goal, completed PBIs
+    current_sprint_number:  int
+    sprint_draft:           List[Dict[str, Any]]
+
+    # ── ReAct internals (transient) ────────────────────────────────────────
     _last_react_thought: str
-    _react_strategy:     str   # content of [STRATEGY]...[/STRATEGY] block
+    _react_strategy:     str
+    _update_req_done_this_turn: bool
+    readiness_approved: bool
 
     # ── Error accumulation ─────────────────────────────────────────────────
     errors: List[str]

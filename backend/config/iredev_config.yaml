@@ -79,21 +79,6 @@ iredev:
         too_big_threshold: 8
         fibonacci_sequence: [1, 2, 3, 5, 8, 13, 21]
 
-    deployer:
-      llm_config: "default"
-      knowledge_modules:
-        - "system_architecture"
-        - "security_requirements"
-        - "compliance_standards"
-        - "performance_criteria"
-      max_turns: 20
-      timeout_seconds: 300
-      memory_limit_mb: 256
-      enabled: true
-      custom_params:
-        security_level: "high"
-        compliance_regions: ["GDPR", "SOX"]
-
     analyst:
       llm_config: "default"
       knowledge_modules:
@@ -108,21 +93,6 @@ iredev:
       custom_params:
         modeling_notation: "UML"
         traceability_depth: "full"
-
-    archivist:
-      llm_config: "default"
-      knowledge_modules:
-        - "ieee_830_standard"
-        - "iso_29148_standard"
-        - "technical_writing"
-        - "document_templates"
-      max_turns: 25
-      timeout_seconds: 400
-      memory_limit_mb: 256
-      enabled: true
-      custom_params:
-        document_standard: "IEEE_830"
-        template_style: "formal"
 
     reviewer:
       llm_config: "default"

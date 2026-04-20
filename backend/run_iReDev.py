@@ -358,7 +358,7 @@ if __name__ == "__main__":
                         print("  NODE: __INTERRUPT__ — REVIEW GATE")
                         print(f"{'─'*70}")
 
-                        decision = _collect_review_decision(updates)
+                        decision = _collect_review_decision(updates.get("review_payload", {}))
 
                         if decision["approved"]:
                             _section("Review: APPROVED ✓")

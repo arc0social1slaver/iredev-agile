@@ -30,15 +30,11 @@ All four review nodes follow the same pattern:
 
 UI Summaries (ARTIFACT_SUMMARIES)
 ──────────────────────────────────
-Pre-written markdown summaries keyed by artifact_key.  ws_handler picks up
+Pre-written markdown summaries keyed by review_type.  ws_handler picks up
 the right summary from the interrupt payload's "ui_summary" field and sends
 it to the frontend alongside the artifact card.  Each summary explains:
   • What the artifact is
   • What the user needs to do (Accept / Request Changes)
-
-The "workflow_started" summary is a special case — emitted by
-interviewer_turn_fn on the first turn (no artifact yet), so the user sees
-a welcome message when the AI begins the requirements interview.
 """
 
 from __future__ import annotations
@@ -251,7 +247,6 @@ def review_interview_record_turn_fn(state: WorkflowState) -> Dict[str, Any]:
     Interrupt payload (consumed by ws_handler):
     {
         "review_type":   "interview_record",
-        "artifact_key":  "interview_record",
         "artifact_data": <full interview_record dict>,
         "review_payload": <structured review data>,
         "ui_summary":    ARTIFACT_SUMMARIES["interview_record"],
@@ -268,7 +263,6 @@ def review_interview_record_turn_fn(state: WorkflowState) -> Dict[str, Any]:
 
     interrupt_value = {
         "review_type":   "interview_record",
-        "artifact_key":  "interview_record",
         "artifact_data": record,
         "review_payload": _build_interview_review_payload(record, requirements),
         "ui_summary":    ARTIFACT_SUMMARIES["interview_record"],
@@ -289,7 +283,6 @@ def review_interview_record_turn_fn(state: WorkflowState) -> Dict[str, Any]:
         logger.info("[ReviewInterviewRecord] APPROVED — %d requirements.", len(requirements))
         return {
             "artifacts":       artifacts,
-            "review_approved": True,
             "review_feedback": None,
         }
 
@@ -298,7 +291,6 @@ def review_interview_record_turn_fn(state: WorkflowState) -> Dict[str, Any]:
     return {
         "artifacts":          artifacts,
         "interview_complete": False,
-        "review_approved":    False,
         "review_feedback":    feedback or "The reviewer did not provide specific feedback.",
     }
 
@@ -309,7 +301,6 @@ def review_product_backlog_turn_fn(state: WorkflowState) -> Dict[str, Any]:
     Interrupt payload (consumed by ws_handler):
     {
         "review_type":   "product_backlog",
-        "artifact_key":  "product_backlog",
         "artifact_data": <full product_backlog dict>,
         "review_payload": <structured review data>,
         "ui_summary":    ARTIFACT_SUMMARIES["product_backlog"],
@@ -326,7 +317,6 @@ def review_product_backlog_turn_fn(state: WorkflowState) -> Dict[str, Any]:
 
     interrupt_value = {
         "review_type":   "product_backlog",
-        "artifact_key":  "product_backlog",
         "artifact_data": backlog,
         "review_payload": _build_product_backlog_review_payload(backlog),
         "ui_summary":    ARTIFACT_SUMMARIES["product_backlog"],
@@ -339,14 +329,7 @@ def review_product_backlog_turn_fn(state: WorkflowState) -> Dict[str, Any]:
     items = backlog.get("items") or []
 
     if approved:
-        sentinel = {
-            "id":           str(uuid.uuid4()),
-            "session_id":   state.get("session_id", ""),
-            "approved_at":  datetime.now().isoformat(),
-            "review_notes": feedback or None,
-            "total_stories": len(items),
-        }
-        artifacts["product_backlog_approved"] = sentinel
+        artifacts["product_backlog_approved"] = backlog
         logger.info(
             "[ReviewProductBacklog] APPROVED — %d user stories.", len(items)
         )
@@ -363,21 +346,20 @@ def review_product_backlog_turn_fn(state: WorkflowState) -> Dict[str, Any]:
     }
 
 
-def analyst_review_turn_fn(state: WorkflowState) -> Dict[str, Any]:
+def review_validated_product_backlog_turn_fn(state: WorkflowState) -> Dict[str, Any]:
     """HITL gate — Product Owner reviews the validated_product_backlog.
 
     Interrupt payload (consumed by ws_handler):
     {
         "review_type":   "validated_product_backlog",
-        "artifact_key":  "validated_product_backlog",
         "artifact_data": <full validated_product_backlog dict>,
         "review_payload": <structured review data>,
         "ui_summary":    ARTIFACT_SUMMARIES["validated_product_backlog"],
     }
 
     After resume:
-      approved=True  → write analyst_review_done sentinel; Sprint N can begin.
-      approved=False → remove validated_product_backlog, inject analyst_feedback;
+      approved=True  → write validated_product_backlog_approved sentinel; Sprint N can begin.
+      approved=False → remove validated_product_backlog, inject validated_product_backlog_feedback;
                        flow returns to groom_backlog (full re-groom).
     """
     artifacts = dict(state.get("artifacts") or {})
@@ -385,9 +367,8 @@ def analyst_review_turn_fn(state: WorkflowState) -> Dict[str, Any]:
 
     interrupt_value = {
         "review_type":   "validated_product_backlog",
-        "artifact_key":  "validated_product_backlog",
         "artifact_data": validated,
-        "review_payload": _build_analyst_review_payload(validated),
+        "review_payload": _build_validated_product_backlog_review_payload(validated),
         "ui_summary":    ARTIFACT_SUMMARIES["validated_product_backlog"],
     }
     reviewer_response: Dict[str, Any] = interrupt(interrupt_value)
@@ -396,21 +377,14 @@ def analyst_review_turn_fn(state: WorkflowState) -> Dict[str, Any]:
     feedback = (reviewer_response.get("feedback") or "").strip()
 
     if approved:
-        sentinel = {
-            "id":           str(uuid.uuid4()),
-            "session_id":   state.get("session_id", ""),
-            "approved_at":  datetime.now().isoformat(),
-            "review_notes": feedback or None,
-            "ready_pbis": [
+        artifacts["validated_product_backlog_approved"] = validated
+        logger.info(
+            "[AnalystReview] APPROVED — %d ready PBIs, %d total AC.",
+            len([
                 item["id"]
                 for item in (validated.get("items") or [])
                 if item.get("status") == "ready"
-            ],
-        }
-        artifacts["analyst_review_done"] = sentinel
-        logger.info(
-            "[AnalystReview] APPROVED — %d ready PBIs, %d total AC.",
-            len(sentinel["ready_pbis"]),
+            ]),
             validated.get("refinement_stats", {}).get("total_ac", 0),
         )
         return {
@@ -494,7 +468,7 @@ def _build_product_backlog_review_payload(backlog: Dict[str, Any]) -> Dict[str, 
     }
 
 
-def _build_analyst_review_payload(validated: Dict[str, Any]) -> Dict[str, Any]:
+def _build_validated_product_backlog_review_payload(validated: Dict[str, Any]) -> Dict[str, Any]:
     """Build the structured payload shown to the PO when reviewing the validated backlog."""
     items = validated.get("items") or []
 
@@ -652,7 +626,7 @@ def build_graph(store=None, checkpointer=None):
     g.add_node("sprint_agent_turn",             sprint_agent_turn_fn)
     g.add_node("review_product_backlog_turn",   review_product_backlog_turn_fn)
     g.add_node("analyst_turn",                  analyst_turn_fn)
-    g.add_node("analyst_review_turn",           analyst_review_turn_fn)
+    g.add_node("review_validated_product_backlog_turn",   review_validated_product_backlog_turn_fn)
 
     g.set_entry_point("supervisor")
 
@@ -665,7 +639,7 @@ def build_graph(store=None, checkpointer=None):
             "sprint_agent_turn":            "sprint_agent_turn",
             "review_product_backlog_turn":  "review_product_backlog_turn",
             "analyst_turn":                 "analyst_turn",
-            "analyst_review_turn":          "analyst_review_turn",
+            "review_validated_product_backlog_turn":  "review_validated_product_backlog_turn",
             "__end__":                      END,
         },
     )
@@ -684,7 +658,7 @@ def build_graph(store=None, checkpointer=None):
     g.add_edge("sprint_agent_turn",             "supervisor")
     g.add_edge("review_product_backlog_turn",   "supervisor")
     g.add_edge("analyst_turn",                  "supervisor")
-    g.add_edge("analyst_review_turn",           "supervisor")
+    g.add_edge("review_validated_product_backlog_turn",           "supervisor")
 
     compile_kwargs: Dict[str, Any] = {"store": store}
     if checkpointer is not None:

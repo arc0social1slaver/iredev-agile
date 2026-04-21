@@ -38,11 +38,10 @@ import re
 import threading
 import uuid
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from ..data.mock_db import (
     add_message,
-    save_artifact,
     update_message_artifact,
 )
 from ..auth.auth_utils import get_user_id_for_token_ws
@@ -53,6 +52,13 @@ log = logging.getLogger(__name__)
 
 MAX_REVISIONS = 5
 FEEDBACK_TIMEOUT = 0  # 0 = wait forever (user controls when to respond)
+
+# Maps review_type to the corresponding artifact key that indicates approval in the review_turn output.
+REVIEW_TYPES = {
+    "interview_record": "reviewed_interview_record",
+    "product_backlog": "product_backlog_approved",
+    "validated_product_backlog": "validated_product_backlog_approved",
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -70,7 +76,7 @@ class WSHandler:
 
         # Pending artifact context per chat — used to correlate accept/revise
         # with the last artifact that was emitted.
-        # { chat_id → {artifact_key, artifact_id, message_id, iteration} }
+        # { chat_id → {review_type, artifact_id, message_id} }
         self._artifact_ctx: Dict[str, Dict] = {}
 
         self.graph = build_graph()
@@ -132,14 +138,11 @@ class WSHandler:
 
         config = {"configurable": {"thread_id": chat_id}}
 
-        # Track which artifact keys existed before this segment
-        known_artifact_keys: set = set()
-
         # Init workflow message
         if isinstance(initial_state, dict) and initial_state.get("_workflow_started_message") is not True :
             mess_id = str(uuid.uuid4())
-            self._send_token_stream(ws, lock, chat_id, mess_id, ARTIFACT_SUMMARIES.get("workflow_started"), "system")
-            add_message(chat_id, role="system", content=ARTIFACT_SUMMARIES.get("workflow_started"), messID=mess_id)
+            self._send_token_stream(ws, lock, chat_id, mess_id, ARTIFACT_SUMMARIES.get("workflow_started"), "assistant")
+            add_message(chat_id, role="assistant", content=ARTIFACT_SUMMARIES.get("workflow_started"), messID=mess_id)
             initial_state["_workflow_started_message"] = True
 
         try:
@@ -156,9 +159,7 @@ class WSHandler:
                     if not updates:
                         continue
                     log.debug("[WS] node=%s updates=%s", node_name, list(updates.keys()))
-                    self._dispatch_node(
-                        node_name, updates, user_id, chat_id, ws, lock, known_artifact_keys
-                    )
+                    self._dispatch_node(node_name, updates, chat_id, ws, lock)
 
         except Exception as exc:
             log.error("[WS] workflow error user=%s chat=%s: %s",
@@ -173,7 +174,7 @@ class WSHandler:
         """
         Called when graph.stream() yields __interrupt__.
  
-        Reads artifact_key and ui_summary from the interrupt payload,
+        Reads review_type and ui_summary from the interrupt payload,
         emits a "workflow_summary" message, then emits the artifact card.
  
         All three HITL nodes (review_interview_record_turn,
@@ -181,7 +182,6 @@ class WSHandler:
         interrupt payload schema:
           {
             "review_type":    "<str>",
-            "artifact_key":   "<str>",      ← used to key ARTIFACT_SUMMARIES
             "artifact_data":  <dict>,
             "review_payload": <dict>,
             "ui_summary":     "<markdown>",  ← pre-built in graph.py
@@ -201,10 +201,9 @@ class WSHandler:
         text_mess_id = str(uuid.uuid4())
 
         # ── 1. Emit summary message ────────────────────────────────────────
-        ui_summary = payloads.get("ui_summary", ARTIFACT_SUMMARIES.get(payloads.get("artifact_key")))
-        accum = self._send_token_stream(ws, lock, chat_id, text_mess_id, ui_summary, "system")
-        add_message(chat_id, role="system", content=ui_summary, messID=text_mess_id)
-        log.debug("[WS] Emitted workflow summary for chat=%s: %s", chat_id, ui_summary)
+        ui_summary = payloads.get("ui_summary", ARTIFACT_SUMMARIES.get(payloads.get("review_type"), ""))
+        self._send_token_stream(ws, lock, chat_id, text_mess_id, ui_summary, "assistant")
+        add_message(chat_id, role="assistant", content=ui_summary, messID=text_mess_id)
 
         # ── 2. Emit artifact card ──────────────────────────────────────────
         artifact_mess_id = str(uuid.uuid4())
@@ -234,17 +233,15 @@ class WSHandler:
 
         # Update context
         self._artifact_ctx[chat_id] = {
-            "artifact_key": payloads.get("artifact_key", "interview_record"),
+            "review_type": payloads.get("review_type"),
             "artifact_id": artifact_id,
             "message_id": artifact_mess_id
         }
 
         # Persist
-        save_artifact(chat_id, artifact_mess_id, enriched)
+        add_message(chat_id=chat_id, role="assistant", content="", messID=artifact_mess_id, artifact=enriched)
 
-    def _dispatch_node(self, node_name: str, updates: Dict,
-                        user_id: str, chat_id: str, ws, lock,
-                        known_artifact_keys: set):
+    def _dispatch_node(self, node_name: str, updates: Dict, chat_id: str, ws, lock):
         """Route node output to the correct handler."""
 
         if node_name == "supervisor":
@@ -253,17 +250,9 @@ class WSHandler:
         if node_name in ("interviewer_turn", "enduser_turn"):
             self._handle_conversation_turn(updates, chat_id, ws, lock)
 
-        elif node_name == "review_interview_record_turn":
+        elif node_name in ("review_interview_record_turn", "review_product_backlog_turn", "analyst_review_turn"):
             # This fires AFTER interrupt resumes — contains approve/reject result
-            self._handle_review_result(updates, user_id, chat_id, ws, lock)
-
-        elif node_name == "review_product_backlog_turn":
-            self._handle_product_backlog_review_result(
-                updates, user_id, chat_id, ws, lock
-            )
-
-        elif node_name == "analyst_review_turn":
-            self._handle_analyst_review_turn(updates, chat_id, ws, lock)
+            self._handle_review_result(updates, chat_id, ws, lock)
 
         # ── Agent turns that produce artifacts (no interrupt needed here) ──
         # sprint_agent_turn and analyst_turn do NOT emit artifacts directly;
@@ -289,8 +278,7 @@ class WSHandler:
         if accum.strip():
             add_message(chat_id=chat_id, role=role, content=accum, messID=mess_id)
 
-    def _handle_review_result(self, updates: Dict, user_id: str,
-                               chat_id: str, ws, lock):
+    def _handle_review_result(self, updates: Dict, chat_id: str, ws, lock):
         """
         Handle review_turn output after interrupt resumes.
 
@@ -302,10 +290,13 @@ class WSHandler:
           - emit revision_start so frontend shows "Revising..." spinner
           - graph re-routes to interviewer_turn; next interrupt will emit artifact_revised
         """
-        ctx = self._artifact_ctx.get(chat_id, {})
-        artifact_id = ctx.get("artifact_id", f"interview_record_{chat_id}")
+        ctx = self._artifact_ctx.get(chat_id)
+        artifact_id = ctx.get("artifact_id")
+        review_type = ctx.get("review_type")
+        review_file = REVIEW_TYPES.get(review_type)
+        artifacts = updates.get("artifacts") or {}
         mess_id = ctx.get("message_id", str(uuid.uuid4()))
-        approved = updates.get("review_approved", False)
+        approved = review_file in artifacts  # presence of review result sentinel indicates approval
 
         if approved:
             log.info("[WS] Review APPROVED chat=%s", chat_id)
@@ -313,28 +304,13 @@ class WSHandler:
 
             artifact_display = {
                 "id": artifact_id,
-                "content": json.dumps(updates.get("artifacts", {}).get("reviewed_interview_record"), indent=2, ensure_ascii=False),
+                "content": json.dumps(updates.get("artifacts", {}).get(review_file), indent=2, ensure_ascii=False),
                 "language": "json",
             }
 
             # Mark artifact as accepted in DB
-            save_artifact(
-                chat_id, 
-                mess_id, 
-                {
-                    **artifact_display, 
-                    "accepted": True, 
-                    "awaitingFeedback": False
-                }
-            )
-            update_message_artifact(
-                mess_id, 
-                {
-                    **artifact_display, 
-                    "accepted": True, 
-                    "awaitingFeedback": False
-                }
-            )
+            enriched = {**artifact_display, "accepted": True, "awaitingFeedback": False}
+            update_message_artifact(mess_id, enriched)
 
             # Notify frontend
             self._send(ws, lock, {
@@ -348,95 +324,7 @@ class WSHandler:
             self._artifact_ctx.pop(chat_id, None)
 
         else:
-            log.info("[WS] Review REJECTED chat=%s", chat_id)
-
-    def _handle_product_backlog_review_result(
-        self, updates: Dict, user_id: str, chat_id: str, ws, lock
-    ):
-        """Fires after resume from review_product_backlog_turn interrupt."""
-        ctx         = self._artifact_ctx.get(chat_id, {})
-        artifact_id = ctx.get("artifact_id", f"product_backlog_{chat_id}")
-        mess_id     = ctx.get("message_id", str(uuid.uuid4()))
- 
-        artifacts = updates.get("artifacts") or {}
-        # approval is confirmed by presence of product_backlog_approved sentinel
-        approved  = "product_backlog_approved" in artifacts
- 
-        if approved:
-            log.info("[WS] ProductBacklog APPROVED chat=%s", chat_id)
- 
-            backlog = artifacts.get("product_backlog") or {}
-            artifact_display = {
-                "id":       artifact_id,
-                "content":  json.dumps(backlog, indent=2, ensure_ascii=False),
-                "language": "json",
-            }
-            enriched = {**artifact_display, "accepted": True, "awaitingFeedback": False}
- 
-            save_artifact(chat_id, mess_id, enriched)
-            update_message_artifact(mess_id, enriched)
- 
-            self._send(ws, lock, {
-                "type":       "artifact_accepted",
-                "chatId":     chat_id,
-                "messageId":  mess_id,
-                "artifactId": artifact_id,
-            })
-            self._artifact_ctx.pop(chat_id, None)
- 
-        else:
-            log.info("[WS] ProductBacklog REJECTED chat=%s", chat_id)
-            # SprintAgent will rebuild; no explicit frontend event needed.
-
-    def _handle_analyst_review_turn(self, updates: Dict, chat_id: str, ws, lock):
-        ctx = self._artifact_ctx.get(chat_id, {})
-        artifact_id = ctx.get("artifact_id", f"interview_record_{chat_id}")
-        mess_id = ctx.get("message_id", str(uuid.uuid4()))
-        artifacts = updates.get("artifacts") or {}
-        approved = "analyst_review_done" in artifacts
-
-        if approved:
-            log.info("[WS] Review APPROVED chat=%s", chat_id)
-
-
-            artifact_display = {
-                "id": artifact_id,
-                "content": json.dumps(artifacts.get("analyst_review_done"), indent=2, ensure_ascii=False),
-                "language": "json",
-            }
-
-            # Mark artifact as accepted in DB
-            save_artifact(
-                chat_id, 
-                mess_id, 
-                {
-                    **artifact_display, 
-                    "accepted": True, 
-                    "awaitingFeedback": False
-                }
-            )
-            update_message_artifact(
-                mess_id, 
-                {
-                    **artifact_display, 
-                    "accepted": True, 
-                    "awaitingFeedback": False
-                }
-            )
-
-            # Notify frontend
-            self._send(ws, lock, {
-                "type": "artifact_accepted",
-                "chatId": chat_id,
-                "messageId": mess_id,
-                "artifactId": artifact_id,
-            })
-
-            self._artifact_ctx.pop(chat_id, None)
-
-        else:
-            log.info("[WS] Review REJECTED chat=%s", chat_id)
-
+            log.info("[WS] Revise %s chat=%s", review_type, chat_id)
 
     # =========================================================================
     # Per-connection state

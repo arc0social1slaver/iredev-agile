@@ -129,8 +129,6 @@ class WorkflowState(TypedDict, total=False):
     backlog_draft: List[Dict[str, Any]]
 
     # ── Sprint Zero HITL ───────────────────────────────────────────────────
-    awaiting_review:  bool
-    review_approved:  bool
     # review_feedback: injected on interview_record rejection
     review_feedback:  Optional[str]
     # product_backlog_feedback: injected on product_backlog rejection

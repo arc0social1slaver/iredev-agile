@@ -150,13 +150,13 @@ WORKFLOW_PHASES: List[PhaseDefinition] = [
             ),
             ArtifactStep(
                 step_name="review_validated_backlog",
-                node_name="analyst_review_turn",
+                node_name="review_validated_product_backlog_turn",
                 requires_artifacts=["validated_product_backlog"],
-                produces_artifact="analyst_review_done",
+                produces_artifact="validated_product_backlog_approved",
                 agent_name="human_reviewer",
                 description=(
                     "Product Owner reviews the validated_product_backlog in one gate. "
-                    "• Approved → analyst_review_done sentinel; Sprint N can begin. "
+                    "• Approved → validated_product_backlog_approved sentinel; Sprint N can begin. "
                     "• Rejected → validated_product_backlog removed; analyst_feedback "
                     "  injected; flow returns to groom_backlog (full re-groom)."
                 ),

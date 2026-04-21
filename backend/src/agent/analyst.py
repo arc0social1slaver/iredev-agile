@@ -580,4 +580,4 @@ class AnalystAgent(BaseAgent):
         )
 
         logger.info("[AnalystAgent] Starting backlog grooming — %d PBIs.", n)
-        return self.react(state, task)
+        return self.react(state, task, tool_choice="required")

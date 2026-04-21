@@ -223,6 +223,7 @@ def start(current_user, chat_id):
         "requirements_draft": [],
         # ── Misc ──────────────────────────────────────────────────────────
         "errors": [],
+        "_workflow_started_message": False,  
     }
     print(initial_state)
 

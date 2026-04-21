@@ -54,22 +54,24 @@ export function MessageBubble({ message, onOpenArtifact }) {
         )}
 
         {/* Bubble */}
-        <div
-          className={`text-[14px] leading-[1.65] ${
-            isUser
-              ? "bg-[#EAE6DC] text-[#1A1410] px-4 py-2.5 rounded-[18px] rounded-br-[4px]"
-              : "text-[#1A1410] px-0 py-0"
-          }`}
-        >
-          {isUser ? (
-            <p className="whitespace-pre-wrap">{message.content}</p>
-          ) : (
-            <AssistantContent
-              content={message.content}
-              streaming={message.streaming}
-            />
-          )}
-        </div>
+        {(isUser || !message.artifact) && (
+          <div
+            className={`text-[14px] leading-[1.65] ${
+              isUser
+                ? "bg-[#EAE6DC] text-[#1A1410] px-4 py-2.5 rounded-[18px] rounded-br-[4px]"
+                : "text-[#1A1410] px-0 py-0"
+            }`}
+          >
+            {isUser ? (
+              <p className="whitespace-pre-wrap">{message.content}</p>
+            ) : (
+              <AssistantContent
+                content={message.content}
+                streaming={message.streaming}
+              />
+            )}
+          </div>
+        )}
 
         {/* Artifact preview card */}
         {!isUser && message.artifact && !message.streaming && (

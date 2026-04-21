@@ -47,6 +47,7 @@ from ..data.mock_db import (
 )
 from ..auth.auth_utils import get_user_id_for_token_ws
 from src.orchestrator import build_graph
+from src.orchestrator.graph import ARTIFACT_SUMMARIES
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +135,13 @@ class WSHandler:
         # Track which artifact keys existed before this segment
         known_artifact_keys: set = set()
 
+        # Init workflow message
+        if isinstance(initial_state, dict) and initial_state.get("_workflow_started_message") is not True :
+            mess_id = str(uuid.uuid4())
+            self._send_token_stream(ws, lock, chat_id, mess_id, ARTIFACT_SUMMARIES.get("workflow_started"), "system")
+            add_message(chat_id, role="system", content=ARTIFACT_SUMMARIES.get("workflow_started"), messID=mess_id)
+            initial_state["_workflow_started_message"] = True
+
         try:
             for step_output in self.graph.stream(initial_state, config=config):
 
@@ -164,12 +172,20 @@ class WSHandler:
     def _on_graph_interrupt(self, interrupt_data: Any, chat_id: str, ws, lock):
         """
         Called when graph.stream() yields __interrupt__.
-
-        At this point review_turn has already been entered and called interrupt().
-        The interrupt_data contains the review payload (requirements etc.).
-
-        We need to emit the interview_record artifact to the frontend so the
-        user sees the Accept / Request Changes bar.
+ 
+        Reads artifact_key and ui_summary from the interrupt payload,
+        emits a "workflow_summary" message, then emits the artifact card.
+ 
+        All three HITL nodes (review_interview_record_turn,
+        review_product_backlog_turn, analyst_review_turn) follow the same
+        interrupt payload schema:
+          {
+            "review_type":    "<str>",
+            "artifact_key":   "<str>",      ← used to key ARTIFACT_SUMMARIES
+            "artifact_data":  <dict>,
+            "review_payload": <dict>,
+            "ui_summary":     "<markdown>",  ← pre-built in graph.py
+          }
         """
         log.info("[WS] Graph interrupted (review gate) chat=%s", chat_id)
 
@@ -182,7 +198,16 @@ class WSHandler:
             log.warning("[WS] interrupt payload has unexpected shape: %s", interrupt_data)
             return
 
-        mess_id = str(uuid.uuid4())
+        text_mess_id = str(uuid.uuid4())
+
+        # ── 1. Emit summary message ────────────────────────────────────────
+        ui_summary = payloads.get("ui_summary", ARTIFACT_SUMMARIES.get(payloads.get("artifact_key")))
+        accum = self._send_token_stream(ws, lock, chat_id, text_mess_id, ui_summary, "system")
+        add_message(chat_id, role="system", content=ui_summary, messID=text_mess_id)
+        log.debug("[WS] Emitted workflow summary for chat=%s: %s", chat_id, ui_summary)
+
+        # ── 2. Emit artifact card ──────────────────────────────────────────
+        artifact_mess_id = str(uuid.uuid4())
         artifact_id = record_content.get("id", f"interview_record_{chat_id}")
 
         # Build display artifact from the review payload
@@ -192,17 +217,13 @@ class WSHandler:
             "language": "json",
         }
 
-        # accum = self._send_token_stream(ws, lock, chat_id, mess_id, json.dumps(record_content, indent=4), "interviewer")
-        # if accum.strip():
-        #     add_message(chat_id=chat_id, role="interviewer", content=accum,
-        #                 messID=mess_id)
 
         enriched = {**artifact_display, "awaitingFeedback": True}
 
         ws_payload = {
             "type": "artifact",
             "chatId": chat_id,
-            "messageId": mess_id,
+            "messageId": artifact_mess_id,
             "artifact": artifact_display,
             "awaitingFeedback": True,
             "iteration": 1,
@@ -215,11 +236,11 @@ class WSHandler:
         self._artifact_ctx[chat_id] = {
             "artifact_key": payloads.get("artifact_key", "interview_record"),
             "artifact_id": artifact_id,
-            "message_id": mess_id
+            "message_id": artifact_mess_id
         }
 
         # Persist
-        save_artifact(chat_id, mess_id, enriched)
+        save_artifact(chat_id, artifact_mess_id, enriched)
 
     def _dispatch_node(self, node_name: str, updates: Dict,
                         user_id: str, chat_id: str, ws, lock,
@@ -232,16 +253,23 @@ class WSHandler:
         if node_name in ("interviewer_turn", "enduser_turn"):
             self._handle_conversation_turn(updates, chat_id, ws, lock)
 
-        elif node_name == "review_turn":
+        elif node_name == "review_interview_record_turn":
             # This fires AFTER interrupt resumes — contains approve/reject result
             self._handle_review_result(updates, user_id, chat_id, ws, lock)
 
-        elif node_name == "sprint_agent_turn":
-            self._handle_sprint_agent(updates, chat_id, ws, lock, known_artifact_keys)
-        elif node_name == "analyst_turn":
-            self._handle_analyst_turn(updates, chat_id, ws, lock)
+        elif node_name == "review_product_backlog_turn":
+            self._handle_product_backlog_review_result(
+                updates, user_id, chat_id, ws, lock
+            )
+
         elif node_name == "analyst_review_turn":
-            pass  # not implemented yet
+            self._handle_analyst_review_turn(updates, chat_id, ws, lock)
+
+        # ── Agent turns that produce artifacts (no interrupt needed here) ──
+        # sprint_agent_turn and analyst_turn do NOT emit artifacts directly;
+        # their artifacts are emitted when the subsequent interrupt node fires.
+        elif node_name in ("sprint_agent_turn", "analyst_turn"):
+            log.debug("[WS] %s completed — artifact will be emitted at next interrupt.", node_name)
 
 
     def _handle_conversation_turn(self, updates: Dict, chat_id: str, ws, lock):
@@ -322,92 +350,92 @@ class WSHandler:
         else:
             log.info("[WS] Review REJECTED chat=%s", chat_id)
 
-    def _handle_sprint_agent(self, updates: Dict, chat_id: str, ws, lock):
-        """
-        Handle SprintAgent output.
+    def _handle_product_backlog_review_result(
+        self, updates: Dict, user_id: str, chat_id: str, ws, lock
+    ):
+        """Fires after resume from review_product_backlog_turn interrupt."""
+        ctx         = self._artifact_ctx.get(chat_id, {})
+        artifact_id = ctx.get("artifact_id", f"product_backlog_{chat_id}")
+        mess_id     = ctx.get("message_id", str(uuid.uuid4()))
+ 
+        artifacts = updates.get("artifacts") or {}
+        # approval is confirmed by presence of product_backlog_approved sentinel
+        approved  = "product_backlog_approved" in artifacts
+ 
+        if approved:
+            log.info("[WS] ProductBacklog APPROVED chat=%s", chat_id)
+ 
+            backlog = artifacts.get("product_backlog") or {}
+            artifact_display = {
+                "id":       artifact_id,
+                "content":  json.dumps(backlog, indent=2, ensure_ascii=False),
+                "language": "json",
+            }
+            enriched = {**artifact_display, "accepted": True, "awaitingFeedback": False}
+ 
+            save_artifact(chat_id, mess_id, enriched)
+            update_message_artifact(mess_id, enriched)
+ 
+            self._send(ws, lock, {
+                "type":       "artifact_accepted",
+                "chatId":     chat_id,
+                "messageId":  mess_id,
+                "artifactId": artifact_id,
+            })
+            self._artifact_ctx.pop(chat_id, None)
+ 
+        else:
+            log.info("[WS] ProductBacklog REJECTED chat=%s", chat_id)
+            # SprintAgent will rebuild; no explicit frontend event needed.
 
-        Detects which new artifact was produced and emits the appropriate event.
-        After the sprint agent runs, the graph will reach review_turn (via
-        supervisor) which calls interrupt() — that is handled by _on_graph_interrupt
-        for the product_backlog review.
+    def _handle_analyst_review_turn(self, updates: Dict, chat_id: str, ws, lock):
+        ctx = self._artifact_ctx.get(chat_id, {})
+        artifact_id = ctx.get("artifact_id", f"interview_record_{chat_id}")
+        mess_id = ctx.get("message_id", str(uuid.uuid4()))
+        artifacts = updates.get("artifacts") or {}
+        approved = "analyst_review_done" in artifacts
 
-        IMPORTANT: product_backlog review uses a separate mechanism:
-          - SprintAgent produces product_backlog
-          - Supervisor routes to review_turn (another interrupt)
-          - That interrupt emits the product_backlog artifact
+        if approved:
+            log.info("[WS] Review APPROVED chat=%s", chat_id)
 
-        For now we emit the artifact immediately when sprint_agent produces it,
-        before the review interrupt fires.
-        """
 
-        artifact_id = updates.get("artifacts", {}).get("product_backlog", {}).get("id", f"product_backlog_{chat_id}")
-        product_backlog_content = json.dumps(updates.get("artifacts", {}).get("product_backlog"), indent=2, ensure_ascii=False)
-        artifact_display = {
+            artifact_display = {
                 "id": artifact_id,
-                "content": product_backlog_content,
+                "content": json.dumps(artifacts.get("analyst_review_done"), indent=2, ensure_ascii=False),
                 "language": "json",
             }
 
-        # Emit artifact card
-        mess_id = str(uuid.uuid4())
-        enriched = {**artifact_display, "awaitingFeedback": True}
+            # Mark artifact as accepted in DB
+            save_artifact(
+                chat_id, 
+                mess_id, 
+                {
+                    **artifact_display, 
+                    "accepted": True, 
+                    "awaitingFeedback": False
+                }
+            )
+            update_message_artifact(
+                mess_id, 
+                {
+                    **artifact_display, 
+                    "accepted": True, 
+                    "awaitingFeedback": False
+                }
+            )
 
-        # accum = self._send_token_stream(ws, lock, chat_id, mess_id,
-        #                                      product_backlog_content, "Sprint Agent")
-        # if accum.strip():
-        #     add_message(chat_id=chat_id, role="Sprint Agent",
-        #                 content=accum, messID=mess_id)
+            # Notify frontend
+            self._send(ws, lock, {
+                "type": "artifact_accepted",
+                "chatId": chat_id,
+                "messageId": mess_id,
+                "artifactId": artifact_id,
+            })
 
-        self._send(ws, lock, {
-            "type": "artifact",
-            "chatId": chat_id,
-            "messageId": mess_id,
-            "artifact": enriched,
-            "awaitingFeedback": True,
-            "iteration": 1,
-            "maxIterations": MAX_REVISIONS,
-        })
+            self._artifact_ctx.pop(chat_id, None)
 
-        self._artifact_ctx[chat_id] = {
-            "artifact_key": "product_backlog",
-            "artifact_id": artifact_id,
-            "message_id": mess_id,
-            "iteration": 1,
-        }
-
-        save_artifact(chat_id, mess_id, enriched)
-
-    def _handle_analyst_turn(self, updates: Dict, chat_id: str, ws, lock):
-        artifact = updates.get("artifacts", {}).get("validated_product_backlog", {})
-        validated_backlog_content = json.dumps(artifact, indent=2, ensure_ascii=False)
-        artifact_display = {
-                "id": artifact.get("id", f"validated_backlog_{chat_id}"),
-                "content": validated_backlog_content,
-                "language": "json",
-        }
-        mess_id = str(uuid.uuid4())
-        # accum = self._send_token_stream(ws, lock, chat_id, mess_id,
-        #                                      validated_backlog_content, "Analyst Agent")
-        # if accum.strip():
-        #     add_message(chat_id=chat_id, role="Analyst Agent",
-        #                 content=accum, messID=mess_id)
-        enriched = {**artifact_display, "awaitingFeedback": True}
-        self._send(ws, lock, {
-            "type": "artifact",
-            "chatId": chat_id,
-            "messageId": mess_id,
-            "artifact": enriched,
-            "awaitingFeedback": True,
-            "iteration": 1,
-            "maxIterations": MAX_REVISIONS,
-        })
-        self._artifact_ctx[chat_id] = {
-            "artifact_key": "validated_product_backlog",
-            "artifact_id": artifact.get("id", f"validated_backlog_{chat_id}"),
-            "message_id": mess_id,
-            "iteration": 1,
-        }
-        save_artifact(chat_id, mess_id, enriched)
+        else:
+            log.info("[WS] Review REJECTED chat=%s", chat_id)
 
 
     # =========================================================================

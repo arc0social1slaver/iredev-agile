@@ -2,8 +2,15 @@
 state.py
 
 WorkflowState – single source of truth flowing through the LangGraph graph.
-SystemPhase   – top-level phases (hard sequential progression).
-ProcessPhase  – knowledge-retrieval scopes used by ThinkModule.
+
+Artifact chain
+──────────────
+Phase 1 (sprint_zero_planning):
+  interview_record → reviewed_interview_record → product_backlog
+  → product_backlog_approved
+
+Phase 2 (backlog_refinement):
+  validated_product_backlog → analyst_review_done
 
 Stopping mechanism (two-tier, Interviewer-only)
 ───────────────────────────────────────────────
@@ -65,7 +72,7 @@ from typing_extensions import TypedDict
 
 class SystemPhase(str, Enum):
     SPRINT_ZERO_PLANNING = "sprint_zero_planning"
-    BACKLOG_REFINEMENT   = "backlog_refinement"     # ← Phase 2
+    BACKLOG_REFINEMENT   = "backlog_refinement"
     SPRINT_EXECUTION     = "sprint_execution"
     SPRINT_REVIEW        = "sprint_review"
 
@@ -118,35 +125,33 @@ class WorkflowState(TypedDict, total=False):
     conflict_log:     List[Dict[str, Any]]
     dependency_graph: Dict[str, Any]
 
-    # ── Backlog draft ──────────────────────────────────────────────────────
+    # ── Backlog draft (SprintAgent working list during build_product_backlog)
     backlog_draft: List[Dict[str, Any]]
 
-    # ── Sprint 0 HITL ──────────────────────────────────────────────────────
+    # ── Sprint Zero HITL ───────────────────────────────────────────────────
     awaiting_review:  bool
     review_approved:  bool
+    # review_feedback: injected on interview_record rejection
     review_feedback:  Optional[str]
+    # product_backlog_feedback: injected on product_backlog rejection
+    product_backlog_feedback: Optional[str]
 
-    # ── Phase 2: Backlog Refinement ───────────────────────────────────────────
-    # analyst_feedback: set by analyst_review_turn on rejection.
-    # Consumed by AnalystAgent._run_grooming() to add reviewer context to the
-    # re-groom task prompt.
+    # ── Phase 2: Backlog Refinement ────────────────────────────────────────
+    # analyst_feedback: injected on validated_product_backlog rejection
     analyst_feedback: Optional[str]
 
-    # AnalystAgent transient accumulators (cleared at start of each new groom).
-    # Holds intermediate tool results within a single ReAct turn.
+    # AnalystAgent transient accumulators (within a single ReAct turn)
     _invest_scratch: List[Dict[str, Any]]   # output of check_invest_quality
     _ac_scratch:     List[Dict[str, Any]]   # output of write_acceptance_criteria
 
-    # ── Sprint execution ────────────────────────────────────────────────────
-    sprint_feedback:        Dict[str, Any]   # capacity, goal, completed PBIs
-    current_sprint_number:  int
-    sprint_draft:           List[Dict[str, Any]]
-
     # ── ReAct internals (transient) ────────────────────────────────────────
-    _last_react_thought: str
-    _react_strategy:     str
+    _last_react_thought:        str
+    _react_strategy:            str
     _update_req_done_this_turn: bool
-    readiness_approved: bool
+    readiness_approved:         bool
+
+    # ── UI signalling (transient, consumed by ws_handler) ──────────────────
+    _workflow_started_message: bool
 
     # ── Error accumulation ─────────────────────────────────────────────────
     errors: List[str]

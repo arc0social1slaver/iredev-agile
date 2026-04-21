@@ -4,13 +4,14 @@ analyst.py – AnalystAgent  (Backlog Refinement)
 Role
 ────
 The AnalystAgent runs once after the product backlog is approved in Sprint 0.
-It acts as a grooming advisor that enriches every PBI in a single pass:
-  1. Validate INVEST quality criteria → embed warnings into each PBI
-  2. Synthesize Given-When-Then Acceptance Criteria → store in PBI.acceptance_criteria
-  3. Publish the enriched backlog as a new artifact: validated_product_backlog
+It enriches every PBI (Product Backlog Item) in a single pass:
 
-The output artifact (validated_product_backlog) is the product backlog with
-every PBI fully specified — INVEST validation notes and AC already populated.
+  1. Validate INVEST quality criteria → embed warnings into each PBI.
+  2. Synthesize Given-When-Then Acceptance Criteria (stored in PBI.acceptance_criteria).
+  3. Publish the enriched backlog as a new artifact: validated_product_backlog.
+
+The output artifact is the product backlog with every PBI fully specified —
+INVEST validation notes and AC already populated, status set to 'ready'.
 Sprint N draws from this artifact, not the raw product_backlog.
 
 Tool sequence (single ReAct turn)
@@ -19,6 +20,10 @@ Tool sequence (single ReAct turn)
   write_acceptance_criteria — generate Given-When-Then for every PBI
   publish_validated_backlog — merge validation + AC into product_backlog,
                               emit validated_product_backlog, END turn
+
+The agent profile / system prompt lives entirely in analyst_react.txt
+(injected by ProfileModule at runtime).  No _PROFILE constant is defined
+here — the prompt file is the single source of truth.
 
 State fields
 ────────────
@@ -50,41 +55,9 @@ class AnalystAgent(BaseAgent):
 
     Reads:  artifacts["product_backlog"]
     Writes: artifacts["validated_product_backlog"]
+
+    The agent system prompt is loaded from analyst_react.txt via ProfileModule.
     """
-
-    _PROFILE = """You are an expert Agile Business Analyst performing backlog grooming.
-
-Your job is to enrich every PBI in the product backlog in one coherent pass:
-
-PART 1 — Quality gate (INVEST):
-  Assess each PBI against the 6 INVEST criteria:
-    I — Independent : deliverable without blocking another PBI
-    N — Negotiable  : scope is flexible, not a fixed specification
-    V — Valuable    : observable value for a real user or stakeholder
-    E — Estimable   : team can confidently assign story points
-    S — Small       : fits in a single sprint (rule of thumb: ≤ 8 pts for a 20-pt sprint)
-    T — Testable    : concrete, verifiable conditions can be written
-
-  For failing criteria: produce actionable warnings with a concrete suggestion.
-  Bad warning: "may not be small enough."
-  Good warning: "PBI-002 at 13 pts will not fit a standard 20-pt sprint.
-    Suggested split: (a) Privacy & Bias page  (b) Hallucinations & Academic Integrity page."
-
-PART 2 — Acceptance Criteria (Given-When-Then):
-  For every PBI write 2–5 criteria that are:
-    • Concrete and independently testable (one assertion per 'then')
-    • Derived from the PBI description and its reasoning traces
-    • Free of implementation details (WHAT, not HOW)
-    • Covering at least one happy path AND one edge/error case
-    • Non-functional PBIs: 'then' must be quantified (e.g. "< 2 s on 4G")
-    • Constraint PBIs: 'then' must describe process/compliance adherence
-
-RULES:
-• ONE tool per ReAct step — never batch calls.
-• Every Thought must start with [STRATEGY]...[/STRATEGY].
-• check_invest_quality must cover ALL PBIs in one call.
-• write_acceptance_criteria must cover ALL PBIs in one call.
-• publish_validated_backlog finalises the work and ends the turn."""
 
     def __init__(self, config_path: Optional[str] = None):
         super().__init__(name="analyst")
@@ -98,6 +71,10 @@ RULES:
             description=(
                 "Step 1 — Assess every PBI against all 6 INVEST criteria.\n"
                 "Include ALL PBIs in a single call; omitting any PBI is an error.\n\n"
+                "Each PBI description is a user story ('As a …, I can …, so that …').\n"
+                "Keep this in mind when evaluating 'valuable' and 'testable':\n"
+                "  • 'valuable' must be TRUE for every well-formed user story.\n"
+                "  • 'small' fails when story_points > 8 (20-pt sprint rule of thumb).\n\n"
                 "Input: {\n"
                 "  \"assessments\": [\n"
                 "    {\n"
@@ -130,6 +107,13 @@ RULES:
             description=(
                 "Step 2 — Generate Given-When-Then Acceptance Criteria for every PBI.\n"
                 "Include ALL PBIs in a single call. 2–5 criteria per PBI.\n\n"
+                "Each PBI is a user story. Derive criteria from the story's\n"
+                "capability clause and the reasoning traces stored in PBI.history.\n"
+                "  • happy_path : the normal success scenario.\n"
+                "  • edge_case  : boundary or unusual input.\n"
+                "  • error_case : system failure or invalid input.\n"
+                "  • Non-functional PBIs: 'then' MUST contain a measurable threshold.\n"
+                "  • Constraint PBIs: 'then' MUST describe process/compliance adherence.\n\n"
                 "Input: {\n"
                 "  \"pbi_criteria\": [\n"
                 "    {\n"
@@ -143,7 +127,7 @@ RULES:
                 "          \"type\":  \"happy_path\" | \"edge_case\" | \"error_case\"\n"
                 "        }, ...\n"
                 "      ],\n"
-                "      \"thought\": \"<which traces/description informed this AC>\"\n"
+                "      \"thought\": \"<which story clause / reasoning trace drove each AC>\"\n"
                 "    }, ...\n"
                 "  ]\n"
                 "}\n\n"
@@ -156,7 +140,8 @@ RULES:
             name="publish_validated_backlog",
             description=(
                 "Step 3 — Merge INVEST validation and AC into the product backlog,\n"
-                "then emit 'validated_product_backlog' as the developer-ready artifact.\n\n"
+                "then emit 'validated_product_backlog' as the developer-ready artifact.\n"
+                "Every PBI that has AC gets status='ready'.\n\n"
                 "Input: {\"summary\": \"<2-3 sentence summary of refinement outcomes>\"}\n\n"
                 "This tool ENDS the turn."
             ),
@@ -175,7 +160,6 @@ RULES:
     ) -> ToolResult:
         """
         Collect per-PBI INVEST assessments into _invest_scratch.
-        Issues are embedded directly inside each assessment entry.
         """
         assessments = assessments or []
         if not assessments:
@@ -285,7 +269,6 @@ RULES:
     ) -> ToolResult:
         """
         Collect Given-When-Then AC for all PBIs into _ac_scratch.
-        Validates completeness of each GWT triple and enforces the per-PBI cap.
         """
         pbi_criteria = pbi_criteria or []
         if not pbi_criteria:
@@ -533,7 +516,7 @@ RULES:
 
         pbi_lines = []
         for item in items:
-            # Sprint 0 reasoning traces (rationale behind each requirement)
+            # Reasoning traces from Sprint 0 (rationale behind each requirement)
             traces = [
                 h.get("reason", "")
                 for h in (item.get("history") or [])
@@ -559,15 +542,14 @@ RULES:
             pbi_lines.append(
                 f"  [{item['id']}] rank={item.get('priority_rank','?')} "
                 f"pts={item.get('story_points','?')} type={item.get('type','?')}\n"
-                f"    Title  : {item.get('title','')}\n"
-                f"    Desc   : {item.get('description','')[:200]}\n"
-                f"    Traces : {trace_str}"
+                f"    Title      : {item.get('title','')}\n"
+                f"    User Story : {item.get('description','')[:200]}\n"
+                f"    Traces     : {trace_str}"
                 + invest_note
                 + ac_note
             )
 
         task = (
-            f"{self._PROFILE}\n\n"
             f"{'━'*16}  PROJECT  {'━'*16}\n"
             f"{project_desc}\n\n"
             + feedback_block
@@ -578,17 +560,18 @@ RULES:
             f"  • Assess ALL {n} PBIs in one call — do not omit any.\n"
             f"  • 'small' fails when story_points > 8 (20-pt sprint rule of thumb).\n"
             f"  • Every issue needs a concrete 'message' and actionable 'suggestion'.\n"
-            f"  • Include an issues[] entry even for borderline-passing PBIs if risk exists.\n\n"
+            f"  • Each PBI description is a user story — use the story's role and\n"
+            f"    capability clause when assessing 'valuable' and 'testable'.\n\n"
             f"STEP 2 — Call 'write_acceptance_criteria':\n"
             f"  • Write criteria for ALL {n} PBIs in one call.\n"
+            f"  • Derive each criterion from the USER STORY and its reasoning traces.\n"
             f"  • 2 criteria minimum per PBI; 5 maximum.\n"
             f"  • At least 1 happy_path AND 1 edge_case or error_case per PBI.\n"
             f"  • Non-functional PBIs: 'then' must contain a measurable threshold.\n"
             f"  • Constraint PBIs: 'then' must describe process/compliance adherence.\n"
             f"  • ID pattern: AC-PBI001-01, AC-PBI001-02, AC-PBI002-01, …\n\n"
             f"STEP 3 — Call 'publish_validated_backlog':\n"
-            f"  • Provide a 2-3 sentence 'summary' covering: PBIs ready, key INVEST\n"
-            f"    issues found, and total AC written.\n"
+            f"  • Provide a 2-3 sentence 'summary'.\n"
             f"  • This creates the validated_product_backlog artifact.\n\n"
             f"MANDATORY RULES:\n"
             f"• ONE tool per ReAct step.\n"

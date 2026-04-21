@@ -2,8 +2,15 @@
 state.py
 
 WorkflowState – single source of truth flowing through the LangGraph graph.
-SystemPhase   – top-level phases (hard sequential progression).
-ProcessPhase  – knowledge-retrieval scopes used by ThinkModule.
+
+Artifact chain
+──────────────
+Phase 1 (sprint_zero_planning):
+  interview_record → reviewed_interview_record → product_backlog
+  → product_backlog_approved
+
+Phase 2 (backlog_refinement):
+  validated_product_backlog → analyst_review_done
 
 Stopping mechanism (two-tier, Interviewer-only)
 ───────────────────────────────────────────────
@@ -65,6 +72,7 @@ from typing_extensions import TypedDict
 
 class SystemPhase(str, Enum):
     SPRINT_ZERO_PLANNING = "sprint_zero_planning"
+    BACKLOG_REFINEMENT   = "backlog_refinement"
     SPRINT_EXECUTION     = "sprint_execution"
     SPRINT_REVIEW        = "sprint_review"
 
@@ -77,7 +85,7 @@ class ProcessPhase(str, Enum):
 
 
 class ConversationTurn(TypedDict):
-    role:      str   # "interviewer" | "enduser"
+    role:      str
     content:   str
     timestamp: str
 
@@ -102,43 +110,46 @@ class WorkflowState(TypedDict, total=False):
     conversation:       List[ConversationTurn]
     turn_count:         int
     max_turns:          int
-    interview_complete: bool   # set True ONLY by InterviewerAgent
+    interview_complete: bool
 
     # ── Requirements draft ─────────────────────────────────────────────────
-    # Built incrementally by InterviewerAgent._tool_update_requirements.
-    # Finalised by _tool_write_interview_record (copied into artifact).
     requirements_draft: List[Dict[str, Any]]
 
     # ── Coverage map ───────────────────────────────────────────────────────
-    # Keyed by zone_id.  Built once via propose_zones, updated on every
-    # update_requirements call.
     coverage_map: Dict[str, Any]
 
-    # ── Goal tracker (Tier-2 stopping) ─────────────────────────────────────
-    # Per-zone Information Gain tracking.  Updated by update_requirements.
-    # Zone is considered IG-saturated when ig_score == 0.0.
-    # See module docstring for full schema.
+    # ── Goal tracker ───────────────────────────────────────────────────────
     goal_tracker: Dict[str, Any]
 
     # ── Conflict and dependency logs ───────────────────────────────────────
     conflict_log:     List[Dict[str, Any]]
     dependency_graph: Dict[str, Any]
 
-    # ── Backlog draft ──────────────────────────────────────────────────────
+    # ── Backlog draft (SprintAgent working list during build_product_backlog)
     backlog_draft: List[Dict[str, Any]]
 
-    # ── HITL review gate ───────────────────────────────────────────────────
-    # review_feedback is injected into InterviewerAgent's task on re-interview
-    # so all edits driven by feedback are recorded with that context.
-    awaiting_review:  bool
-    review_approved:  bool
+    # ── Sprint Zero HITL ───────────────────────────────────────────────────
+    # review_feedback: injected on interview_record rejection
     review_feedback:  Optional[str]
+    # product_backlog_feedback: injected on product_backlog rejection
+    product_backlog_feedback: Optional[str]
 
-    # ── ReAct internals (transient, not persisted across sessions) ─────────
-    # Set by ThinkModule.tools_node; consumed by update_requirements to attach
-    # the agent's Strategy Factorization reasoning to requirement rationale.
-    _last_react_thought: str
-    _react_strategy:     str   # content of [STRATEGY]...[/STRATEGY] block
+    # ── Phase 2: Backlog Refinement ────────────────────────────────────────
+    # analyst_feedback: injected on validated_product_backlog rejection
+    analyst_feedback: Optional[str]
+
+    # AnalystAgent transient accumulators (within a single ReAct turn)
+    _invest_scratch: List[Dict[str, Any]]   # output of check_invest_quality
+    _ac_scratch:     List[Dict[str, Any]]   # output of write_acceptance_criteria
+
+    # ── ReAct internals (transient) ────────────────────────────────────────
+    _last_react_thought:        str
+    _react_strategy:            str
+    _update_req_done_this_turn: bool
+    readiness_approved:         bool
+
+    # ── UI signalling (transient, consumed by ws_handler) ──────────────────
+    _workflow_started_message: bool
 
     # ── Error accumulation ─────────────────────────────────────────────────
     errors: List[str]

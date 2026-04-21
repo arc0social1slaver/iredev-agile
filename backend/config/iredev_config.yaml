@@ -12,132 +12,36 @@
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# Docstring generation  (framework-wide default)
-# ---------------------------------------------------------------------------
-docstring_options:
-  overwrite_docstrings: false
-
-# ---------------------------------------------------------------------------
 # iReDev-specific settings
 # ---------------------------------------------------------------------------
 iredev:
 
   # ── Agent configurations ──────────────────────────────────────────────────
-  #
-  # llm_config: "default" means the agent inherits the top-level llm block
-  # from agent_config.yaml.  You can override per-agent there if needed.
-  #
   agents:
     interviewer:
-      llm_config: "default"
       memory_type: "short_term"
-      knowledge_modules:
-        - "requirements_elicitation"
-        - "interview_techniques"
-        - "5w1h_methodology"
-        - "socratic_questioning"
       max_react_iterations: 10
-      max_turns: 50
-      timeout_seconds: 600
-      memory_limit_mb: 512
-      enabled: true
       custom_params:
-        conversation_style: "professional"
-        follow_up_depth: 3
+        completeness_threshold: 0.80
+        max_turns: 10
 
     enduser:
-      llm_config: "default"
       memory_type: "short_term"
-      knowledge_modules:
-        - "user_experience"
-        - "persona_modeling"
-        - "scenario_design"
-        - "pain_point_analysis"
       max_react_iterations: 10
-      max_turns: 30
-      timeout_seconds: 300
-      memory_limit_mb: 256
-      enabled: true
       custom_params:
-        persona_count: 3
-        scenario_depth: "detailed"
+        persona: "business stakeholder"
 
     sprint_agent:
-      llm_config: "default"
       memory_type: "short_term"
-      knowledge_modules:
-        - "agile_estimation"
-        - "spidr_splitting"
-        - "invest_criteria"
-        - "wsjf_prioritization"
-      max_react_iterations: 15
-      max_turns: 30
-      timeout_seconds: 600
-      memory_limit_mb: 512
-      enabled: true
-      custom_params:
-        too_big_threshold: 8
-        fibonacci_sequence: [1, 2, 3, 5, 8, 13, 21]
-
-    deployer:
-      llm_config: "default"
-      knowledge_modules:
-        - "system_architecture"
-        - "security_requirements"
-        - "compliance_standards"
-        - "performance_criteria"
-      max_turns: 20
-      timeout_seconds: 300
-      memory_limit_mb: 256
-      enabled: true
-      custom_params:
-        security_level: "high"
-        compliance_regions: ["GDPR", "SOX"]
+      max_react_iterations: 10
 
     analyst:
-      llm_config: "default"
-      knowledge_modules:
-        - "requirements_analysis"
-        - "system_modeling"
-        - "traceability_management"
-        - "moscow_prioritization"
-      max_turns: 40
-      timeout_seconds: 600
-      memory_limit_mb: 512
-      enabled: true
-      custom_params:
-        modeling_notation: "UML"
-        traceability_depth: "full"
-
-    archivist:
-      llm_config: "default"
-      knowledge_modules:
-        - "ieee_830_standard"
-        - "iso_29148_standard"
-        - "technical_writing"
-        - "document_templates"
-      max_turns: 25
-      timeout_seconds: 400
-      memory_limit_mb: 256
-      enabled: true
-      custom_params:
-        document_standard: "IEEE_830"
-        template_style: "formal"
+      memory_type: "short_term"
+      max_react_iterations: 10
 
     reviewer:
-      llm_config: "default"
-      knowledge_modules:
-        - "quality_assurance"
-        - "validation_techniques"
-        - "verification_methods"
-        - "defect_identification"
-      max_turns: 35
-      timeout_seconds: 500
-      memory_limit_mb: 256
-      enabled: true
-      custom_params:
-        review_depth: "comprehensive"
-        quality_threshold: 0.85
+      memory_type: "short_term"
+      max_react_iterations: 10
 
   # ── Knowledge base ────────────────────────────────────────────────────────
   knowledge_base:
@@ -193,32 +97,3 @@ iredev:
     #   model: "gemini-embedding-2-preview"
     #   api_key: ${GEMINI_API_KEY}
     #   dims: 1536
-
-  # ── Human-in-the-loop ─────────────────────────────────────────────────────
-  human_in_loop:
-    enabled: true
-    review_points:
-      - "url_generation"
-      - "model_creation"
-      - "srs_generation"
-    timeout_minutes: 1440           # 24 hours
-    notification_channels:
-      - "console"
-      - "email"
-    auto_approve_after_timeout: false
-    require_explicit_approval: true
-
-  # ── Artifact pool ─────────────────────────────────────────────────────────
-  artifact_pool:
-    storage_backend: "filesystem"
-    storage_path: "artifacts"
-    version_control: true
-    backup_enabled: true
-    backup_interval_minutes: 60
-    max_versions_per_artifact: 10
-    compression_enabled: true
-
-  # ── System ────────────────────────────────────────────────────────────────
-  logging_level: "INFO"
-  debug_mode: false
-  metrics_enabled: true

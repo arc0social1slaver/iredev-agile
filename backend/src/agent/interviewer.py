@@ -148,10 +148,11 @@ class InterviewerAgent(BaseAgent):
 
     def __init__(self, config_path: Optional[str] = None) -> None:
         super().__init__(name="interviewer")
-        agent_cfg = self._raw_config.get("agents", {}).get("interviewer", {})
+        agent_cfg = self._raw_config.get("iredev", {}).get("agents", {}).get("interviewer", {})
         custom    = agent_cfg.get("custom_params", {})
-        self._completeness_threshold: float = custom.get("completeness_threshold", 0.80)
-        self._max_turns:              int   = custom.get("max_turns", 20)
+        self._completeness_threshold: float = custom.get("completeness_threshold")
+        self._max_turns:              int   = custom.get("max_turns")
+        logger.info("InterviewerAgent config | completeness_threshold=%.2f, max_turns=%d", self._completeness_threshold, self._max_turns)
         # Note: belief-state memory is provided by self.memory (SHORT_TERM_SEMANTIC).
         # No separate _BeliefState needed — use self.memory.settle_fact/recall_zone/count_zone.
 
@@ -664,6 +665,7 @@ class InterviewerAgent(BaseAgent):
         con_n = sum(1 for r in requirements if r["type"] == "constraint")
 
         record: Dict[str, Any] = {
+            "id": str(uuid.uuid4()),
             "session_id": state.get("session_id", str(uuid.uuid4())),
             "project_description": state.get("project_description", ""),
             "conversation": conversation,

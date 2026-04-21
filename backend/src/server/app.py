@@ -30,7 +30,17 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
+# Giảm log của Werkzeug (Flask dev server)
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+# ── Giảm thiểu log nhiễu từ các thư viện LLM & HTTP ──
+logging.getLogger("openai").setLevel(logging.INFO)
+logging.getLogger("langsmith").setLevel(logging.INFO)
+
+# OpenAI thường dùng httpx ở dưới nền, nên httpx và httpcore cũng xả rất nhiều log DEBUG
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.INFO)
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = Flask(__name__)

@@ -174,10 +174,6 @@ def save_artifact(chat_id: str, message_id: str, artifact: dict) -> dict:
     return entry
 
 
-def get_artifact(artifact_id: str) -> dict | None:
-    return ARTIFACTS.get(artifact_id)
-
-
 def update_message_artifact(message_id: str, artifact: dict) -> bool:
     """
     Update the artifact stored on a message in-place.

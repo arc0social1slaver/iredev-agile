@@ -50,20 +50,6 @@ export function useChat() {
     activeChatIdRef.current = activeChatId;
   }, [activeChatId]);
 
-  // ── Helper: update a message by its id ────────────────────────────────────
-  const updateMessage = useCallback((id, updater) => {
-    setMessages((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, ...updater(m) } : m)),
-    );
-  }, []);
-
-  // ── Helper: find message by id or placeholder ──────────────────────────────
-  const findMessageId = useCallback((messageId) => {
-    // Returns the id we should use to look up the message in state
-    // (could be the server id or the placeholder id on first token)
-    return messageId;
-  }, []);
-
   // ── WebSocket event handlers ───────────────────────────────────────────────
 
   // Each streamed word — append to the right bubble
@@ -163,18 +149,34 @@ export function useChat() {
         chatId,
       };
 
-      // Always update the stored message — works for any chat
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === messageId || m.id === placeholderIdRef.current
-            ? { ...m, artifact: enriched }
-            : m,
-        ),
-      );
+      setMessages((prev) => {
+        // Kiểm tra xem tin nhắn đã tồn tại trong mảng chưa (do token tạo ra trước đó)
+        const messageExists = prev.some(
+          (m) => m.id === messageId || m.id === placeholderIdRef.current
+        );
 
-      // Only open the panel if the user is currently looking at this chat.
-      // On a replayed frame (reconnect) or cross-chat update, don't hijack
-      // the panel — the user will open it when they switch back.
+        if (messageExists) {
+          // Nếu đã tồn tại, cập nhật nó (logic cũ)
+          return prev.map((m) =>
+            m.id === messageId || m.id === placeholderIdRef.current
+              ? { ...m, id: messageId, artifact: enriched }
+              : m
+          );
+        } else {
+          // NẾU CHƯA TỒN TẠI: Tạo luôn một tin nhắn mới chỉ chứa Artifact
+          return [
+            ...prev,
+            {
+              id: messageId,
+              role: "assistant",
+              content: "", // Không có text content
+              streaming: false,
+              artifact: enriched,
+            },
+          ];
+        }
+      });
+
       if (chatId === activeChatIdRef.current && !replayed) {
         setOpenArtifact(enriched);
       }

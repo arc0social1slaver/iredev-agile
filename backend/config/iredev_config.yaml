@@ -81,6 +81,7 @@ iredev:
 
     analyst:
       llm_config: "default"
+      memory_type: "short_term"
       knowledge_modules:
         - "requirements_analysis"
         - "system_modeling"
@@ -96,6 +97,7 @@ iredev:
 
     reviewer:
       llm_config: "default"
+      memory_type: "short_term"
       knowledge_modules:
         - "quality_assurance"
         - "validation_techniques"

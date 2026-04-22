@@ -21,6 +21,7 @@ load_dotenv()
 from .config.config import PORT, CORS_ORIGINS
 from .routes.auth_routes import auth_bp
 from .routes.chat_routes import chat_bp
+from .routes.project_routes import project_bp
 from .websocket.ws_handler import ws_handler
 from .auth.token_blacklist import start_sweep_thread, size
 
@@ -30,14 +31,9 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
-# Giảm log của Werkzeug (Flask dev server)
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
-
-# ── Giảm thiểu log nhiễu từ các thư viện LLM & HTTP ──
 logging.getLogger("openai").setLevel(logging.INFO)
 logging.getLogger("langsmith").setLevel(logging.INFO)
-
-# OpenAI thường dùng httpx ở dưới nền, nên httpx và httpcore cũng xả rất nhiều log DEBUG
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.INFO)
@@ -50,8 +46,9 @@ sock = Sock(app)
 # on cross-origin requests (e.g. React dev server → Flask backend).
 CORS(app, origins=CORS_ORIGINS, supports_credentials=True)
 
-app.register_blueprint(auth_bp, url_prefix="/api/auth")
-app.register_blueprint(chat_bp, url_prefix="/api/chats")
+app.register_blueprint(auth_bp,    url_prefix="/api/auth")
+app.register_blueprint(chat_bp,    url_prefix="/api/chats")
+app.register_blueprint(project_bp, url_prefix="/api/projects")
 
 # Start the blacklist sweep background thread
 start_sweep_thread()
@@ -66,15 +63,7 @@ def websocket(ws):
 # ── Health check ──────────────────────────────────────────────────────────────
 @app.route("/api/health", methods=["GET"])
 def health():
-    return (
-        jsonify(
-            {
-                "status": "ok",
-                "blacklist_size": size(),
-            }
-        ),
-        200,
-    )
+    return jsonify({"status": "ok", "blacklist_size": size()}), 200
 
 
 # ── Error handlers ────────────────────────────────────────────────────────────
@@ -82,11 +71,9 @@ def health():
 def not_found(e):
     return jsonify({"error": "Not found", "message": str(e)}), 404
 
-
 @app.errorhandler(405)
 def method_not_allowed(e):
     return jsonify({"error": "Method not allowed", "message": str(e)}), 405
-
 
 @app.errorhandler(500)
 def internal_error(e):

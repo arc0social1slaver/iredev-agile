@@ -4,8 +4,9 @@
 #
 # Tables:
 #   USERS     { user_id  → user_dict }
-#   CHATS     { chat_id  → chat_dict }
-#   MESSAGES  { chat_id  → [message_dict, ...] }
+#   PROJECTS  { project_id → project_dict }
+#   CHATS     { chat_id  → chat_dict }      (each chat belongs to a project)
+#   MESSAGES  { chat_id  → {sub_chat_id → [message_dict]} }
 # =============================================================================
 import hashlib, uuid
 from datetime import datetime
@@ -81,9 +82,61 @@ def safe_user(user):
     return {k: v for k, v in user.items() if k != "password"}
 
 
-# NOTE: The old TOKENS dict has been removed.
-# Token revocation is now handled by token_blacklist.py which uses
-# SHA-256 hashed keys with automatic TTL cleanup.
+# =============================================================================
+# PROJECTS
+# =============================================================================
+PROJECTS: dict = {}
+
+
+def get_projects_for_user(user_id: str) -> list:
+    """Return all projects owned by user, newest first."""
+    return sorted(
+        [p for p in PROJECTS.values() if p["userId"] == user_id],
+        key=lambda p: p["createdAt"],
+        reverse=True,
+    )
+
+
+def get_project(project_id: str):
+    return PROJECTS.get(project_id)
+
+
+def create_project(user_id: str, name: str, description: str = "") -> dict:
+    pid = _new_id()
+    project = {
+        "id": pid,
+        "userId": user_id,
+        "name": name.strip(),
+        "description": description.strip(),
+        "createdAt": _now(),
+        "updatedAt": _now(),
+    }
+    PROJECTS[pid] = project
+    return project
+
+
+def update_project(project_id: str, name: str = None, description: str = None) -> dict | None:
+    p = PROJECTS.get(project_id)
+    if not p:
+        return None
+    if name is not None:
+        p["name"] = name.strip()
+    if description is not None:
+        p["description"] = description.strip()
+    p["updatedAt"] = _now()
+    return p
+
+
+def delete_project(project_id: str) -> bool:
+    if project_id not in PROJECTS:
+        return False
+    del PROJECTS[project_id]
+    # Also delete all chats (and their messages) belonging to this project
+    chat_ids = [cid for cid, c in CHATS.items() if c.get("projectId") == project_id]
+    for cid in chat_ids:
+        CHATS.pop(cid, None)
+        MESSAGES.pop(cid, None)
+    return True
 
 
 # =============================================================================
@@ -96,24 +149,38 @@ MESSAGES: dict = {}
 
 
 def get_chats_for_user(user_id: str) -> list:
-    return [c for c in CHATS.values() if c["userId"] == user_id]
+    """Return chats not belonging to any project (legacy / top-level chats)."""
+    return [c for c in CHATS.values() if c["userId"] == user_id and not c.get("projectId")]
+
+
+def get_chats_for_project(project_id: str) -> list:
+    """Return all chats belonging to a project, newest first."""
+    return sorted(
+        [c for c in CHATS.values() if c.get("projectId") == project_id],
+        key=lambda c: c["createdAt"],
+        reverse=True,
+    )
 
 
 def get_chat(chat_id: str):
     return CHATS.get(chat_id)
 
 
-def create_chat(user_id: str, title: str) -> dict:
+def create_chat(user_id: str, title: str, project_id: str = None) -> dict:
     cid = _new_id()
     chat = {
         "id": cid,
         "userId": user_id,
+        "projectId": project_id,
         "title": title or "New conversation",
         "date": "Today",
         "createdAt": _now(),
     }
     CHATS[cid] = chat
     MESSAGES[cid] = {}
+    # Update project updatedAt
+    if project_id and project_id in PROJECTS:
+        PROJECTS[project_id]["updatedAt"] = _now()
     return chat
 
 
@@ -140,10 +207,6 @@ def add_message(
     messID: str | None = None,
     subChatID: int = 0,
 ) -> dict:
-    """
-    Persist a message.  If artifact is provided it is stored on the
-    message dict so GET /messages can return it on reload.
-    """
     mid = messID or _new_id()
     msg = {
         "id": mid,
@@ -153,22 +216,25 @@ def add_message(
         "createdAt": _now(),
     }
     if artifact:
-        msg["artifact"] = artifact  # persisted so reload restores the card
+        msg["artifact"] = artifact
     MESSAGES.setdefault(chat_id, {}).setdefault(int(subChatID), []).append(msg)
     if chat_id in CHATS:
         CHATS[chat_id]["date"] = "Today"
+        # propagate updatedAt to project
+        pid = CHATS[chat_id].get("projectId")
+        if pid and pid in PROJECTS:
+            PROJECTS[pid]["updatedAt"] = _now()
     return msg
 
 
 # =============================================================================
-# Artifacts  (saved after accept)
+# Artifacts
 # =============================================================================
 
 ARTIFACTS: dict = {}  # { artifact_id: artifact_dict }
 
 
 def save_artifact(chat_id: str, message_id: str, artifact: dict) -> dict:
-    """Persist an accepted artifact so it can be retrieved later."""
     entry = {**artifact, "chatId": chat_id, "messageId": message_id}
     ARTIFACTS[artifact["id"]] = entry
     return entry

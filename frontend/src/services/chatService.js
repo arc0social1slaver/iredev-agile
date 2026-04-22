@@ -28,57 +28,45 @@
 // Auth functions work with access_token (in RAM) + refresh_token (HttpOnly
 // cookie). They never read or write localStorage — that's apiClient's job.
 // =============================================================================
-import { get, post, del } from "./apiClient";
+import { get, post, put, del } from "./apiClient";
 import { setAccessToken, clearAccessToken } from "./tokenStore";
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
-/**
- * POST /api/auth/login
- * Returns { access_token, user }.
- * The server also sets the refresh_token HttpOnly cookie in the response.
- * We store access_token in RAM via tokenStore.
- */
 export async function login(credentials) {
   const result = await post("/api/auth/login", credentials);
-  setAccessToken(result.access_token); // RAM only — never localStorage
-  return result; // caller gets { access_token, user }
+  setAccessToken(result.access_token);
+  return result;
 }
 
-/**
- * POST /api/auth/logout
- * Server blacklists both tokens and clears the cookie.
- * We clear the RAM access token.
- */
 export async function logout() {
   try {
     await post("/api/auth/logout", {});
   } finally {
-    clearAccessToken(); // always clear from RAM even if server call fails
+    clearAccessToken();
   }
 }
 
-/**
- * POST /api/auth/register
- * Same flow as login.
- */
 export async function register(data) {
   const result = await post("/api/auth/register", data);
   setAccessToken(result.access_token);
   return result;
 }
 
-// ── Chats ─────────────────────────────────────────────────────────────────────
+// ── Projects ──────────────────────────────────────────────────────────────────
 
-export const startReq = (config, chat_id) =>
-  post(`/api/chats/process/start/${chat_id}`, { ...config });
-export const fetchChats = () => get("/api/chats");
-export const createChat = (title) => post("/api/chats", { title });
-export const deleteChat = (chatId) => del(`/api/chats/${chatId}`);
-export const fetchMessages = (chatId, newSubChat) =>
-  get(`/api/chats/${chatId}/${newSubChat}/messages`);
-export const sendMessage = (chatId, content, newSubChat) =>
-  post(`/api/chats/${chatId}/${newSubChat}/messages`, {
-    role: "user",
-    content,
-  });
+export const fetchProjects       = ()                           => get("/api/projects");
+export const createProject       = (name, description = "")    => post("/api/projects", { name, description });
+export const updateProject       = (projectId, data)           => put(`/api/projects/${projectId}`, data);
+export const deleteProject       = (projectId)                 => del(`/api/projects/${projectId}`);
+export const fetchProjectChats   = (projectId)                 => get(`/api/projects/${projectId}/chats`);
+export const createProjectChat   = (projectId, title)          => post(`/api/projects/${projectId}/chats`, { title });
+
+// ── Chats (top-level, legacy) ─────────────────────────────────────────────────
+
+export const fetchChats   = ()                          => get("/api/chats");
+export const createChat   = (title, projectId = null)   => post("/api/chats", { title, projectId });
+export const deleteChat   = (chatId)                    => del(`/api/chats/${chatId}`);
+export const fetchMessages = (chatId, newSubChat)       => get(`/api/chats/${chatId}/${newSubChat}/messages`);
+export const sendMessage   = (chatId, content, subChat) => post(`/api/chats/${chatId}/${subChat}/messages`, { role: "user", content });
+export const startReq      = (config, chat_id)          => post(`/api/chats/process/start/${chat_id}`, { ...config });

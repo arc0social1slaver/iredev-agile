@@ -254,7 +254,6 @@ export function ArtifactPanel({ artifact, onClose, onAccept, onRevise }) {
           <ArtifactFeedbackBar
             artifact={artifact}
             iteration={artifact.iteration ?? 1}
-            maxIter={artifact.maxIterations ?? 5}
             onAccept={onAccept}
             onRevise={onRevise}
           />

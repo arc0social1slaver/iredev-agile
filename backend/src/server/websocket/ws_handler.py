@@ -50,9 +50,6 @@ from src.orchestrator.graph import ARTIFACT_SUMMARIES
 
 log = logging.getLogger(__name__)
 
-MAX_REVISIONS = 5
-FEEDBACK_TIMEOUT = 0  # 0 = wait forever (user controls when to respond)
-
 # Maps review_type to the corresponding artifact key that indicates approval in the review_turn output.
 REVIEW_TYPES = {
     "interview_record": "reviewed_interview_record",
@@ -225,8 +222,7 @@ class WSHandler:
             "messageId": artifact_mess_id,
             "artifact": artifact_display,
             "awaitingFeedback": True,
-            "iteration": 1,
-            "maxIterations": MAX_REVISIONS,
+            "iteration": 1, # Đoạn này cần thêm phần xử lý version number của artifact khi có nhiều revision, hiện tạm hardcode là 1
         }
 
         self._send(ws, lock, ws_payload)

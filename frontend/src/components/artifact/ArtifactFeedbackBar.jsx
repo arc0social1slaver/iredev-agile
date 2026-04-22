@@ -12,7 +12,6 @@
 //   chatId      {string}    Active chat ID
 //   messageId   {string}    Message ID that owns this artifact
 //   iteration   {number}    Which revision iteration we're on (shown in UI)
-//   maxIter     {number}    Max iterations allowed
 //   onAccept    {Function}  Called when user clicks Accept
 //   onRevise    {Function}  Called with (comment) when user submits feedback
 
@@ -26,7 +25,6 @@ import { Check, Pencil, Send, X, Loader } from "lucide-react";
 export function ArtifactFeedbackBar({
   artifact,
   iteration,
-  maxIter,
   onAccept,
   onRevise,
 }) {
@@ -65,8 +63,6 @@ export function ArtifactFeedbackBar({
     }
   }
 
-  const revisionsLeft = maxIter - iteration;
-
   return (
     <div className="border-t border-[#E8E3D9] bg-[#FAF7F3] flex-shrink-0">
       {/* Iteration indicator */}
@@ -85,9 +81,6 @@ export function ArtifactFeedbackBar({
         </div>
         <span className="text-[11px] text-[#B5ADA4]">
           v{iteration}
-          {revisionsLeft > 0
-            ? ` · ${revisionsLeft} revision${revisionsLeft !== 1 ? "s" : ""} left`
-            : " · last revision"}
         </span>
       </div>
 

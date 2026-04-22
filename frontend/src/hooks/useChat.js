@@ -87,8 +87,8 @@ export function useChat() {
   }, []);
 
   const handleArtifact = useCallback(
-    ({ chatId, messageId, artifact, awaitingFeedback, iteration, maxIterations, replayed }) => {
-      const enriched = { ...artifact, awaitingFeedback, iteration, maxIterations, messageId, chatId };
+    ({ chatId, messageId, artifact, awaitingFeedback, iteration }) => {
+      const enriched = { ...artifact, awaitingFeedback, iteration, messageId, chatId };
       setMessages((prev) => {
         const exists = prev.some(
           (m) => m.id === messageId || m.id === placeholderIdRef.current
@@ -105,7 +105,7 @@ export function useChat() {
           { id: messageId, role: "assistant", content: "", streaming: false, artifact: enriched },
         ];
       });
-      if (chatId === activeChatIdRef.current && !replayed) {
+      if (chatId === activeChatIdRef.current) {
         setOpenArtifact(enriched);
       }
     },

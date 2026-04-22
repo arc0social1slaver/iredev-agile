@@ -250,7 +250,7 @@ class WSHandler:
         if node_name in ("interviewer_turn", "enduser_turn"):
             self._handle_conversation_turn(updates, chat_id, ws, lock)
 
-        elif node_name in ("review_interview_record_turn", "review_product_backlog_turn", "analyst_review_turn"):
+        elif node_name in ("review_interview_record_turn", "review_product_backlog_turn", "review_validated_product_backlog_turn"):
             # This fires AFTER interrupt resumes — contains approve/reject result
             self._handle_review_result(updates, chat_id, ws, lock)
 

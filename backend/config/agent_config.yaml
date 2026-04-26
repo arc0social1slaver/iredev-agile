@@ -31,7 +31,7 @@ llm:
   api_key: ${OPENAI_API_KEY}
   model: "gpt-4o-mini"                # gpt-4o | gpt-4-turbo | gpt-3.5-turbo | …
   base_url: ${OPENAI_BASE_URL}
-  temperature: 0.1
+  temperature: 0.7
   max_output_tokens: 4096
   max_input_tokens: 100000
 

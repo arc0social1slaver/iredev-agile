@@ -1,5 +1,18 @@
 """
-think_module.py – ThinkModule: ReAct execution loop.
+think_module.py – ThinkModule: ReAct execution loop + structured extraction.
+
+Two public mechanisms
+─────────────────────
+1. run_react()       – Full ReAct loop (bind_tools).  Use for agentic turns
+                       where the model must reason and decide which tool to call.
+
+2. run_structured()  – Single deterministic LLM call (with_structured_output).
+                       Use for extraction tasks where the output schema is known
+                       in advance and no tool-selection reasoning is needed.
+
+Both methods accept ``memory_messages`` as an optional parameter.  Pass ``None``
+(or omit) to skip memory injection — useful for stateless extraction calls that
+do not need conversation history.
 
 Strategy Factorization support
 ───────────────────────────────
@@ -35,13 +48,12 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 from typing_extensions import Annotated, TypedDict
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
-    AIMessage,
     BaseMessage,
     HumanMessage,
     SystemMessage,
@@ -87,8 +99,8 @@ def _make_schema_tool(tool: Any) -> StructuredTool:
     tools node using our Tool objects, which carry state_updates / should_return
     semantics that LangChain StructuredTools lack.
     """
-    safe_name  = re.sub(r"[^a-zA-Z0-9]", "_", tool.name)
-    ArgsModel  = create_model(
+    safe_name = re.sub(r"[^a-zA-Z0-9]", "_", tool.name)
+    ArgsModel = create_model(
         f"_Args_{safe_name}",
         __base__=BaseModel,
         __config__=ConfigDict(extra="allow"),
@@ -120,47 +132,69 @@ def _tc_cache_key(tool_choice: ToolChoice) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ThinkModule:
-    """Per-agent reasoning layer: ReAct execution loop with Strategy Factorization.
+    """Per-agent reasoning layer: ReAct loop (bind_tools) + structured extraction.
 
-    Usage::
+    Two public methods
+    ──────────────────
+    ``run_react()``
+        Full agentic ReAct loop.  The model reasons over the task and decides
+        which tool(s) to call.  All tool results are merged into a single
+        state-update dict that is returned to the caller.
 
-        state_updates = self.think.run_react(
-            task=task,
-            tools_dict=self.tools,
-            workflow_state=state,
-            profile_prompt=self.profile.prompt,
-            memory_messages=self.memory.get_messages(),
-            max_iterations=self.max_react_iterations,
-            tool_choice="required",
-        )
+    ``run_structured()``
+        Single deterministic LLM call using ``with_structured_output``.
+        No tool routing, no loop — just one prompt → one validated object.
+        Returns the parsed Pydantic instance directly.
+
+    Both methods accept an optional ``memory_messages`` list.  Pass ``None``
+    to skip memory injection entirely (e.g. for stateless extraction calls).
 
     Strategy Factorization
     ──────────────────────
-    When an agent's Thought contains a [STRATEGY]...[/STRATEGY] block, the
-    block is extracted and stored under ``_react_strategy`` in accumulated_updates
-    before any tool in the same step is called.  Tool implementations read
-    ``state.get("_react_strategy")`` to attach the reasoning to artifacts.
-
-    This gives every requirement (and every HITL-driven edit) a traceable chain
-    back to the agent's reasoning at the moment of extraction.
+    When an agent's Thought contains a [STRATEGY]...[/STRATEGY] block the
+    block is extracted and stored under ``_react_strategy`` in
+    accumulated_updates before any tool in the same step is called.  Tool
+    implementations read ``state.get("_react_strategy")`` to attach the
+    reasoning to the artifacts they produce.
     """
 
     def __init__(self, llm: BaseChatModel) -> None:
         self._llm = llm
         self._react_graph_cache: Dict[Tuple[frozenset, str], Any] = {}
 
-    # ── Public API ─────────────────────────────────────────────────────────
+    # ── Public API: ReAct loop ─────────────────────────────────────────────
 
     def run_react(
         self,
-        task:             str,
-        tools_dict:       Dict[str, Any],
-        workflow_state:   Dict[str, Any],
-        profile_prompt:   str,
-        memory_messages:  Optional[List[BaseMessage]] = None,
-        max_iterations:   int = 10,
-        tool_choice:      ToolChoice = None,
+        task:            str,
+        tools_dict:      Dict[str, Any],
+        workflow_state:  Dict[str, Any],
+        profile_prompt:  str,
+        memory_messages: Optional[List[BaseMessage]] = None,
+        max_iterations:  int = 10,
+        tool_choice:     ToolChoice = None,
     ) -> Dict[str, Any]:
+        """Run the ReAct loop and return accumulated WorkflowState updates.
+
+        Parameters
+        ----------
+        task:
+            Natural-language description of what to accomplish this turn.
+        tools_dict:
+            Mapping of tool name → Tool instance available for this turn.
+        workflow_state:
+            Current read-only WorkflowState passed into every tool call.
+        profile_prompt:
+            System prompt (base profile ± addendum).
+        memory_messages:
+            Recent conversation messages prepended after the system prompt.
+            Pass ``None`` to skip memory injection.
+        max_iterations:
+            Maximum number of agent↔tools round-trips before aborting.
+        tool_choice:
+            ``"auto"`` (default), ``"required"``, or ``{"name": "<tool>"}``
+            to force a specific tool on the first step.
+        """
         system_msg = SystemMessage(content=profile_prompt)
         recent     = (memory_messages or [])[-20:]
         messages   = [system_msg] + recent + [HumanMessage(content=task)]
@@ -200,8 +234,64 @@ class ThinkModule:
                 raise
 
         updates = result.get("accumulated_updates", {})
-        logger.debug("[ThinkModule] finished — %d state key(s) updated.", len(updates))
+        logger.debug("[ThinkModule] run_react finished — %d state key(s) updated.", len(updates))
         return updates
+
+    # ── Public API: structured extraction ─────────────────────────────────
+
+    def run_structured(
+        self,
+        schema:          Type[BaseModel],
+        system_prompt:   str,
+        user_prompt:     str,
+        memory_messages: Optional[List[BaseMessage]] = None,
+    ) -> BaseModel:
+        """Run a single structured-output LLM call and return a parsed object.
+
+        This method deliberately bypasses the ReAct loop.  It creates a
+        fresh ``with_structured_output`` chain on top of the base LLM — no
+        ``bind_tools`` involved — so there is zero conflict with the ReAct
+        mechanism.
+
+        Parameters
+        ----------
+        schema:
+            A Pydantic ``BaseModel`` subclass that defines the expected output.
+            The LLM is constrained to produce JSON matching this schema.
+        system_prompt:
+            Instructions that describe the extraction task.
+        user_prompt:
+            The content to extract from (e.g. project description).
+        memory_messages:
+            Optional recent messages prepended between the system and user
+            prompts.  Pass ``None`` (default) to omit — most extraction
+            calls are stateless and do not need history.
+
+        Returns
+        -------
+        BaseModel
+            A validated instance of ``schema``.
+
+        Raises
+        ------
+        Exception
+            Propagates any LLM or validation error to the caller so that the
+            tool function can decide how to handle it.
+        """
+        structured_llm = self._llm.with_structured_output(schema)
+
+        recent: List[BaseMessage] = (memory_messages or [])[-20:]
+        messages: List[BaseMessage] = (
+            [SystemMessage(content=system_prompt)]
+            + recent
+            + [HumanMessage(content=user_prompt)]
+        )
+
+        result = structured_llm.invoke(messages)
+        logger.debug(
+            "[ThinkModule] run_structured finished — schema=%s", schema.__name__
+        )
+        return result
 
     # ── ReAct graph construction ───────────────────────────────────────────
 
@@ -213,9 +303,7 @@ class ThinkModule:
         lc_stubs = [_make_schema_tool(t) for t in tools_dict.values()]
 
         if lc_stubs:
-            bind_kwargs: Dict[str, Any] = {
-                "parallel_tool_calls": False
-            }
+            bind_kwargs: Dict[str, Any] = {"parallel_tool_calls": False}
             if tool_choice is not None and tool_choice != "auto":
                 bind_kwargs["tool_choice"] = tool_choice
             model_with_tools = self._llm.bind_tools(lc_stubs, **bind_kwargs)

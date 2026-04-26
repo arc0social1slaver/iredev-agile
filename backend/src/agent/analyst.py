@@ -4,34 +4,45 @@ analyst.py – AnalystAgent  (Backlog Refinement)
 Role
 ────
 The AnalystAgent runs once after the product backlog is approved in Sprint 0.
-It enriches every PBI (Product Backlog Item) in a single pass:
+It enriches AND repairs every PBI (Product Backlog Item) in a deterministic
+3-pass extract_structured() pipeline — no ReAct loop, no tool routing.
 
-  1. Validate INVEST quality criteria → embed warnings into each PBI.
-  2. Synthesize Given-When-Then Acceptance Criteria (stored in PBI.acceptance_criteria).
-  3. Publish the enriched backlog as a new artifact: validated_product_backlog.
+Pass 1 — INVEST Assessment
+  Reads each PBI (including its enrichment block from SprintAgent) and produces
+  a per-criterion pass/fail assessment with actionable issues and repair
+  instructions.  Stories that fail Small are flagged for splitting; stories
+  that fail Testable or Negotiable are flagged for rewriting.
 
-The output artifact is the product backlog with every PBI fully specified —
-INVEST validation notes and AC already populated, status set to 'ready'.
-Sprint N draws from this artifact, not the raw product_backlog.
+Pass 2 — PBI Repair + AC Generation
+  For every PBI that has INVEST failures, rewrites the offending fields
+  (description, title, story_points) and/or splits it into sub-stories.
+  Also writes 2–5 Given-When-Then Acceptance Criteria for every PBI —
+  original or repaired — using the enrichment block (original statement,
+  context, rationale, acceptance_criteria) as primary source.
 
-Tool sequence (single ReAct turn)
-──────────────────────────────────
-  check_invest_quality      — assess all 6 INVEST criteria for every PBI
-  write_acceptance_criteria — generate Given-When-Then for every PBI
-  publish_validated_backlog — merge validation + AC into product_backlog,
-                              emit validated_product_backlog, END turn
+Pass 3 — Assembly (deterministic — no LLM)
+  Merges Pass 1 and Pass 2 output back into a deep copy of product_backlog,
+  re-assigns PBI IDs for any split stories, recomputes summary counters, and
+  emits validated_product_backlog.
 
-The agent profile / system prompt lives entirely in analyst_react.txt
-(injected by ProfileModule at runtime).  No _PROFILE constant is defined
-here — the prompt file is the single source of truth.
+Profile + Addendum pattern (same as SprintAgent)
+─────────────────────────────────────────────────
+  self.profile.prompt           → who the agent is (analyst_react.txt persona block)
+  _PASS1_ADDENDUM, _PASS2_ADDENDUM → per-pass task rules (injected as addendum)
+
+  system_prompt = self.profile.prompt + "\\n\\n" + _PASSn_ADDENDUM [+ feedback]
 
 State fields
 ────────────
-  artifacts["product_backlog"]           — source backlog (read-only)
-  artifacts["validated_product_backlog"] — enriched output (supervisor gate)
+  artifacts["product_backlog"]           — source backlog (read-only); each PBI
+                                           carries an "enrichment" sub-dict from
+                                           SprintAgent with the original requirement
+                                           fields (statement, context, rationale,
+                                           acceptance_criteria, priority, etc.)
+  artifacts["validated_product_backlog"] — repaired + enriched output
   analyst_feedback                       — HITL rejection text; triggers re-run
-  _invest_scratch                        — transient: INVEST results between tools
-  _ac_scratch                            — transient: AC results between tools
+  _invest_scratch                        — transient: Pass 1 INVEST results
+  _ac_scratch                            — transient: Pass 2 repair + AC results
 """
 
 from __future__ import annotations
@@ -39,451 +50,349 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, Field
 
 from .base import BaseAgent, Tool, ToolResult
 
 logger = logging.getLogger(__name__)
 
 _INVEST_CRITERIA = ("independent", "negotiable", "valuable", "estimable", "small", "testable")
+_FIBONACCI       = {1, 2, 3, 5, 8, 13, 21}
 _MAX_AC_PER_PBI  = 5
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-pass addendums
+# ─────────────────────────────────────────────────────────────────────────────
+
+_PASS1_ADDENDUM = """\
+TASK: PASS 1 — INVEST ASSESSMENT
+
+Assess every PBI against all 6 INVEST criteria. Each PBI entry below
+contains two sections:
+
+USER STORY — the title and description (As a … / I can … / so that …)
+already written by SprintAgent.
+
+ENRICHMENT — the original requirement fields: statement, context, rationale,
+original acceptance criteria, priority, and elicitation ID.
+
+Use BOTH sections together. The enrichment block is your ground truth for
+scope, rationale, and testability.
+
+INVEST CRITERIA
+
+I — Independent
+A PBI is Independent if it can be delivered without a hard dependency on another specific PBI.
+
+N — Negotiable
+A PBI is Negotiable if its scope or implementation approach can be refined and is not a fixed technical specification.
+
+V — Valuable
+A PBI is Valuable if the benefit clause delivers a clear, observable outcome for the named actor.
+A well-formed user story is always considered Valuable unless the benefit clause is entirely absent.
+
+E — Estimable
+A PBI is Estimable if the team can form a credible, bounded effort estimate.
+
+S — Small
+A PBI is Small if it fits in a single sprint.
+Rule: if story_points is greater than 8, then Small fails.
+Cross-cutting context such as "Across all system interactions" is a strong risk signal for failing Small.
+
+T — Testable
+A PBI is Testable if the capability clause can be independently verified.
+If there are zero original acceptance criteria conditions, then Testable likely fails.
+
+REPAIR INSTRUCTIONS (embed in each failing issue)
+
+If Small fails:
+Provide a concrete split into two or more sub-stories, each with story points less than or equal to 8.
+Name the sub-stories explicitly, including title and a one-line capability.
+
+If Testable fails:
+Rewrite the description so that the capability clause is binary and pass/fail verifiable.
+Provide the rewritten description verbatim.
+
+If Negotiable fails:
+Remove implementation detail from the description.
+Provide the rewritten description verbatim.
+
+If Estimable fails:
+Identify what unknown must be resolved, such as creating a spike.
+
+OUTPUT RULES
+
+Assess all PBIs. Do not omit any.
+
+Set severity to "blocker" when the PBI cannot enter a sprint as-is.
+This includes cases where Small fails due to story points greater than 8,
+Testable fails with zero acceptance criteria, or Estimable fails with no resolution path.
+
+Set severity to "warning" for advisory improvements.
+
+repair_action must be one of the following values:
+"split", "rewrite_description", "rewrite_title", "add_spike", or "none".
+
+When repair_action is "split", populate sub_stories with the proposed children.
+
+When repair_action is "rewrite_description" or "rewrite_title",
+provide repaired_value with the exact replacement text.
+"""
+
+_PASS2_ADDENDUM = """\
+TASK: PASS 2 — PBI REPAIR AND ACCEPTANCE CRITERIA
+
+You receive:
+- The original PBI list, including user story and enrichment block.
+- The INVEST assessment from Pass 1, including per-criterion results and repair instructions.
+
+Your job has two parts:
+
+PART A — APPLY REPAIRS
+
+For every PBI that has at least one issue where repair_action is not "none":
+
+If repair_action is "split":
+Replace the PBI with the sub-stories listed in Pass 1.
+Each sub-story inherits source_req_id, domain, and type.
+Assign story_points individually using Fibonacci values less than or equal to 8.
+Recalculate complexity, effort, and uncertainty for each sub-story.
+Recalculate INVEST flags, ensuring all sub-stories pass the Small criterion.
+Set is_split_child to true and assign split_suffix values such as "a", "b", "c", and so on.
+
+If repair_action is "rewrite_description":
+Replace the description with the repaired_value from Pass 1.
+Keep all other fields unchanged.
+
+If repair_action is "rewrite_title":
+Replace the title with the repaired_value from Pass 1.
+
+If repair_action is "add_spike":
+Append a spike entry alongside the PBI.
+The spike must have type equal to "spike", a title in the format "Spike: <topic>",
+and story_points equal to 2 or 3.
+
+If repair_action is "none":
+Copy the PBI through unchanged.
+
+PART B — WRITE ACCEPTANCE CRITERIA
+
+For every output PBI, including original, repaired, or split children:
+
+Write between 2 and 5 Given-When-Then acceptance criteria.
+
+Use the following sources in priority order:
+
+First, use enrichment.acceptance_criteria as the primary starting point.
+Rewrite each original acceptance criterion into a formal Given-When-Then structure.
+
+Second, use enrichment.context and enrichment.rationale to derive additional
+happy path, edge case, and error case criteria.
+
+Third, use the user story capability and benefit clause to confirm coverage.
+
+TYPE RULES:
+
+happy_path:
+At least one is required. This represents the normal success scenario.
+
+edge_case:
+At least one is required. This represents boundary or unusual input.
+
+error_case:
+Represents system failure or invalid input scenarios.
+
+For non-functional PBIs:
+The 'then' clause must contain a measurable threshold, such as a response time less than 2 seconds.
+
+For constraint PBIs:
+The 'then' clause must describe process or compliance adherence.
+
+Acceptance Criteria ID pattern examples:
+AC-PBI001-01, AC-PBI001-02, AC-PBI001a-01 for split children.
+
+OUTPUT RULES
+
+Output one entry per final PBI after splits are applied.
+
+Carry forward source_req_id, domain, type, WSJF scores, and priority_rank
+from the original PBI unless the repair explicitly changes them.
+
+story_points must use Fibonacci values.
+
+Each 'then' clause must be independently verifiable and contain exactly one assertion.
+
+Do not include implementation details. Focus on what the system does, not how it is implemented.
+"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pass 1 schemas — INVEST Assessment
+# ─────────────────────────────────────────────────────────────────────────────
+
+class InvestIssue(BaseModel):
+    criterion:      str = Field(description="Which INVEST criterion failed (e.g. 'small').")
+    severity:       Literal["warning", "blocker"]
+    message:        str = Field(description="Specific, actionable description of the problem.")
+    suggestion:     str = Field(description="Concrete fix recommendation.")
+    repair_action:  Literal["split", "rewrite_description", "rewrite_title", "add_spike", "none"]
+    repaired_value: Optional[str] = Field(
+        default=None,
+        description="Exact replacement text when repair_action is rewrite_description or rewrite_title.",
+    )
+    sub_stories: Optional[List[SubStoryProposal]] = Field(
+        default=None,
+        description=(
+            "When repair_action='split': list of proposed sub-stories. "
+            "Each must have: title (str), capability (str), story_points (int Fibonacci ≤ 8)."
+        ),
+    )
+
+
+class InvestCriterionResult(BaseModel):
+    passed: bool
+    note:   str = Field(description="1-sentence rationale citing enrichment fields used.")
+
+
+class PbiInvestAssessment(BaseModel):
+    pbi_id:      str
+    independent: InvestCriterionResult
+    negotiable:  InvestCriterionResult
+    valuable:    InvestCriterionResult
+    estimable:   InvestCriterionResult
+    small:       InvestCriterionResult
+    testable:    InvestCriterionResult
+    issues:      List[InvestIssue] = Field(default_factory=list)
+    thought:     str = Field(description="Overall assessment: what is good, what needs repair.")
+
+
+class InvestAssessmentList(BaseModel):
+    assessments: List[PbiInvestAssessment] = Field(
+        description="One entry per PBI, in the same order as the input."
+    )
+    pass_notes: str = Field(
+        description=(
+            "2–3 sentence summary: total PBIs assessed, breakdown by severity, "
+            "dominant failure patterns observed."
+        )
+    )
+
+class SubStoryProposal(BaseModel):
+    title:        str  = Field(description="Short title for the sub-story.")
+    capability:   str  = Field(description="One-line capability of the sub-story.")
+    story_points: int  = Field(
+        ge=1, le=8,
+        description="Fibonacci story points — must be ≤ 8."
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pass 2 schemas — PBI Repair + AC Generation
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AcceptanceCriterion(BaseModel):
+    id:    str
+    given: str
+    when:  str
+    then:  str
+    type:  Literal["happy_path", "edge_case", "error_case"]
+
+
+class RepairedPbi(BaseModel):
+    # ── Identity ──────────────────────────────────────────────────────────
+    source_pbi_id:  str  = Field(description="Original PBI-NNN this entry came from (or is a child of).")
+    source_req_id:  str
+    is_split_child: bool = Field(default=False, description="True when this PBI is a split child.")
+    split_suffix:   Optional[str] = Field(
+        default=None,
+        description="Suffix appended to source_pbi_id for split children: 'a', 'b', 'c', …",
+    )
+
+    # ── Story fields (may be repaired) ────────────────────────────────────
+    title:        str
+    description:  str = Field(description="Final user story after any rewrite repair.")
+    domain:       str
+    type:         Literal["functional", "non_functional", "constraint", "spike"]
+    story_points: int  = Field(description="Fibonacci — must be one of 1,2,3,5,8,13,21.")
+    complexity:   int  = Field(ge=1, le=5)
+    effort:       int  = Field(ge=1, le=5)
+    uncertainty:  int  = Field(ge=1, le=5)
+
+    # ── INVEST flags after repair ─────────────────────────────────────────
+    independent: bool
+    negotiable:  bool
+    valuable:    bool
+    estimable:   bool
+    small:       bool
+    testable:    bool
+
+    # ── WSJF (carry forward from original; spike inherits parent's scores) ─
+    business_value:   int = Field(ge=1, le=10)
+    time_criticality: int = Field(ge=1, le=10)
+    risk_reduction:   int = Field(ge=1, le=10)
+    priority_rank:    int = Field(description="Carry forward from original PBI (ties allowed for split siblings).")
+
+    # ── Acceptance Criteria ───────────────────────────────────────────────
+    acceptance_criteria: List[AcceptanceCriterion] = Field(
+        description="2–5 GWT criteria derived from enrichment + user story."
+    )
+
+    repair_applied: str = Field(
+        description="Brief note: 'none', 'rewrite_description', 'split (child a/b/…)', 'add_spike'."
+    )
+    thought: str = Field(
+        description="How enrichment fields drove the AC and what repair was applied."
+    )
+
+
+class RepairedBacklog(BaseModel):
+    pbis: List[RepairedPbi] = Field(
+        description=(
+            "Final list of all PBIs after repairs.  Split children appear consecutively "
+            "immediately after their parent's position.  Spikes follow their parent PBI."
+        )
+    )
+    pass_notes: str = Field(
+        description=(
+            "2–3 sentence summary: how many PBIs were repaired, how many split, "
+            "total AC written, any residual issues."
+        )
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AnalystAgent
+# ─────────────────────────────────────────────────────────────────────────────
+
 class AnalystAgent(BaseAgent):
     """
-    Backlog grooming agent — single step, one ReAct turn.
+    Backlog grooming agent — deterministic 3-pass extract_structured() pipeline.
 
-    Reads:  artifacts["product_backlog"]
-    Writes: artifacts["validated_product_backlog"]
+    Pass 1 (LLM): INVEST assessment with repair instructions per PBI.
+    Pass 2 (LLM): PBI repair + Given-When-Then AC generation.
+    Pass 3 (deterministic): Assembly → validated_product_backlog artifact.
 
-    The agent system prompt is loaded from analyst_react.txt via ProfileModule.
+    Architecture mirrors SprintAgent:
+      • Profile   : analyst_react.txt — agent identity / persona only.
+      • Addendums : _PASS1_ADDENDUM, _PASS2_ADDENDUM — per-pass task rules.
+      • No ReAct tools registered; tools dict is empty.
     """
 
     def __init__(self, config_path: Optional[str] = None):
         super().__init__(name="analyst")
 
-    # ── Tool registration ─────────────────────────────────────────────────────
-
     def _register_tools(self) -> None:
-
-        self.register_tool(Tool(
-            name="check_invest_quality",
-            description=(
-                "Step 1 — Assess every PBI against all 6 INVEST criteria.\n"
-                "Include ALL PBIs in a single call; omitting any PBI is an error.\n\n"
-                "Each PBI description is a user story ('As a …, I can …, so that …').\n"
-                "Keep this in mind when evaluating 'valuable' and 'testable':\n"
-                "  • 'valuable' must be TRUE for every well-formed user story.\n"
-                "  • 'small' fails when story_points > 8 (20-pt sprint rule of thumb).\n\n"
-                "Input: {\n"
-                "  \"assessments\": [\n"
-                "    {\n"
-                "      \"pbi_id\":      \"PBI-001\",\n"
-                "      \"independent\": {\"pass\": true|false, \"note\": \"<specific reason>\"},\n"
-                "      \"negotiable\":  {\"pass\": true|false, \"note\": \"<specific reason>\"},\n"
-                "      \"valuable\":    {\"pass\": true|false, \"note\": \"<specific reason>\"},\n"
-                "      \"estimable\":   {\"pass\": true|false, \"note\": \"<specific reason>\"},\n"
-                "      \"small\":       {\"pass\": true|false, \"note\": \"<specific reason>\"},\n"
-                "      \"testable\":    {\"pass\": true|false, \"note\": \"<specific reason>\"},\n"
-                "      \"issues\": [\n"
-                "        {\n"
-                "          \"criterion\":  \"small\",\n"
-                "          \"severity\":   \"warning\" | \"blocker\",\n"
-                "          \"message\":    \"<actionable detail>\",\n"
-                "          \"suggestion\": \"<how to fix: split, rewrite, clarify>\"\n"
-                "        }\n"
-                "      ],\n"
-                "      \"thought\": \"<overall assessment of this PBI>\"\n"
-                "    }, ...\n"
-                "  ]\n"
-                "}\n\n"
-                "Does NOT end the turn. NEXT: call write_acceptance_criteria."
-            ),
-            func=self._tool_check_invest_quality,
-        ))
-
-        self.register_tool(Tool(
-            name="write_acceptance_criteria",
-            description=(
-                "Step 2 — Generate Given-When-Then Acceptance Criteria for every PBI.\n"
-                "Include ALL PBIs in a single call. 2–5 criteria per PBI.\n\n"
-                "Each PBI is a user story. Derive criteria from the story's\n"
-                "capability clause and the reasoning traces stored in PBI.history.\n"
-                "  • happy_path : the normal success scenario.\n"
-                "  • edge_case  : boundary or unusual input.\n"
-                "  • error_case : system failure or invalid input.\n"
-                "  • Non-functional PBIs: 'then' MUST contain a measurable threshold.\n"
-                "  • Constraint PBIs: 'then' MUST describe process/compliance adherence.\n\n"
-                "Input: {\n"
-                "  \"pbi_criteria\": [\n"
-                "    {\n"
-                "      \"pbi_id\": \"PBI-001\",\n"
-                "      \"criteria\": [\n"
-                "        {\n"
-                "          \"id\":    \"AC-PBI001-01\",\n"
-                "          \"given\": \"<precondition>\",\n"
-                "          \"when\":  \"<action or event>\",\n"
-                "          \"then\":  \"<single observable outcome>\",\n"
-                "          \"type\":  \"happy_path\" | \"edge_case\" | \"error_case\"\n"
-                "        }, ...\n"
-                "      ],\n"
-                "      \"thought\": \"<which story clause / reasoning trace drove each AC>\"\n"
-                "    }, ...\n"
-                "  ]\n"
-                "}\n\n"
-                "Does NOT end the turn. NEXT: call publish_validated_backlog."
-            ),
-            func=self._tool_write_acceptance_criteria,
-        ))
-
-        self.register_tool(Tool(
-            name="publish_validated_backlog",
-            description=(
-                "Step 3 — Merge INVEST validation and AC into the product backlog,\n"
-                "then emit 'validated_product_backlog' as the developer-ready artifact.\n"
-                "Every PBI that has AC gets status='ready'.\n\n"
-                "Input: {\"summary\": \"<2-3 sentence summary of refinement outcomes>\"}\n\n"
-                "This tool ENDS the turn."
-            ),
-            func=self._tool_publish_validated_backlog,
-        ))
-
-    # =========================================================================
-    # Tool implementations
-    # =========================================================================
-
-    def _tool_check_invest_quality(
-        self,
-        assessments: List[Dict] = None,
-        state: Dict = None,
-        **_,
-    ) -> ToolResult:
-        """
-        Collect per-PBI INVEST assessments into _invest_scratch.
-        """
-        assessments = assessments or []
-        if not assessments:
-            return ToolResult(
-                observation=(
-                    "No assessments provided. "
-                    "Supply 'assessments' covering ALL PBIs."
-                )
-            )
-
-        artifacts = state.get("artifacts") or {}
-        pb        = artifacts.get("product_backlog") or {}
-        known_ids = {item["id"] for item in (pb.get("items") or [])}
-
-        scratch:      List[Dict] = []
-        processed:    List[str]  = []
-        skipped:      List[str]  = []
-        total_issues  = 0
-        blockers      = 0
-
-        for a in assessments:
-            pbi_id = (a.get("pbi_id") or "").strip()
-            if not pbi_id or pbi_id not in known_ids:
-                skipped.append(pbi_id or "(empty)")
-                continue
-
-            criteria_result: Dict[str, Any] = {}
-            failed: List[str] = []
-
-            for crit in _INVEST_CRITERIA:
-                entry  = a.get(crit) or {}
-                passed = bool(entry.get("pass", True))
-                note   = (entry.get("note") or "").strip()
-                criteria_result[crit] = {"pass": passed, "note": note}
-                if not passed:
-                    failed.append(crit)
-
-            issues: List[Dict] = []
-            for iss in (a.get("issues") or []):
-                crit       = (iss.get("criterion") or "").strip()
-                sev        = (iss.get("severity") or "warning").strip()
-                message    = (iss.get("message") or "").strip()
-                suggestion = (iss.get("suggestion") or "").strip()
-                if not message:
-                    continue
-                issues.append({
-                    "criterion":  crit,
-                    "severity":   sev,
-                    "message":    message,
-                    "suggestion": suggestion,
-                })
-                total_issues += 1
-                if sev == "blocker":
-                    blockers += 1
-
-            scratch.append({
-                "pbi_id":          pbi_id,
-                "criteria":        criteria_result,
-                "failed_criteria": failed,
-                "issues":          issues,
-                "thought":         (a.get("thought") or "").strip(),
-                "assessed_at":     datetime.now().isoformat(),
-            })
-            processed.append(pbi_id)
-
-        missing = known_ids - set(processed)
-
-        obs_parts = [
-            f"INVEST quality check done: {len(processed)} PBIs assessed, "
-            f"{total_issues} issues ({blockers} blockers)."
-        ]
-        if missing:
-            obs_parts.append(
-                f"⚠ PBIs not yet assessed (must fix before publishing): {sorted(missing)}."
-            )
-        if skipped:
-            obs_parts.append(f"Skipped (not found in backlog): {skipped}.")
-
-        failing = [s for s in scratch if s["failed_criteria"]]
-        if failing:
-            obs_parts.append(
-                "Criteria failures: "
-                + ", ".join(
-                    f"{s['pbi_id']} → {s['failed_criteria']}" for s in failing
-                )
-            )
-
-        obs_parts.append("NEXT: call write_acceptance_criteria for ALL PBIs.")
-
-        logger.info(
-            "[AnalystAgent] check_invest_quality: %d PBIs, %d issues, %d blockers.",
-            len(processed), total_issues, blockers,
-        )
-
-        return ToolResult(
-            observation="\n".join(obs_parts),
-            state_updates={"_invest_scratch": scratch},
-        )
-
-    # -------------------------------------------------------------------------
-
-    def _tool_write_acceptance_criteria(
-        self,
-        pbi_criteria: List[Dict] = None,
-        state: Dict = None,
-        **_,
-    ) -> ToolResult:
-        """
-        Collect Given-When-Then AC for all PBIs into _ac_scratch.
-        """
-        pbi_criteria = pbi_criteria or []
-        if not pbi_criteria:
-            return ToolResult(
-                observation=(
-                    "No criteria provided. "
-                    "Supply 'pbi_criteria' covering ALL PBIs."
-                )
-            )
-
-        artifacts = state.get("artifacts") or {}
-        pb        = artifacts.get("product_backlog") or {}
-        known_ids = {item["id"] for item in (pb.get("items") or [])}
-
-        scratch:   List[Dict] = []
-        processed: List[str]  = []
-        skipped:   List[str]  = []
-        total_ac   = 0
-        incomplete = 0
-
-        for entry in pbi_criteria:
-            pbi_id    = (entry.get("pbi_id") or "").strip()
-            raw_crits = entry.get("criteria") or []
-            thought   = (entry.get("thought") or "").strip()
-
-            if not pbi_id or pbi_id not in known_ids:
-                skipped.append(pbi_id or "(empty)")
-                continue
-
-            validated: List[Dict] = []
-            for i, c in enumerate(raw_crits[:_MAX_AC_PER_PBI], start=1):
-                ac_id  = (c.get("id") or f"AC-{pbi_id}-{i:02d}").strip()
-                given  = (c.get("given") or "").strip()
-                when   = (c.get("when") or "").strip()
-                then   = (c.get("then") or "").strip()
-                ctype  = (c.get("type") or "happy_path").strip()
-
-                if not (given and when and then):
-                    incomplete += 1
-                    logger.warning(
-                        "[AnalystAgent] Incomplete GWT for %s criterion %d — skipped.",
-                        pbi_id, i,
-                    )
-                    continue
-
-                validated.append({
-                    "id":    ac_id,
-                    "given": given,
-                    "when":  when,
-                    "then":  then,
-                    "type":  ctype,
-                })
-
-            scratch.append({
-                "pbi_id":   pbi_id,
-                "criteria": validated,
-                "thought":  thought,
-                "count":    len(validated),
-            })
-            processed.append(pbi_id)
-            total_ac += len(validated)
-
-        missing = known_ids - set(processed)
-
-        obs_parts = [
-            f"Acceptance criteria written: {len(processed)} PBIs, {total_ac} total criteria."
-        ]
-        if incomplete:
-            obs_parts.append(
-                f"⚠ {incomplete} criterion skipped due to missing given/when/then."
-            )
-        if missing:
-            obs_parts.append(
-                f"⚠ PBIs without AC (should fix): {sorted(missing)}."
-            )
-        if skipped:
-            obs_parts.append(f"Skipped (not in backlog): {skipped}.")
-
-        obs_parts.append("NEXT: call publish_validated_backlog with a summary.")
-
-        logger.info(
-            "[AnalystAgent] write_acceptance_criteria: %d PBIs, %d AC total.",
-            len(processed), total_ac,
-        )
-
-        return ToolResult(
-            observation="\n".join(obs_parts),
-            state_updates={"_ac_scratch": scratch},
-        )
-
-    # -------------------------------------------------------------------------
-
-    def _tool_publish_validated_backlog(
-        self,
-        summary: str = "",
-        state: Dict = None,
-        **_,
-    ) -> ToolResult:
-        """
-        Merge INVEST validation notes and AC into a deep copy of product_backlog,
-        then emit it as 'validated_product_backlog'.
-
-        Each PBI in the output gains:
-          invest_validation   — per-criterion results + actionable issues
-          acceptance_criteria — GWT criteria (given/when/then/type)
-          status              — set to 'ready' when AC is present
-        """
-        invest_scratch:  List[Dict] = state.get("_invest_scratch") or []
-        ac_scratch:      List[Dict] = state.get("_ac_scratch") or []
-        analyst_feedback = (state.get("analyst_feedback") or "").strip()
-
-        invest_by_pbi = {d["pbi_id"]: d for d in invest_scratch}
-        ac_by_pbi     = {d["pbi_id"]: d for d in ac_scratch}
-
-        artifacts = dict(state.get("artifacts") or {})
-        source_pb = artifacts.get("product_backlog") or {}
-
-        # Deep-copy items — never mutate the source artifact
-        items: List[Dict] = [dict(item) for item in (source_pb.get("items") or [])]
-
-        total_ac      = 0
-        ready_pbis:   List[str] = []
-        invest_issues = 0
-        blockers      = 0
-
-        for item in items:
-            pbi_id = item["id"]
-
-            # ── Embed INVEST validation ───────────────────────────────────────
-            iv = invest_by_pbi.get(pbi_id)
-            if iv:
-                item["invest_validation"] = {
-                    "criteria":        iv.get("criteria", {}),
-                    "failed_criteria": iv.get("failed_criteria", []),
-                    "issues":          iv.get("issues", []),
-                    "assessed_at":     iv.get("assessed_at", datetime.now().isoformat()),
-                }
-                invest_issues += len(iv.get("issues", []))
-                blockers      += sum(
-                    1 for iss in iv.get("issues", []) if iss.get("severity") == "blocker"
-                )
-                item.setdefault("history", []).append({
-                    "action": "invest_validated",
-                    "step":   "backlog_refinement",
-                    "reason": iv.get("thought", "INVEST quality check by AnalystAgent."),
-                })
-
-            # ── Embed Acceptance Criteria ─────────────────────────────────────
-            ac = ac_by_pbi.get(pbi_id)
-            if ac and ac.get("criteria"):
-                item["acceptance_criteria"] = ac["criteria"]
-                total_ac += len(ac["criteria"])
-                item.setdefault("history", []).append({
-                    "action":  "ac_written",
-                    "step":    "backlog_refinement",
-                    "reason":  ac.get("thought", "AC synthesized by AnalystAgent."),
-                    **({"hitl_feedback": analyst_feedback} if analyst_feedback else {}),
-                })
-
-            # ── Mark ready ────────────────────────────────────────────────────
-            if item.get("acceptance_criteria"):
-                item["status"] = "ready"
-                ready_pbis.append(pbi_id)
-
-        # ── Build validated_product_backlog ───────────────────────────────────
-        validated_backlog: Dict[str, Any] = {
-            "id":              str(uuid.uuid4()),
-            **source_pb,                          # inherit session_id, notes, etc.
-            "items":           items,
-            "source_artifact": "product_backlog",
-            "status":          "validated",
-            "refinement_summary": summary,
-            "refinement_stats": {
-                "total_pbis":    len(items),
-                "ready_pbis":    len(ready_pbis),
-                "total_ac":      total_ac,
-                "invest_issues": invest_issues,
-                "blockers":      blockers,
-            },
-            "validated_at": datetime.now().isoformat(),
-        }
-
-        artifacts["validated_product_backlog"] = validated_backlog
-
-        obs = (
-            f"validated_product_backlog published.\n"
-            f"  PBIs ready   : {len(ready_pbis)}/{len(items)}\n"
-            f"  Total AC     : {total_ac}\n"
-            f"  INVEST issues: {invest_issues} ({blockers} blockers)\n"
-            f"Workflow will now route to HITL review of the validated backlog."
-        )
-
-        logger.info(
-            "[AnalystAgent] publish_validated_backlog: %d ready PBIs, "
-            "%d AC, %d invest issues (%d blockers).",
-            len(ready_pbis), total_ac, invest_issues, blockers,
-        )
-
-        return ToolResult(
-            observation=obs,
-            state_updates={"artifacts": artifacts},
-            should_return=True,
-        )
+        # Pipeline is pure extract_structured — no ReAct tools needed.
+        pass
 
     # =========================================================================
     # LangGraph node entry point
     # =========================================================================
 
     def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        LangGraph node entry point — called by analyst_turn_fn in graph.py.
-
-        The supervisor routes here only when validated_product_backlog is absent
-        (enforced by the ArtifactStep prerequisites in flow.py).
-        """
         artifacts = state.get("artifacts") or {}
         if "validated_product_backlog" in artifacts:
             logger.warning(
@@ -491,93 +400,408 @@ class AnalystAgent(BaseAgent):
                 "already exists. Supervisor should not have routed here."
             )
             return {}
-
         return self._run_grooming(state)
 
-    # ── Grooming entry ────────────────────────────────────────────────────────
+    # =========================================================================
+    # 3-Pass Pipeline
+    # =========================================================================
 
     def _run_grooming(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """Build the task prompt and launch the ReAct loop."""
-        artifacts    = state.get("artifacts") or {}
-        pb           = artifacts.get("product_backlog") or {}
-        items        = pb.get("items") or []
-        project_desc = state.get("project_description", "not provided")
-        n            = len(items)
+        artifacts = state.get("artifacts") or {}
+        pb        = artifacts.get("product_backlog") or {}
+        items     = pb.get("items") or []
+        feedback  = (state.get("analyst_feedback") or "").strip()
 
-        analyst_feedback = (state.get("analyst_feedback") or "").strip()
-        feedback_block   = ""
-        if analyst_feedback:
-            feedback_block = (
-                f"{'━'*16}  REVIEWER FEEDBACK (previous refinement rejected)  {'━'*16}\n"
-                f"{analyst_feedback}\n\n"
-                "You MUST address every point above in this revised pass.\n"
-                "Pay special attention to AC quality and any INVEST issues flagged.\n\n"
+        if not items:
+            logger.error("[AnalystAgent] product_backlog has no items.")
+            return {"errors": ["AnalystAgent: product_backlog has no items."]}
+
+        logger.info("[AnalystAgent] Starting 3-pass grooming — %d PBIs.", len(items))
+
+        try:
+            # ── Pass 1: INVEST Assessment ───────────────────────────────────
+            invest_result = self._pass1_invest_assessment(items, feedback)
+            logger.info(
+                "[AnalystAgent] Pass 1 complete — %d assessments, %d with issues.",
+                len(invest_result.assessments),
+                sum(1 for a in invest_result.assessments if a.issues),
             )
 
-        pbi_lines = []
-        for item in items:
-            # Reasoning traces from Sprint 0 (rationale behind each requirement)
-            traces = [
-                h.get("reason", "")
-                for h in (item.get("history") or [])
-                if h.get("reason") and h.get("action") in ("created", "prioritized")
-            ]
-            trace_str = (" | ".join(traces[:2])[:200]) if traces else "(none)"
-
-            # Pre-existing INVEST failures from Sprint 0 triage
-            invest     = item.get("invest", {})
-            pre_failed = [k for k, v in invest.items() if not v]
-            invest_note = (
-                f"\n    Sprint-0 INVEST failures already known: {pre_failed}"
-                if pre_failed else ""
+            # ── Pass 2: Repair + AC Generation ─────────────────────────────
+            repaired = self._pass2_repair_and_ac(items, invest_result, feedback)
+            logger.info(
+                "[AnalystAgent] Pass 2 complete — %d final PBIs.",
+                len(repaired.pbis),
             )
 
-            # Show existing AC only when re-running after rejection
-            existing_ac = item.get("acceptance_criteria") or []
-            ac_note = (
-                f"\n    Existing AC to revise: {len(existing_ac)} criteria"
-                if existing_ac and analyst_feedback else ""
-            )
+            # ── Pass 3: Assembly ────────────────────────────────────────────
+            return self._pass3_assembly(repaired, invest_result, pb, state, feedback)
 
-            pbi_lines.append(
-                f"  [{item['id']}] rank={item.get('priority_rank','?')} "
-                f"pts={item.get('story_points','?')} type={item.get('type','?')}\n"
-                f"    Title      : {item.get('title','')}\n"
-                f"    User Story : {item.get('description','')[:200]}\n"
-                f"    Traces     : {trace_str}"
-                + invest_note
-                + ac_note
-            )
+        except Exception as exc:
+            logger.error("[AnalystAgent] Pipeline failed: %s", exc, exc_info=True)
+            return {"errors": [f"AnalystAgent pipeline error: {exc}"]}
 
-        task = (
-            f"{'━'*16}  PROJECT  {'━'*16}\n"
-            f"{project_desc}\n\n"
-            + feedback_block
-            + f"{'━'*16}  PRODUCT BACKLOG TO GROOM ({n} PBIs)  {'━'*16}\n"
-            + "\n".join(pbi_lines)
-            + f"\n\n{'━'*16}  YOUR GROOMING SEQUENCE  {'━'*16}\n"
-            f"STEP 1 — Call 'check_invest_quality':\n"
-            f"  • Assess ALL {n} PBIs in one call — do not omit any.\n"
-            f"  • 'small' fails when story_points > 8 (20-pt sprint rule of thumb).\n"
-            f"  • Every issue needs a concrete 'message' and actionable 'suggestion'.\n"
-            f"  • Each PBI description is a user story — use the story's role and\n"
-            f"    capability clause when assessing 'valuable' and 'testable'.\n\n"
-            f"STEP 2 — Call 'write_acceptance_criteria':\n"
-            f"  • Write criteria for ALL {n} PBIs in one call.\n"
-            f"  • Derive each criterion from the USER STORY and its reasoning traces.\n"
-            f"  • 2 criteria minimum per PBI; 5 maximum.\n"
-            f"  • At least 1 happy_path AND 1 edge_case or error_case per PBI.\n"
-            f"  • Non-functional PBIs: 'then' must contain a measurable threshold.\n"
-            f"  • Constraint PBIs: 'then' must describe process/compliance adherence.\n"
-            f"  • ID pattern: AC-PBI001-01, AC-PBI001-02, AC-PBI002-01, …\n\n"
-            f"STEP 3 — Call 'publish_validated_backlog':\n"
-            f"  • Provide a 2-3 sentence 'summary'.\n"
-            f"  • This creates the validated_product_backlog artifact.\n\n"
-            f"MANDATORY RULES:\n"
-            f"• ONE tool per ReAct step.\n"
-            f"• Every Thought must start with [STRATEGY]...[/STRATEGY].\n"
-            f"• publish_validated_backlog is the only tool that ends the turn.\n"
+    # ─────────────────────────────────────────────────────────────────────────
+    # Pass 1 — INVEST Assessment
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _pass1_invest_assessment(
+        self,
+        items:    List[Dict],
+        feedback: str = "",
+    ) -> InvestAssessmentList:
+        """Assess every PBI against INVEST using the user story + enrichment block."""
+
+        system_prompt = (
+            self.profile.prompt
+            + "\n\n"
+            + _PASS1_ADDENDUM
+            + self._feedback_block(feedback, "INVEST assessment")
         )
 
-        logger.info("[AnalystAgent] Starting backlog grooming — %d PBIs.", n)
-        return self.react(state, task, tool_choice="required")
+        pbi_block = self._format_pbi_block(items, include_enrichment=True)
+
+        user_prompt = (
+            f"PRODUCT BACKLOG TO ASSESS ({len(items)} PBIs):\n\n"
+            f"{pbi_block}\n\n"
+            "Assess EVERY PBI.  Provide repair instructions for every failure.\n"
+            "Output assessments in the same order as the input."
+        )
+
+        return self.extract_structured(
+            schema=InvestAssessmentList,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Pass 2 — Repair + AC Generation
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _pass2_repair_and_ac(
+        self,
+        items:         List[Dict],
+        invest_result: InvestAssessmentList,
+        feedback:      str = "",
+    ) -> RepairedBacklog:
+        """Apply INVEST repairs and write Given-When-Then AC for every PBI."""
+
+        system_prompt = (
+            self.profile.prompt
+            + "\n\n"
+            + _PASS2_ADDENDUM
+            + self._feedback_block(feedback, "PBI repair and AC generation")
+        )
+
+        pbi_block    = self._format_pbi_block(items, include_enrichment=True)
+        invest_block = self._format_invest_block(invest_result)
+
+        user_prompt = (
+            f"ORIGINAL PBIs WITH ENRICHMENT ({len(items)} items):\n\n"
+            f"{pbi_block}\n\n"
+            f"PASS 1 INVEST ASSESSMENT:\n\n"
+            f"{invest_block}\n\n"
+            f"Pass 1 notes: {invest_result.pass_notes}\n\n"
+            "Apply ALL repairs and write AC for EVERY PBI.\n"
+            "Output one entry per final PBI (original, repaired, or split child)."
+        )
+
+        return self.extract_structured(
+            schema=RepairedBacklog,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+        )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Pass 3 — Assembly  (no LLM call)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _pass3_assembly(
+        self,
+        repaired:      RepairedBacklog,
+        invest_result: InvestAssessmentList,
+        source_pb:     Dict[str, Any],
+        state:         Dict[str, Any],
+        feedback:      str = "",
+    ) -> Dict[str, Any]:
+        """
+        Merge repaired PBIs, assign final sequential IDs, recompute WSJF +
+        summary counters, and emit validated_product_backlog.
+        """
+        invest_by_pbi = {a.pbi_id: a for a in invest_result.assessments}
+
+        final_items:  List[Dict[str, Any]] = []
+        total_ac      = 0
+        invest_issues = 0
+        blockers      = 0
+        split_count   = 0
+
+        # Assign final sequential IDs.
+        # Non-split PBIs get PBI-001, PBI-002, …
+        # Split children inherit their parent seq number plus a letter suffix:
+        #   PBI-003 splits → PBI-003a, PBI-003b (parent row replaced by children)
+        # Spikes that are not split children get their own seq number.
+        seq                = 1
+        current_parent_seq = 0   # seq number of the most-recent non-split PBI
+        for rpbi in repaired.pbis:
+            if rpbi.is_split_child:
+                suffix   = rpbi.split_suffix or ""
+                final_id = f"PBI-{current_parent_seq:03d}{suffix}"
+            else:
+                current_parent_seq = seq
+                final_id           = f"PBI-{seq:03d}"
+                seq               += 1
+
+            # Snap story_points to nearest Fibonacci
+            sp = rpbi.story_points
+            if sp not in _FIBONACCI:
+                sp = min(_FIBONACCI, key=lambda f: abs(f - sp))
+
+            # Recompute WSJF deterministically
+            wsjf = round(
+                (rpbi.business_value + rpbi.time_criticality + rpbi.risk_reduction) / sp, 2
+            )
+
+            # Failed INVEST criteria after repair
+            failed_criteria = [
+                c for c in _INVEST_CRITERIA if not getattr(rpbi, c, True)
+            ]
+            invest_pass = len(failed_criteria) == 0
+
+            # Status
+            if len(failed_criteria) >= 3:
+                status = "invest_failed"
+            elif not invest_pass:
+                status = "needs_refinement"
+            elif rpbi.acceptance_criteria:
+                status = "ready"
+            else:
+                status = "needs_refinement"
+
+            # INVEST validation block (from Pass 1; keyed on source_pbi_id)
+            invest_validation: Optional[Dict] = None
+            iv = invest_by_pbi.get(rpbi.source_pbi_id)
+            if iv:
+                raw_issues = [i.model_dump() for i in iv.issues]
+                invest_validation = {
+                    "criteria": {
+                        c: {
+                            "pass": getattr(getattr(iv, c), "passed", True),
+                            "note": getattr(getattr(iv, c), "note", ""),
+                        }
+                        for c in _INVEST_CRITERIA
+                    },
+                    "failed_criteria": [
+                        c for c in _INVEST_CRITERIA
+                        if not getattr(getattr(iv, c), "passed", True)
+                    ],
+                    "issues":      raw_issues,
+                    "assessed_at": datetime.now().isoformat(),
+                }
+                invest_issues += len(raw_issues)
+                blockers      += sum(
+                    1 for iss in raw_issues if iss.get("severity") == "blocker"
+                )
+
+            if rpbi.is_split_child:
+                split_count += 1
+
+            # Serialise AC
+            ac_list = [
+                {
+                    "id":    ac.id,
+                    "given": ac.given,
+                    "when":  ac.when,
+                    "then":  ac.then,
+                    "type":  ac.type,
+                }
+                for ac in (rpbi.acceptance_criteria or [])
+            ]
+            total_ac += len(ac_list)
+
+            # History trail
+            history: List[Dict] = []
+            if invest_validation:
+                history.append({
+                    "action": "invest_validated",
+                    "step":   "backlog_refinement",
+                    "reason": iv.thought if iv else "INVEST quality check by AnalystAgent.",
+                })
+            if rpbi.repair_applied and rpbi.repair_applied != "none":
+                history.append({
+                    "action": "repaired",
+                    "step":   "backlog_refinement",
+                    "reason": rpbi.repair_applied,
+                })
+            if ac_list:
+                history.append({
+                    "action": "ac_written",
+                    "step":   "backlog_refinement",
+                    "reason": rpbi.thought,
+                    **( {"hitl_feedback": feedback} if feedback else {} ),
+                })
+
+            final_items.append({
+                "id":                  final_id,
+                "source_pbi_id":       rpbi.source_pbi_id,
+                "source_req_id":       rpbi.source_req_id,
+                "is_split_child":      rpbi.is_split_child,
+                "type":                rpbi.type,
+                "title":               rpbi.title,
+                "description":         rpbi.description,
+                "domain":              rpbi.domain,
+                "story_points":        sp,
+                "complexity":          rpbi.complexity,
+                "effort":              rpbi.effort,
+                "uncertainty":         rpbi.uncertainty,
+                "business_value":      rpbi.business_value,
+                "time_criticality":    rpbi.time_criticality,
+                "risk_reduction":      rpbi.risk_reduction,
+                "wsjf_score":          wsjf,
+                "priority_rank":       rpbi.priority_rank,
+                "invest_pass":         invest_pass,
+                "invest_flags":        failed_criteria,
+                "invest_validation":   invest_validation,
+                "status":              status,
+                "independent":         rpbi.independent,
+                "negotiable":          rpbi.negotiable,
+                "valuable":            rpbi.valuable,
+                "estimable":           rpbi.estimable,
+                "small":               rpbi.small,
+                "testable":            rpbi.testable,
+                "acceptance_criteria": ac_list,
+                "repair_applied":      rpbi.repair_applied,
+                "thought":             rpbi.thought,
+                "history":             history,
+            })
+
+        # ── Summary counters ───────────────────────────────────────────────
+        total_pts    = sum(i["story_points"] for i in final_items)
+        ready_count  = sum(1 for i in final_items if i["status"] == "ready")
+        refine_count = sum(1 for i in final_items if i["status"] == "needs_refinement")
+        failed_count = sum(1 for i in final_items if i["status"] == "invest_failed")
+
+        # ── Build artifact ─────────────────────────────────────────────────
+        analyst_feedback = (state.get("analyst_feedback") or "").strip()
+        validated_backlog: Dict[str, Any] = {
+            "id":              str(uuid.uuid4()),
+            **source_pb,
+            "items":                  final_items,
+            "source_artifact":        "product_backlog",
+            "status":                 "validated",
+            "total_items":            len(final_items),
+            "total_story_points":     total_pts,
+            "ready_count":            ready_count,
+            "needs_refinement_count": refine_count,
+            "invest_failed_count":    failed_count,
+            "refinement_stats": {
+                "original_pbi_count": len(source_pb.get("items") or []),
+                "final_pbi_count":    len(final_items),
+                "split_children":     split_count,
+                "total_ac":           total_ac,
+                "invest_issues":      invest_issues,
+                "blockers":           blockers,
+            },
+            "refinement_summary": repaired.pass_notes,
+            "validated_at":       datetime.now().isoformat(),
+            **( {"rebuild_feedback": analyst_feedback} if analyst_feedback else {} ),
+        }
+
+        artifacts = dict(state.get("artifacts") or {})
+        artifacts["validated_product_backlog"] = validated_backlog
+
+        logger.info(
+            "[AnalystAgent] Pass 3 complete — %d final PBIs (%d splits) | "
+            "%d pts | ready=%d refinement=%d invest_failed=%d | %d AC | %d issues (%d blockers)",
+            len(final_items), split_count, total_pts,
+            ready_count, refine_count, failed_count,
+            total_ac, invest_issues, blockers,
+        )
+
+        return {"artifacts": artifacts}
+
+    # =========================================================================
+    # Helpers
+    # =========================================================================
+
+    @staticmethod
+    def _format_pbi_block(items: List[Dict], include_enrichment: bool = True) -> str:
+        """Render PBIs as a rich, readable block for LLM prompts."""
+        lines: List[str] = []
+        for item in items:
+            pbi_id = item.get("id", "?")
+            block = (
+                f"[{pbi_id}]  rank={item.get('priority_rank','?')}  "
+                f"pts={item.get('story_points','?')}  type={item.get('type','?')}\n"
+                f"  Title      : {item.get('title','')}\n"
+                f"  User Story : {item.get('description','')}\n"
+                f"  INVEST flags (Sprint 0): {item.get('invest_flags') or 'none'}\n"
+            )
+
+            if include_enrichment:
+                enr = item.get("enrichment") or {}
+                if enr.get("statement"):
+                    block += f"  Orig Statement : {enr['statement']}\n"
+                if enr.get("context"):
+                    block += f"  Orig Context   : {enr['context']}\n"
+                if enr.get("rationale"):
+                    rat = enr["rationale"]
+                    block += f"  Orig Rationale : {rat[:300]}{'…' if len(rat) > 300 else ''}\n"
+                orig_acs = enr.get("acceptance_criteria") or []
+                if orig_acs:
+                    for i, ac in enumerate(orig_acs, 1):
+                        block += f"  Orig AC[{i}]     : {ac}\n"
+                else:
+                    block += "  Orig AC        : (none)\n"
+                if enr.get("priority"):
+                    block += f"  Priority       : {enr['priority']}\n"
+                if enr.get("source_elicitation_id"):
+                    block += f"  Elicitation ID : {enr['source_elicitation_id']}\n"
+
+            lines.append(block)
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_invest_block(invest_result: InvestAssessmentList) -> str:
+        """Render Pass 1 INVEST assessments compactly for the Pass 2 prompt."""
+        lines: List[str] = []
+        for a in invest_result.assessments:
+            failed = [
+                c for c in _INVEST_CRITERIA
+                if not getattr(getattr(a, c), "passed", True)
+            ]
+            block = (
+                f"[{a.pbi_id}]  failed={failed or 'none'}\n"
+                f"  thought: {a.thought}\n"
+            )
+            for iss in a.issues:
+                block += (
+                    f"  ISSUE [{iss.criterion}] {iss.severity}: {iss.message}\n"
+                    f"    → suggestion    : {iss.suggestion}\n"
+                    f"    → repair_action : {iss.repair_action}"
+                )
+                if iss.repaired_value:
+                    block += f"\n    → repaired_value: {iss.repaired_value}"
+                if iss.sub_stories:
+                    for ss in iss.sub_stories:
+                        block += (
+                            f"\n      sub: title={ss.title}  "
+                            f"capability={ss.capability}  "
+                            f"pts={ss.story_points}"
+                        )
+                block += "\n"
+            lines.append(block)
+        return "\n".join(lines)
+
+    @staticmethod
+    def _feedback_block(feedback: str, context: str) -> str:
+        """Render a reviewer feedback constraint block for injection into system prompts."""
+        if not feedback:
+            return ""
+        return (
+            f"\n\n{'━'*12} REVIEWER FEEDBACK — previous refinement was REJECTED {'━'*12}\n"
+            f"{feedback}\n"
+            f"You MUST address ALL points above when performing {context}.\n"
+            f"{'━'*70}\n"
+        )

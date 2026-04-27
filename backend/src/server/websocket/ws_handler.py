@@ -50,11 +50,35 @@ from src.orchestrator.graph import ARTIFACT_SUMMARIES
 
 log = logging.getLogger(__name__)
 
-# Maps review_type to the corresponding artifact key that indicates approval in the review_turn output.
+# Maps review_type to the corresponding artifact key that indicates approval
+# in the review_turn output.
 REVIEW_TYPES = {
-    "interview_record": "reviewed_interview_record",
-    "product_backlog": "product_backlog_approved",
+    "product_vision":            "reviewed_product_vision",
+    "elicitation_agenda":        "reviewed_elicitation_agenda",
+    "interview_record":          "reviewed_interview_record",
+    "requirement_list":          "requirement_list_approved",
+    "product_backlog":           "product_backlog_approved",
     "validated_product_backlog": "validated_product_backlog_approved",
+}
+
+# All review node names that produce approve/reject results after interrupt
+# resumes.  Used in _dispatch_node to route to _handle_review_result.
+_REVIEW_NODE_NAMES = {
+    "review_product_vision_turn",
+    "review_elicitation_agenda_turn",
+    "review_interview_record_turn",
+    "review_requirement_list_turn",
+    "review_product_backlog_turn",
+    "review_validated_product_backlog_turn",
+}
+
+# Agent nodes that produce artifacts consumed by a subsequent interrupt —
+# nothing to emit directly; the artifact card is sent when the next interrupt
+# fires.
+_AGENT_NODE_NAMES = {
+    "sprint_agent_turn",
+    "analyst_turn",
+    "analyst_estimation_turn",
 }
 
 
@@ -174,9 +198,7 @@ class WSHandler:
         Reads review_type and ui_summary from the interrupt payload,
         emits a "workflow_summary" message, then emits the artifact card.
  
-        All three HITL nodes (review_interview_record_turn,
-        review_product_backlog_turn, analyst_review_turn) follow the same
-        interrupt payload schema:
+        All HITL nodes follow the same interrupt payload schema:
           {
             "review_type":    "<str>",
             "artifact_data":  <dict>,
@@ -186,7 +208,7 @@ class WSHandler:
         """
         log.info("[WS] Graph interrupted (review gate) chat=%s", chat_id)
 
-        # Extract interview_record from interrupt payload
+        # Extract artifact from interrupt payload
         payloads = interrupt_data[0].value
 
         record_content = payloads.get("artifact_data")
@@ -222,7 +244,7 @@ class WSHandler:
             "messageId": artifact_mess_id,
             "artifact": artifact_display,
             "awaitingFeedback": True,
-            "iteration": 1, # Đoạn này cần thêm phần xử lý version number của artifact khi có nhiều revision, hiện tạm hardcode là 1
+            "iteration": 1, # TODO: track version number across revisions
         }
 
         self._send(ws, lock, ws_payload)
@@ -246,16 +268,17 @@ class WSHandler:
         if node_name in ("interviewer_turn", "enduser_turn"):
             self._handle_conversation_turn(updates, chat_id, ws, lock)
 
-        elif node_name in ("review_interview_record_turn", "review_product_backlog_turn", "review_validated_product_backlog_turn"):
+        elif node_name in _REVIEW_NODE_NAMES:
             # This fires AFTER interrupt resumes — contains approve/reject result
             self._handle_review_result(updates, chat_id, ws, lock)
 
-        # ── Agent turns that produce artifacts (no interrupt needed here) ──
-        # sprint_agent_turn and analyst_turn do NOT emit artifacts directly;
-        # their artifacts are emitted when the subsequent interrupt node fires.
-        elif node_name in ("sprint_agent_turn", "analyst_turn"):
+        elif node_name in _AGENT_NODE_NAMES:
+            # Agent turns that produce artifacts (no interrupt needed here).
+            # Their artifacts are emitted when the subsequent interrupt node fires.
             log.debug("[WS] %s completed — artifact will be emitted at next interrupt.", node_name)
 
+        else:
+            log.debug("[WS] Unhandled node: %s", node_name)
 
     def _handle_conversation_turn(self, updates: Dict, chat_id: str, ws, lock):
         """Stream the last conversation turn (interviewer or enduser)."""
@@ -279,14 +302,19 @@ class WSHandler:
         Handle review_turn output after interrupt resumes.
 
         approved=True:
-          - emit artifact_accepted for interview_record
-          - graph will continue → sprint_agent_turn (handled in next iteration)
+          - emit artifact_accepted for the reviewed artifact
+          - graph will continue to the next node (handled in next iteration)
 
         approved=False:
           - emit revision_start so frontend shows "Revising..." spinner
-          - graph re-routes to interviewer_turn; next interrupt will emit artifact_revised
+          - graph re-routes to the appropriate agent turn; next interrupt
+            will emit artifact_revised
         """
         ctx = self._artifact_ctx.get(chat_id)
+        if not ctx:
+            log.warning("[WS] _handle_review_result: no artifact context for chat=%s", chat_id)
+            return
+
         artifact_id = ctx.get("artifact_id")
         review_type = ctx.get("review_type")
         review_file = REVIEW_TYPES.get(review_type)
@@ -295,12 +323,11 @@ class WSHandler:
         approved = review_file in artifacts  # presence of review result sentinel indicates approval
 
         if approved:
-            log.info("[WS] Review APPROVED chat=%s", chat_id)
-
+            log.info("[WS] Review APPROVED chat=%s type=%s", chat_id, review_type)
 
             artifact_display = {
                 "id": artifact_id,
-                "content": json.dumps(updates.get("artifacts", {}).get(review_file), indent=2, ensure_ascii=False),
+                "content": json.dumps(artifacts.get(review_file), indent=2, ensure_ascii=False),
                 "language": "json",
             }
 
@@ -316,7 +343,7 @@ class WSHandler:
                 "artifactId": artifact_id,
             })
 
-            # Clear interview_record context — sprint agent will set new context
+            # Clear context — next node will set new context if needed
             self._artifact_ctx.pop(chat_id, None)
 
         else:

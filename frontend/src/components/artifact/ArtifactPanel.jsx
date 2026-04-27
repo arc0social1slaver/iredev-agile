@@ -2,12 +2,17 @@
 // =============================================================================
 // Right-side panel with smart tabs based on artifact type.
 //
-// interview_record        → tabs: Transcript, Requirements
+// interview_record          → tabs: Transcript, Requirements
 // reviewed_interview_record → tabs: Transcript, Requirements
-// product_backlog         → tabs: Backlog
-// product_backlog_approved → tabs: Backlog
+// product_vision            → tabs: JSON (raw view)
+// elicitation_agenda        → tabs: JSON (raw view)
+// requirement_list          → tabs: JSON (raw view)
+// user_story_draft          → tabs: JSON (raw view)
+// analyst_estimation        → tabs: JSON (raw view)
+// product_backlog           → tabs: Backlog
+// product_backlog_approved  → tabs: Backlog
 // validated_product_backlog → tabs: Validated Backlog
-// fallback                → tabs: JSON (raw view)
+// fallback                  → tabs: JSON (raw view)
 // =============================================================================
 import { useState, useMemo } from 'react'
 import { Copy, Check, Download, X, FileText, List, ClipboardList, CheckSquare, Code2 } from 'lucide-react'
@@ -40,11 +45,46 @@ function detectArtifactType(artifact) {
   if (data.requirements_identified !== undefined && data.status === 'approved') {
     return 'interview_record'
   }
-  // validated_product_backlog
+
+  // product_vision / reviewed_product_vision
+  if (data.target_audiences !== undefined && data.core_problem !== undefined) {
+    return 'product_vision'
+  }
+
+  // elicitation_agenda_artifact / reviewed_elicitation_agenda
+  if (data.items && data.items[0]?.elicitation_goal !== undefined) {
+    return 'elicitation_agenda'
+  }
+
+  // requirement_list / requirement_list_approved
+  if (data.requirements !== undefined && data.synthesised_at !== undefined) {
+    return 'requirement_list'
+  }
+
+  // user_story_draft
+  if (data.stories !== undefined && data.total_stories !== undefined) {
+    return 'user_story_draft'
+  }
+
+  // analyst_estimation
+  if (data.stories !== undefined && data.estimation_stats !== undefined) {
+    return 'analyst_estimation'
+  }
+
+  // validated_product_backlog (has items with acceptance_criteria in quality)
+  if (data.items && data.status === 'validated') {
+    return 'validated_product_backlog'
+  }
+  // validated_product_backlog (has refinement_stats)
   if (data.items && data.refinement_stats !== undefined) {
     return 'validated_product_backlog'
   }
-  // product_backlog
+  // validated_product_backlog (items have quality.acceptance_criteria with content)
+  if (data.items && data.items[0]?.quality?.acceptance_criteria?.length > 0) {
+    return 'validated_product_backlog'
+  }
+
+  // product_backlog (has items with methodology)
   if (data.items && data.methodology !== undefined) {
     return 'product_backlog'
   }
@@ -77,6 +117,21 @@ function getTabsForType(artifactType) {
         { id: 'json',          label: 'JSON',          icon: Code2 },
       ]
   }
+}
+
+// ── Friendly display name per artifact type ──────────────────────────────────
+function getArtifactDisplayName(artifactType) {
+  const NAMES = {
+    interview_record:          'Interview Record',
+    product_vision:            'Product Vision',
+    elicitation_agenda:        'Elicitation Agenda',
+    requirement_list:          'Requirement List',
+    user_story_draft:          'User Story Draft',
+    analyst_estimation:        'Analyst Estimation',
+    product_backlog:           'Product Backlog',
+    validated_product_backlog: 'Validated Product Backlog',
+  }
+  return NAMES[artifactType] || artifactType.replace(/_/g, ' ')
 }
 
 // ── JSON fallback view ────────────────────────────────────────────────────────
@@ -190,7 +245,7 @@ export function ArtifactPanel({ artifact, onClose, onAccept, onRevise }) {
             )}
           </div>
           <div className="text-[10.5px] text-[#8A7F72] capitalize leading-tight">
-            {artifactType.replace(/_/g, ' ')}
+            {getArtifactDisplayName(artifactType)}
             {artifact.awaitingFeedback && (
               <span className="ml-1.5 text-[#C96A42]">· awaiting feedback</span>
             )}

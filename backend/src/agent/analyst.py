@@ -672,7 +672,14 @@ class AnalystAgent(BaseAgent):
             invest_flags = fa.invest_flags if fa else []
             invest_pass  = len(invest_flags) == 0
 
-            needs_split = bool(est and est.needs_split) or (sp > _SPLIT_THRESHOLD)
+            # A split is only actionable when the story has actual proposals.
+            # Without proposals, SprintAgent.process_splits() cannot create
+            # sub-stories and would enter an infinite loop.
+            has_proposals = bool(fa and fa.split_proposals)
+            needs_split = (
+                (bool(est and est.needs_split) or (sp > _SPLIT_THRESHOLD))
+                and has_proposals
+            )
             if needs_split:
                 split_count += 1
 
@@ -740,7 +747,11 @@ class AnalystAgent(BaseAgent):
             "estimated_at":     datetime.now().isoformat(),
             "split_round":      split_round,
             "stories":          assembled_stories,
-            "has_pending_splits": estimation.has_pending_splits or split_count > 0,
+            # has_pending_splits is only True when at least one story has
+            # needs_split=True AND non-empty split_proposals (actionable splits).
+            # Without this guard, the split loop may run forever when the LLM
+            # estimates sp > 8 but provides no proposals.
+            "has_pending_splits": split_count > 0,
             "total_story_points": total_points,
             "estimation_stats": {
                 "total_stories":        len(assembled_stories),

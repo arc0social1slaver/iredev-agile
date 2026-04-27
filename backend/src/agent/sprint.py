@@ -533,8 +533,13 @@ class SprintAgent(BaseAgent):
                 })
 
         if not new_stories:
-            logger.info("[SprintAgent] No split sub-stories created — proceeding to assembly.")
-            return {"split_round": split_round}
+            logger.info(
+                "[SprintAgent] No split sub-stories created (needs_split=True but "
+                "split_proposals empty). Forcing split_round to MAX to proceed to assembly."
+            )
+            # Force split_round to MAX so sprint_agent_turn_fn routes to
+            # process_backlog() instead of re-entering process_splits().
+            return {"split_round": _MAX_SPLIT_ROUND}
 
         # Rebuild user_story_draft: keep non-split stories, replace split ones with children
         existing_stories = [

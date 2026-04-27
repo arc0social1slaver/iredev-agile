@@ -1,38 +1,32 @@
 """
-enduser.py – EndUserAgent  (constrained stakeholder simulator)
+enduser.py – EndUserAgent (v2: High-Fidelity Stakeholder Simulation)
 
-Role
-────
-Simulate a realistic business stakeholder who responds to the interviewer.
-The agent reads the latest interviewer question, consults its persona and
-project knowledge, and posts a contextually appropriate reply.
+Changes from v1
+───────────────
+1. Persona Archetypes — "The Resister", "The Perfectionist", "The Optimist".
+   Archetype is read from config or inferred from persona description.
+   Injected into task so the ReAct prompt honours the archetype's friction
+   patterns (impatience, hedging, over-optimism).
 
-Design constraints (enforced at multiple levels)
-─────────────────────────────────────────────────
-1. EndUserAgent CANNOT end the interview.  The 'respond' tool uses
-   should_return=True to exit the agent's OWN ReAct loop, but it does NOT
-   set interview_complete.  Only InterviewerAgent can set that flag.
+2. Negative Vocabulary Constraints — agent is forbidden from using or
+   understanding technical jargon. A banned-term list is injected into the
+   task. If the interviewer uses a banned term, the agent must respond as a
+   real non-technical stakeholder would: ask for clarification.
 
-2. The 4-layer behavioural constraints (Technical Language Wall, Local
-   Disclosure Rule, Hesitation Mechanism, Emotional Authenticity) are
-   enforced through:
-     a) enduser_profile.txt   — base persona with constraints
-     b) process() task string — per-turn constraint reminders derived from
-                                 the specific question being answered
-     c) Prompt engineering    — the format template in enduser_react.txt
+3. Implicit Requirements (Knowledge Gaps) — the agent is given a structured
+   set of "hidden concerns" it must NOT volunteer until the interviewer drills
+   down with Why / What if / specific scenario questions. This models the
+   real-world phenomenon where stakeholders only surface edge cases when probed.
 
-3. Knowledge Base access is constrained: the 'search_knowledge' tool may be
-   called at most once per turn.  This limit is enforced IN CODE via the
-   '_sk_used_this_turn' flag in accumulated_updates (ThinkModule merges it
-   into effective_state before every tool call).  The agent must not treat
-   retrieved context as permission to dump all known facts — the Local
-   Disclosure Rule still applies to retrieved knowledge.
+4. Information Asymmetry preserved — agent still does NOT read
+   elicitation_agenda or ProductVision internals.
 
-ReAct tools
-───────────
-  search_knowledge – optional domain context lookup (max once per turn,
-                     enforced in code — subsequent calls return a block message)
-  respond          – post the stakeholder reply and exit the current turn
+Handshake protocol (unchanged)
+──────────────────────────────
+InterviewerAgent writes → state["current_question"]
+EndUserAgent reads      → builds task from current_question
+EndUserAgent writes     → state["enduser_answer"]  (via respond tool)
+InterviewerAgent reads  → record_answer tool picks it up next turn
 """
 
 from __future__ import annotations
@@ -46,15 +40,78 @@ from .base import BaseAgent, Tool, ToolResult
 logger = logging.getLogger(__name__)
 
 
-class EndUserAgent(BaseAgent):
-    """Simulates a constrained business stakeholder in a requirements interview."""
+# ─────────────────────────────────────────────────────────────────────────────
+# Archetype definitions
+# ─────────────────────────────────────────────────────────────────────────────
 
-    def __init__(self, config_path: Optional[str] = None):
+_ARCHETYPE_PROMPTS: Dict[str, str] = {
+    "resister": """\
+ARCHETYPE — The Resister:
+  • You are busy and skeptical. Every question costs you time.
+  • You give short, direct answers. You do NOT elaborate unless pushed.
+  • If the interviewer repeats something you've already addressed,
+    show mild impatience: "I already mentioned that."
+  • You doubt whether "the system" will actually solve the real problem.
+  • You will NOT answer hypotheticals enthusiastically — "I don't know,
+    that hasn't happened yet." is a perfectly acceptable response for you.""",
+
+    "perfectionist": """\
+ARCHETYPE — The Perfectionist:
+  • You are afraid of committing to something that turns out to be wrong.
+  • Every answer comes with qualifications: "That depends…",
+    "I'd need to check with my colleagues first…", "I'm not 100% sure."
+  • You notice edge cases and volunteer them even when not asked.
+  • You are reluctant to give a final answer without caveats.
+  • If the interviewer asks you to confirm something, you add conditions.""",
+
+    "optimist": """\
+ARCHETYPE — The Optimist:
+  • You want the project to succeed and assume it will.
+  • You underestimate complexity: "Oh, that should be easy."
+  • You volunteer feature ideas and expansions beyond what was asked.
+  • You rarely mention risks or blockers unless directly forced to.
+  • You tend to over-promise what the system should do.""",
+}
+
+_DEFAULT_ARCHETYPE = "resister"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Banned technical vocabulary
+# ─────────────────────────────────────────────────────────────────────────────
+
+_BANNED_JARGON = [
+    "UI/UX", "responsive", "lazy loading", "WCAG", "API", "backend",
+    "frontend", "microservice", "scalable", "agile", "sprint", "user story",
+    "endpoint", "refactor", "deploy", "stack", "pipeline", "cache",
+    "throughput", "latency", "asynchronous", "webhook", "OAuth",
+    "idempotent", "schema", "payload", "middleware",
+]
+
+
+class EndUserAgent(BaseAgent):
+    """High-fidelity project stakeholder simulation with archetype, jargon
+    constraints, and implicit requirements (knowledge gaps)."""
+
+    def __init__(self):
         super().__init__(name="enduser")
 
-        agent_cfg      = self._raw_config.get("agents", {}).get("enduser", {})
-        custom         = agent_cfg.get("custom_params", {})
+        agent_cfg = self._raw_config.get("agents", {}).get("enduser", {})
+        custom    = agent_cfg.get("custom_params", {})
+
         self._persona: str = custom.get("persona", "business stakeholder")
+
+        # ── Archetype ────────────────────────────────────────────────────────
+        raw_archetype    = custom.get("archetype", "").strip().lower()
+        self._archetype  = raw_archetype if raw_archetype in _ARCHETYPE_PROMPTS \
+                           else _DEFAULT_ARCHETYPE
+
+        # ── Implicit requirements (knowledge gaps) ───────────────────────────
+        # These are concerns the agent must NOT volunteer — only reveal when
+        # the interviewer drills down with "why?" / "what if?" questions.
+        raw_implicit: Any = custom.get("implicit_requirements", [])
+        self._implicit_requirements: List[str] = (
+            raw_implicit if isinstance(raw_implicit, list) else []
+        )
 
     # ── Tool registration ──────────────────────────────────────────────────
 
@@ -62,54 +119,44 @@ class EndUserAgent(BaseAgent):
         self.register_tool(Tool(
             name="search_knowledge",
             description=(
-                "Look up domain background or business context to help you answer "
-                "more accurately.  Use at most ONCE per turn — this limit is enforced "
-                "in code; a second call returns a block message and you must call "
-                "'respond' immediately.\n"
-                "Input: {\"query\": \"<what you need to know>\"}"
+                "Look up domain background or business context to help answer "
+                "more accurately. Use at most ONCE per turn.\n"
+                'Input: {"query": "<what you need to know>"}'
             ),
             func=self._tool_search_knowledge,
         ))
         self.register_tool(Tool(
             name="respond",
             description=(
-                "Post your reply to the interviewer's question.  "
-                "This ENDS your current turn.  Stay fully in character.\n"
-                "Input: {\"message\": \"<your answer — 2-5 sentences, in character>\"}"
+                "Post your reply to the interviewer's question. "
+                "Always the LAST tool call in a turn. Stay fully in character.\n"
+                'Input: {"message": "<your answer — 2–4 sentences, in character>"}'
             ),
             func=self._tool_respond,
         ))
 
-    # ── Tools ──────────────────────────────────────────────────────────────
+    # ── Tool implementations ───────────────────────────────────────────────
 
     def _tool_search_knowledge(
-        self, query: str, state: Dict = None, **_
+        self,
+        query: str,
+        state: Dict = None,
+        **_,
     ) -> ToolResult:
-        """Retrieve domain context from the knowledge base.
-
-        Enforces the 'at most once per turn' rule in code using the
-        '_sk_used_this_turn' flag in accumulated_updates.  ThinkModule merges
-        accumulated_updates into effective_state before every tool call, so
-        the flag is visible to this function on any subsequent call within
-        the same ReAct loop.
-        """
-        # ── Hard enforcement: once per turn ────────────────────────────────
-        if state and state.get("_sk_used_this_turn"):
+        if (state or {}).get("_sk_used_this_turn"):
             return ToolResult(
                 observation=(
                     "[RULE VIOLATION] search_knowledge may only be called ONCE per turn. "
-                    "You MUST call 'respond' now — no further searching is permitted."
+                    "Call 'respond' now."
                 ),
-                # No state_updates — flag stays True so any further call also blocks.
-                # should_return=False so the loop continues and the agent can call respond.
             )
 
-        # ── Perform the actual search ──────────────────────────────────────
         if self.knowledge is None:
             return ToolResult(
                 observation="Knowledge base not available.",
                 state_updates={"_sk_used_this_turn": True},
             )
+
         try:
             from ..orchestrator.state import ProcessPhase
             docs = self.knowledge.retrieve(query, phase=ProcessPhase.ELICITATION, k=3)
@@ -135,117 +182,113 @@ class EndUserAgent(BaseAgent):
     def _tool_respond(
         self,
         message: str = "",
-        state:   Dict = None,
+        state: Dict = None,
         **_,
     ) -> ToolResult:
-        """Append the stakeholder's reply to the conversation and exit the turn.
-
-        Note: should_return=True exits the EndUserAgent's ReAct loop only.
-        It does NOT set interview_complete — that remains exclusively with
-        InterviewerAgent._tool_write_interview_record.
-
-        Resets '_sk_used_this_turn' so the next turn starts fresh.
-        """
+        """Record the stakeholder's reply and exit the ReAct loop."""
         if not message:
-            logger.warning(
-                "[EndUserAgent] respond called with empty message; using fallback."
-            )
+            logger.warning("[EndUserAgent] respond called with empty message; using fallback.")
             message = "(I'm not sure I understood the question — could you rephrase?)"
 
-        conversation = list(state.get("conversation") or [])
+        conversation = list((state or {}).get("conversation") or [])
         conversation.append({
             "role":      "enduser",
             "content":   message,
             "timestamp": datetime.now().isoformat(),
         })
-        turn_count = (state.get("turn_count") or 0) + 1
+        turn_count = ((state or {}).get("turn_count") or 0) + 1
 
-        logger.info("[Stakeholder → Interviewer] %s", message)
         self.memory.add(message, role="assistant")
 
         return ToolResult(
             observation="Response posted.",
             state_updates={
-                "conversation":       conversation,
-                "turn_count":         turn_count,
-                "_sk_used_this_turn": False,   # reset for the next turn
+                "enduser_answer":      message,
+                "conversation":        conversation,
+                "turn_count":          turn_count,
+                "_sk_used_this_turn":  False,
             },
-            should_return=True,   # exits OWN ReAct loop; does NOT end interview
+            should_return=True,
         )
 
-    # ── Constraint analysis helpers ────────────────────────────────────────
+    # ── Task builder ───────────────────────────────────────────────────────
 
-    @staticmethod
-    def _detect_technical_terms(question: str) -> List[str]:
-        """Flag technical terms in the interviewer's question for the agent."""
-        technical_vocabulary = {
-            "api", "apis", "rest", "restful", "graphql", "endpoint", "endpoints",
-            "database", "db", "schema", "query", "sql", "nosql", "orm",
-            "frontend", "backend", "server", "client", "microservice", "service",
-            "framework", "library", "dependency", "package", "module",
-            "cache", "caching", "latency", "throughput", "async", "sync",
-            "webhook", "authentication", "oauth", "jwt", "token", "ssl", "tls",
-            "deployment", "devops", "ci/cd", "docker", "kubernetes", "cloud",
-            "state", "redux", "context", "component", "render", "hook",
-            "repository", "repo", "git", "branch", "merge", "pipeline",
-        }
-        words   = set(question.lower().split())
-        matches = [w for w in words if w in technical_vocabulary]
-        return matches
+    def _build_task(self, state: Dict[str, Any]) -> str:
+        """Compose the task prompt for this turn.
 
-    @staticmethod
-    def _classify_question_type(question: str) -> str:
-        """Classify the question to guide Layer 2 and Layer 3 application."""
-        q_lower = question.lower()
-        if any(w in q_lower for w in ("what if", "edge case", "error", "fail",
-                                       "exception", "when something goes wrong",
-                                       "corner case", "what happens if")):
-            return "edge_case"  # → trigger Layer 3 Hesitation Mechanism
-        if any(w in q_lower for w in ("all", "everything", "describe your",
-                                       "tell me about", "overview")):
-            return "broad"      # → trigger Layer 2 clarification request
-        return "specific"       # → answer directly, honour Layer 2 scope limit
+        Injects only what a real stakeholder would know:
+          • their own persona + archetype (behavioural instructions)
+          • banned technical vocabulary (negative constraints)
+          • implicit requirements they hold but haven't yet revealed
+          • the question being asked
+          • brief project context (description only)
+
+        Deliberately excludes: elicitation_agenda, elicitation_goal,
+        ProductVision internals.
+        """
+        question     = state.get("current_question", "").strip()
+        project_desc = state.get("project_description", "(not provided)")
+
+        if not question:
+            return (
+                "The interviewer has not asked a question yet. "
+                "Wait for a question before responding."
+            )
+
+        archetype_block = _ARCHETYPE_PROMPTS.get(self._archetype, "")
+
+        banned_block = (
+            "BANNED VOCABULARY (terms you must never use or understand naturally):\n"
+            + ", ".join(_BANNED_JARGON)
+            + "\n"
+            "If the interviewer uses any of these terms, respond as a real "
+            "non-technical person: ask what they mean in plain language."
+        )
+
+        implicit_block = ""
+        if self._implicit_requirements:
+            items = "\n".join(f"  • {r}" for r in self._implicit_requirements)
+            implicit_block = (
+                "HIDDEN CONCERNS (you hold these but must NOT volunteer them unprompted):\n"
+                + items + "\n"
+                "Reveal one of these ONLY IF the interviewer asks 'why?', "
+                "'what if X happens?', or a scenario-specific follow-up question.\n"
+                "Do NOT mention any of these in a normal answer."
+            )
+
+        parts = [
+            f"PERSONA: {self._persona}",
+            "",
+            archetype_block,
+            "",
+            banned_block,
+        ]
+        if implicit_block:
+            parts += ["", implicit_block]
+
+        parts += [
+            "",
+            "PROJECT CONTEXT (what you know as a stakeholder):",
+            f"  {project_desc}",
+            "",
+            "INTERVIEWER'S QUESTION:",
+            f"  {question}",
+            "",
+            "Answer the question from your stakeholder perspective.",
+            "Stay in character. Use plain, everyday language — not technical terms.",
+            "You may call search_knowledge once if you need domain context.",
+            "Then call respond with your answer.",
+        ]
+
+        return "\n".join(parts)
 
     # ── LangGraph node entry point ─────────────────────────────────────────
 
     def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """LangGraph node entry point for EndUserAgent."""
-        conversation = state.get("conversation") or []
-        retry_hint = state.get("_enduser_retry_hint", "")
-
-        # ── 1. SYNC NATIVE MEMORY FOR SIMULATED PERSONA ───────────────────
-        self.memory.refresh()  # Clear short-term buffer from previous runs
-        recent_turns = conversation[-8:] if conversation else []
-
-        for turn in recent_turns:
-            # REVERSE ROLES: For EndUser, its own messages are 'assistant', Interviewer is 'user'
-            if turn.get("role") == "enduser":
-                self.memory.add(turn["content"], role="assistant")
-            else:
-                self.memory.add(turn["content"], role="user")
-
-        # ── 2. EXTRACT LATEST QUESTION TO ANSWER ──────────────────────────
-        latest_question = "(none)"
-        if conversation and conversation[-1].get("role") == "interviewer":
-            latest_question = conversation[-1].get("content", "")
-
-        # ── 3. REVISED TASK PROMPT ────────────────────────────────────────
-        task = (
-            "━━━━━━━━  PROJECT CONTEXT  ━━━━━━━━\n"
-            f"{state.get('project_description', '(not provided)')}\n\n"
-            "━━━━━━━━  LATEST QUESTION TO ANSWER  ━━━━━━━━\n"
-            f"{latest_question}\n\n"
-            "━━━━━━━━  INSTRUCTIONS  ━━━━━━━━\n"
-            "Act as the stakeholder for this project. Answer the latest question naturally "
-            "based on your persona. Provide specific pain points, goals, and constraints.\n\n"
-            "CRITICAL RULES FOR STAKEHOLDER PERSONA:\n"
-            "1. DO NOT brainstorm or invent long lists of features. You are a regular user/stakeholder, NOT a software architect or product manager.\n"
-            "2. Keep your answers BRIEF and conversational (2 to 4 sentences maximum).\n"
-            "3. Focus ONLY on your actual pain points and basic needs. Do NOT suggest advanced technical features (like AI chatbots, LMS integration, or Gamification) unless specifically asked.\n"
-            "4. If the interviewer asks 'what additional features...', and your core needs are already met, simply say you don't have any more to add or that the current scope looks good enough for a first version.\n"
+        task = self._build_task(state)
+        return self.react(
+            state=state,
+            task=task,
+            tool_choice="required",
+            include_memory=True,
         )
-
-        if retry_hint:
-            task += f"\n[SYSTEM WARNING]: {retry_hint}\n"
-
-        return self.react(state, task, tool_choice="required")

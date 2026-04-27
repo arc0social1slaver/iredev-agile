@@ -23,7 +23,7 @@ iredev:
       max_react_iterations: 10
       custom_params:
         completeness_threshold: 0.80
-        max_turns: 10
+        max_turns: 100
 
     enduser:
       memory_type: "short_term"

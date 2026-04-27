@@ -194,9 +194,9 @@ assessment and AC generation without re-reading the requirement list.
 
   enrichment = {
     "statement":             <req.statement>,
-    "context":               <req.context>,
+    "context":               <req.context or "">,
     "rationale":             <req.rationale>,
-    "acceptance_criteria":   <req.acceptance_criteria>,   # original list
+    "acceptance_criteria":   <req.acceptance_criteria as list of strings>,
     "priority":              <req.priority>,
     "source_elicitation_id": <req.source_elicitation_id>,
     "stakeholder":           <req.stakeholder>,
@@ -265,6 +265,54 @@ return scores. You do not need to reorder for dependencies — just score correc
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Enrichment typed model
+# ─────────────────────────────────────────────────────────────────────────────
+
+class EnrichmentData(BaseModel):
+    """
+    Typed enrichment sub-model carrying original requirement fields.
+
+    Replaces Dict[str, Any] to satisfy OpenAI strict JSON schema requirement
+    that all objects have additionalProperties=false.
+
+    All fields are Optional with defaults so the LLM can omit fields
+    that are not available for a given requirement (e.g. null context).
+    """
+    statement:             str            = Field(
+        default="",
+        description="Verbatim requirement statement (The system SHALL …)."
+    )
+    context:               Optional[str]  = Field(
+        default=None,
+        description="Where/when the requirement applies. Null if universal."
+    )
+    rationale:             str            = Field(
+        default="",
+        description="Business justification including pain and 'So that' outcome."
+    )
+    acceptance_criteria:   List[str]      = Field(
+        default_factory=list,
+        description="Original Given-When-Then criteria strings from elicitation."
+    )
+    priority:              str            = Field(
+        default="medium",
+        description="high | medium | low — inherited from elicitation."
+    )
+    source_elicitation_id: str            = Field(
+        default="",
+        description="EL-NNN traceability key, or 'PD' if inferred from project description."
+    )
+    stakeholder:           str            = Field(
+        default="",
+        description="Primary stakeholder role who expressed this requirement."
+    )
+    req_type:              str            = Field(
+        default="functional",
+        description="functional | non_functional | constraint | out_of_scope"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Pass 1 schemas — Story Creation
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -293,7 +341,11 @@ class UserStoryItem(BaseModel):
     domain: str = Field(
         description="Epic area — copied verbatim from the requirement's epic field."
     )
-    enrichment: Dict[str, Any] = Field(
+    # ── FIX: replaced Dict[str, Any] with typed EnrichmentData model ─────────
+    # OpenAI strict JSON schema requires all object types to declare
+    # additionalProperties=false, which Dict[str, Any] cannot satisfy.
+    # EnrichmentData is a fully-typed Pydantic model with explicit fields.
+    enrichment: EnrichmentData = Field(
         description=(
             "Original requirement fields for AnalystAgent traceability: "
             "statement, context, rationale, acceptance_criteria, priority, "
@@ -474,6 +526,8 @@ class SprintAgent(BaseAgent):
                         f"so that {self._extract_benefit(parent_story.get('description', ''))}."
                     ),
                     "domain":      parent_story.get("domain", ""),
+                    # Carry enrichment forward — already a dict at this point
+                    # (serialised from EnrichmentData when stored in artifact)
                     "enrichment":  parent_story.get("enrichment", {}),
                     "thought":     f"Split child {suffix} of {parent_id}: {proposal.get('reasoning', '')}",
                 })
@@ -567,11 +621,18 @@ class SprintAgent(BaseAgent):
                 "[SprintAgent] Pass 1 complete — %d stories created.", len(story_list.stories)
             )
 
+            # Serialise stories: convert EnrichmentData to dict for artifact storage
+            serialised_stories = []
+            for s in story_list.stories:
+                story_dict = s.model_dump()
+                # enrichment is already serialised to dict by model_dump()
+                serialised_stories.append(story_dict)
+
             artifacts["user_story_draft"] = {
                 "id":          str(uuid.uuid4()),
                 "session_id":  state.get("session_id", ""),
                 "created_at":  datetime.now().isoformat(),
-                "stories":     [s.model_dump() for s in story_list.stories],
+                "stories":     serialised_stories,
                 "total_stories": len(story_list.stories),
                 "pass_notes":  story_list.pass_notes,
                 **({"rebuild_feedback": feedback} if feedback else {}),
@@ -610,8 +671,15 @@ class SprintAgent(BaseAgent):
             f"REQUIREMENTS TO CONVERT ({len(requirements)} items):\n\n"
             f"{self._format_requirements_block(requirements)}\n\n"
             "Generate exactly ONE User Story for EVERY requirement listed above.\n"
-            "Preserve input order. Include the enrichment sub-dict for each story.\n"
-            "Requirements with status='excluded' have already been removed."
+            "Preserve input order. Include the enrichment sub-object for each story.\n"
+            "Requirements with status='excluded' have already been removed.\n\n"
+            "ENRICHMENT FIELD INSTRUCTIONS:\n"
+            "  The enrichment field is a structured object with these exact fields:\n"
+            "    statement, context, rationale, acceptance_criteria (list of strings),\n"
+            "    priority, source_elicitation_id, stakeholder, req_type.\n"
+            "  Copy each field verbatim from the source requirement.\n"
+            "  If context is null/missing, set it to null.\n"
+            "  If acceptance_criteria is empty, set it to []."
         )
 
         return self.extract_structured(
@@ -1066,7 +1134,9 @@ class SprintAgent(BaseAgent):
         lines: List[str] = []
         for story in stories:
             req_id  = story.get("source_req_id", "?")
-            enr     = story.get("enrichment") or {}
+            # enrichment may be a dict (serialised from artifact) or EnrichmentData
+            raw_enr = story.get("enrichment") or {}
+            enr     = raw_enr if isinstance(raw_enr, dict) else raw_enr.model_dump()
             est     = est_lookup.get(req_id, {})
             rat     = enr.get("rationale", "")
             so_that = ""

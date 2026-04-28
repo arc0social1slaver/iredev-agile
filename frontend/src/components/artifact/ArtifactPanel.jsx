@@ -14,13 +14,25 @@
 // validated_product_backlog → tabs: Validated Backlog
 // fallback                  → tabs: JSON (raw view)
 // =============================================================================
-import { useState, useMemo } from 'react'
-import { Copy, Check, Download, X, FileText, List, ClipboardList, CheckSquare, Code2 } from 'lucide-react'
-import { Tooltip } from '../ui'
-import { ArtifactFeedbackBar } from './ArtifactFeedbackBar'
-import { TranscriptView, RequirementsView } from './views/InterviewRecordView'
-import { ProductBacklogView } from './views/ProductBacklogView'
-import { ValidatedBacklogView } from './views/ValidatedBacklogView'
+import { useState, useMemo } from "react";
+import {
+  Copy,
+  Check,
+  Download,
+  X,
+  FileText,
+  List,
+  ClipboardList,
+  CheckSquare,
+  Code2,
+} from "lucide-react";
+import { Tooltip } from "../ui";
+import { ArtifactFeedbackBar } from "./ArtifactFeedbackBar";
+import { TranscriptView, RequirementsView } from "./views/InterviewRecordView";
+import { ProductBacklogView } from "./views/ProductBacklogView";
+import { ValidatedBacklogView } from "./views/ValidatedBacklogView";
+import ProductVisionView from "./views/ProductVisionView";
+import { ElicitationAgendaView } from "./views/ElicitationAgendaView";
 
 // ── Detect artifact type from content ────────────────────────────────────────
 function detectArtifactType(artifact) {
@@ -99,23 +111,25 @@ function detectArtifactType(artifact) {
 // ── Tab definitions per artifact type ────────────────────────────────────────
 function getTabsForType(artifactType) {
   switch (artifactType) {
-    case 'interview_record':
+    case "interview_record":
       return [
-        { id: 'transcript',    label: 'Transcript',    icon: FileText },
-        { id: 'requirements',  label: 'Requirements',  icon: List },
-      ]
-    case 'product_backlog':
+        { id: "transcript", label: "Transcript", icon: FileText },
+        { id: "requirements", label: "Requirements", icon: List },
+      ];
+    case "product_backlog":
+      return [{ id: "backlog", label: "Backlog", icon: ClipboardList }];
+    case "product_vision":
+      return [{ id: "vision", label: "Vision", icon: List }];
+    case "elicitation_agenda":
       return [
-        { id: 'backlog',       label: 'Backlog',       icon: ClipboardList },
-      ]
-    case 'validated_product_backlog':
+        { id: "elicitation_agenda", label: "Elicitation Agenda", icon: List },
+      ];
+    case "validated_product_backlog":
       return [
-        { id: 'validated',     label: 'Validated Backlog', icon: CheckSquare },
-      ]
+        { id: "validated", label: "Validated Backlog", icon: CheckSquare },
+      ];
     default:
-      return [
-        { id: 'json',          label: 'JSON',          icon: Code2 },
-      ]
+      return [{ id: "json", label: "JSON", icon: Code2 }];
   }
 }
 
@@ -207,17 +221,21 @@ export function ArtifactPanel({ artifact, onClose, onAccept, onRevise }) {
   // ── Render active tab content ───────────────────────────────────────────────
   function renderTabContent() {
     switch (activeTab) {
-      case 'transcript':
-        return <TranscriptView data={parsedData} />
-      case 'requirements':
-        return <RequirementsView data={parsedData} />
-      case 'backlog':
-        return <ProductBacklogView data={parsedData} />
-      case 'validated':
-        return <ValidatedBacklogView data={parsedData} />
-      case 'json':
+      case "transcript":
+        return <TranscriptView data={parsedData} />;
+      case "requirements":
+        return <RequirementsView data={parsedData} />;
+      case "backlog":
+        return <ProductBacklogView data={parsedData} />;
+      case "validated":
+        return <ValidatedBacklogView data={parsedData} />;
+      case "vision":
+        return <ProductVisionView data={parsedData} />;
+      case "elicitation_agenda":
+        return <ElicitationAgendaView data={parsedData} />;
+      case "json":
       default:
-        return <JsonView content={artifact?.content || ''} />
+        return <JsonView content={artifact?.content || ""} />;
     }
   }
 

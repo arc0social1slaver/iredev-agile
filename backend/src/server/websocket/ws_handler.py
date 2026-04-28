@@ -233,6 +233,7 @@ class WSHandler:
             "id": artifact_id,
             "content": json.dumps(record_content, indent=2, ensure_ascii=False),
             "language": "json",
+            "type": payloads.get("review_type"),
         }
 
 
@@ -329,6 +330,7 @@ class WSHandler:
                 "id": artifact_id,
                 "content": json.dumps(artifacts.get(review_file), indent=2, ensure_ascii=False),
                 "language": "json",
+                "type": review_type,
             }
 
             # Mark artifact as accepted in DB

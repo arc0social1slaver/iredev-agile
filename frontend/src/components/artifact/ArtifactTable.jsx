@@ -11,8 +11,7 @@ export function ArtifactTable({ data, column, tableTitle }) {
               {column.map((val, idx) => (
                 <th
                   className={
-                    val.titleStyle ??
-                    `py-2 pr-2 font-semibold text-[#8A7F72] w-[80px] text-center`
+                    val.titleStyle ?? `py-2 pr-3 font-semibold text-[#8A7F72]`
                   }
                 >
                   {val.title}
@@ -31,9 +30,7 @@ export function ArtifactTable({ data, column, tableTitle }) {
                   {column.map((col, idex) => (
                     <td
                       key={idex}
-                      className={
-                        col.rowStyle ?? `py-2.5 pr-2 text-center align-top`
-                      }
+                      className={col.rowStyle ?? `py-2.5 pr-3 align-top`}
                     >
                       {col.displayValue(item) ?? item}
                     </td>

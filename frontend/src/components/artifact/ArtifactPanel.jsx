@@ -28,7 +28,11 @@ import {
 } from "lucide-react";
 import { Tooltip } from "../ui";
 import { ArtifactFeedbackBar } from "./ArtifactFeedbackBar";
-import { TranscriptView, RequirementsView } from "./views/InterviewRecordView";
+import {
+  TranscriptView,
+  RequirementsView,
+  InterviewRecordRequirementsView,
+} from "./views/InterviewRecordView";
 import { ProductBacklogView } from "./views/ProductBacklogView";
 import { ValidatedBacklogView } from "./views/ValidatedBacklogView";
 import ProductVisionView from "./views/ProductVisionView";
@@ -36,76 +40,23 @@ import { ElicitationAgendaView } from "./views/ElicitationAgendaView";
 
 // ── Detect artifact type from content ────────────────────────────────────────
 function detectArtifactType(artifact) {
-  if (!artifact?.content) return 'unknown'
+  if (!artifact?.content) return "unknown";
 
-  let data = null
+  let data = null;
   try {
-    data = typeof artifact.content === 'string'
-      ? JSON.parse(artifact.content)
-      : artifact.content
+    data =
+      typeof artifact.content === "string"
+        ? JSON.parse(artifact.content)
+        : artifact.content;
   } catch {
-    return 'text'
+    return "text";
   }
 
-  if (!data) return 'unknown'
+  if (!data) return "unknown";
 
-  // interview_record or reviewed_interview_record
-  if (data.requirements_identified !== undefined && data.conversation !== undefined) {
-    return 'interview_record'
-  }
-  // reviewed_interview_record (has status: "approved")
-  if (data.requirements_identified !== undefined && data.status === 'approved') {
-    return 'interview_record'
-  }
+  if (artifact.type) return artifact.type;
 
-  // product_vision / reviewed_product_vision
-  if (data.target_audiences !== undefined && data.core_problem !== undefined) {
-    return 'product_vision'
-  }
-
-  // elicitation_agenda_artifact / reviewed_elicitation_agenda
-  if (data.items && data.items[0]?.elicitation_goal !== undefined) {
-    return 'elicitation_agenda'
-  }
-
-  // requirement_list / requirement_list_approved
-  if (data.requirements !== undefined && data.synthesised_at !== undefined) {
-    return 'requirement_list'
-  }
-
-  // user_story_draft
-  if (data.stories !== undefined && data.total_stories !== undefined) {
-    return 'user_story_draft'
-  }
-
-  // analyst_estimation
-  if (data.stories !== undefined && data.estimation_stats !== undefined) {
-    return 'analyst_estimation'
-  }
-
-  // validated_product_backlog (has items with acceptance_criteria in quality)
-  if (data.items && data.status === 'validated') {
-    return 'validated_product_backlog'
-  }
-  // validated_product_backlog (has refinement_stats)
-  if (data.items && data.refinement_stats !== undefined) {
-    return 'validated_product_backlog'
-  }
-  // validated_product_backlog (items have quality.acceptance_criteria with content)
-  if (data.items && data.items[0]?.quality?.acceptance_criteria?.length > 0) {
-    return 'validated_product_backlog'
-  }
-
-  // product_backlog (has items with methodology)
-  if (data.items && data.methodology !== undefined) {
-    return 'product_backlog'
-  }
-  // product_backlog_approved sentinel (same shape as product_backlog)
-  if (data.items) {
-    return 'product_backlog'
-  }
-
-  return 'json'
+  return "json";
 }
 
 // ── Tab definitions per artifact type ────────────────────────────────────────
@@ -113,7 +64,11 @@ function getTabsForType(artifactType) {
   switch (artifactType) {
     case "interview_record":
       return [
-        { id: "transcript", label: "Transcript", icon: FileText },
+        { id: "interview_requirements", label: "Requirements", icon: List },
+      ];
+    case "requirement_list":
+      return [
+        // { id: "transcript", label: "Transcript", icon: FileText },
         { id: "requirements", label: "Requirements", icon: List },
       ];
     case "product_backlog":
@@ -136,93 +91,103 @@ function getTabsForType(artifactType) {
 // ── Friendly display name per artifact type ──────────────────────────────────
 function getArtifactDisplayName(artifactType) {
   const NAMES = {
-    interview_record:          'Interview Record',
-    product_vision:            'Product Vision',
-    elicitation_agenda:        'Elicitation Agenda',
-    requirement_list:          'Requirement List',
-    user_story_draft:          'User Story Draft',
-    analyst_estimation:        'Analyst Estimation',
-    product_backlog:           'Product Backlog',
-    validated_product_backlog: 'Validated Product Backlog',
-  }
-  return NAMES[artifactType] || artifactType.replace(/_/g, ' ')
+    interview_record: "Interview Record",
+    product_vision: "Product Vision",
+    elicitation_agenda: "Elicitation Agenda",
+    requirement_list: "Requirement List",
+    user_story_draft: "User Story Draft",
+    analyst_estimation: "Analyst Estimation",
+    product_backlog: "Product Backlog",
+    validated_product_backlog: "Validated Product Backlog",
+  };
+  return NAMES[artifactType] || artifactType.replace(/_/g, " ");
 }
 
 // ── JSON fallback view ────────────────────────────────────────────────────────
 function JsonView({ content }) {
-  let pretty = content
+  let pretty = content;
   try {
-    pretty = JSON.stringify(JSON.parse(content), null, 2)
+    pretty = JSON.stringify(JSON.parse(content), null, 2);
   } catch {}
 
-  const lines = (pretty || '').split('\n')
+  const lines = (pretty || "").split("\n");
   return (
     <div className="h-full bg-[#F5F1EA] p-4 overflow-auto">
       <pre className="text-[11.5px] font-mono text-[#2D2820] leading-relaxed">
         {lines.map((line, i) => (
-          <div key={i} className="flex gap-4 hover:bg-black/[0.025] px-1 rounded">
-            <span className="select-none text-[#C0B8AE] text-right w-6 flex-shrink-0">{i + 1}</span>
-            <span>{line || ' '}</span>
+          <div
+            key={i}
+            className="flex gap-4 hover:bg-black/[0.025] px-1 rounded"
+          >
+            <span className="select-none text-[#C0B8AE] text-right w-6 flex-shrink-0">
+              {i + 1}
+            </span>
+            <span>{line || " "}</span>
           </div>
         ))}
       </pre>
     </div>
-  )
+  );
 }
 
 // ── Main ArtifactPanel ────────────────────────────────────────────────────────
 export function ArtifactPanel({ artifact, onClose, onAccept, onRevise }) {
-  const artifactType = useMemo(() => detectArtifactType(artifact), [artifact?.content])
-  const tabs         = useMemo(() => getTabsForType(artifactType), [artifactType])
+  const artifactType = useMemo(
+    () => detectArtifactType(artifact),
+    [artifact?.content],
+  );
+  const tabs = useMemo(() => getTabsForType(artifactType), [artifactType]);
 
-  const [activeTab, setActiveTab] = useState(() => tabs[0]?.id)
-  const [copied, setCopied]       = useState(false)
+  const [activeTab, setActiveTab] = useState(() => tabs[0]?.id);
+  const [copied, setCopied] = useState(false);
 
   // When artifact changes, reset tab if current tab doesn't exist in new tabs
   useMemo(() => {
-    if (!tabs.find(t => t.id === activeTab)) {
-      setActiveTab(tabs[0]?.id)
+    if (!tabs.find((t) => t.id === activeTab)) {
+      setActiveTab(tabs[0]?.id);
     }
-  }, [tabs, activeTab])
+  }, [tabs, activeTab]);
 
   // Parse the JSON content once
   const parsedData = useMemo(() => {
-    if (!artifact?.content) return null
+    if (!artifact?.content) return null;
     try {
-      return typeof artifact.content === 'string'
+      return typeof artifact.content === "string"
         ? JSON.parse(artifact.content)
-        : artifact.content
+        : artifact.content;
     } catch {
-      return null
+      return null;
     }
-  }, [artifact?.content])
+  }, [artifact?.content]);
 
   function handleCopy() {
-    navigator.clipboard?.writeText(artifact.content)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    navigator.clipboard?.writeText(artifact.content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   }
 
   function handleDownload() {
-    const blob = new Blob([artifact.content], { type: 'application/json' })
-    const url  = URL.createObjectURL(blob)
-    const a    = Object.assign(document.createElement('a'), {
-      href:     url,
-      download: `${(artifact.title || 'artifact').replace(/\s+/g, '-').toLowerCase()}.json`,
-    })
-    a.click()
-    URL.revokeObjectURL(url)
+    const blob = new Blob([artifact.content], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = Object.assign(document.createElement("a"), {
+      href: url,
+      download: `${(artifact.title || "artifact").replace(/\s+/g, "-").toLowerCase()}.json`,
+    });
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   const iconBtn =
-    'w-7 h-7 flex items-center justify-center rounded-md ' +
-    'text-[#8A7F72] hover:text-[#1A1410] hover:bg-[#EAE6DC] transition-colors'
+    "w-7 h-7 flex items-center justify-center rounded-md " +
+    "text-[#8A7F72] hover:text-[#1A1410] hover:bg-[#EAE6DC] transition-colors";
 
   // ── Render active tab content ───────────────────────────────────────────────
   function renderTabContent() {
     switch (activeTab) {
       case "transcript":
         return <TranscriptView data={parsedData} />;
+      case "interview_requirements":
+        return <InterviewRecordRequirementsView data={parsedData} />;
       case "requirements":
         return <RequirementsView data={parsedData} />;
       case "backlog":
@@ -242,12 +207,14 @@ export function ArtifactPanel({ artifact, onClose, onAccept, onRevise }) {
   return (
     <div className="flex flex-col h-full bg-white panel-enter">
       {/* ── Header ──────────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-3 px-4 h-[52px]
-                      border-b border-[#E8E3D9] bg-[#F9F7F3] flex-shrink-0">
+      <div
+        className="flex items-center gap-3 px-4 h-[52px]
+                      border-b border-[#E8E3D9] bg-[#F9F7F3] flex-shrink-0"
+      >
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-[13px] font-semibold text-[#1A1410] truncate leading-tight">
-              {artifact.title || 'Artifact'}
+              {artifact.title || "Artifact"}
             </span>
             {artifact.iteration && (
               <span className="px-1.5 py-0.5 bg-[#EAE6DC] rounded text-[10px] font-medium text-[#8A7F72] flex-shrink-0">
@@ -255,9 +222,11 @@ export function ArtifactPanel({ artifact, onClose, onAccept, onRevise }) {
               </span>
             )}
             {artifact.accepted && (
-              <span className="flex items-center gap-1 px-1.5 py-0.5
+              <span
+                className="flex items-center gap-1 px-1.5 py-0.5
                                bg-green-50 border border-green-200
-                               rounded text-[10px] font-medium text-green-700 flex-shrink-0">
+                               rounded text-[10px] font-medium text-green-700 flex-shrink-0"
+              >
                 <Check size={9} /> Accepted
               </span>
             )}
@@ -271,7 +240,7 @@ export function ArtifactPanel({ artifact, onClose, onAccept, onRevise }) {
         </div>
 
         <div className="flex items-center gap-0.5">
-          <Tooltip text={copied ? 'Copied!' : 'Copy JSON'}>
+          <Tooltip text={copied ? "Copied!" : "Copy JSON"}>
             <button onClick={handleCopy} className={iconBtn}>
               {copied ? <Check size={14} /> : <Copy size={14} />}
             </button>
@@ -294,7 +263,7 @@ export function ArtifactPanel({ artifact, onClose, onAccept, onRevise }) {
       {tabs.length > 1 && (
         <div className="flex gap-1 px-4 border-b border-[#E8E3D9] bg-[#F9F7F3] flex-shrink-0">
           {tabs.map((tab) => {
-            const Icon = tab.icon
+            const Icon = tab.icon;
             return (
               <button
                 key={tab.id}
@@ -302,22 +271,20 @@ export function ArtifactPanel({ artifact, onClose, onAccept, onRevise }) {
                 className={`flex items-center gap-1.5 px-3 py-2.5 text-[12px] font-medium
                             border-b-2 -mb-px transition-colors ${
                               tab.id === activeTab
-                                ? 'border-[#C96A42] text-[#C96A42]'
-                                : 'border-transparent text-[#8A7F72] hover:text-[#1A1410]'
+                                ? "border-[#C96A42] text-[#C96A42]"
+                                : "border-transparent text-[#8A7F72] hover:text-[#1A1410]"
                             }`}
               >
                 <Icon size={12} />
                 {tab.label}
               </button>
-            )
+            );
           })}
         </div>
       )}
 
       {/* ── Body ────────────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-hidden">
-        {renderTabContent()}
-      </div>
+      <div className="flex-1 overflow-hidden">{renderTabContent()}</div>
 
       {/* ── Feedback bar ────────────────────────────────────────────────── */}
       {artifact.awaitingFeedback &&
@@ -332,5 +299,5 @@ export function ArtifactPanel({ artifact, onClose, onAccept, onRevise }) {
           />
         )}
     </div>
-  )
+  );
 }

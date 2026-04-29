@@ -1868,7 +1868,20 @@ class InterviewerAgent(BaseAgent):
         runtime = self._load_runtime(state)
 
         # Compose the full delivered text: acknowledgment (if any) + question
-        delivered = f"{acknowledgment.strip()} {question.strip()}".strip() if acknowledgment else question
+        delivered = (
+            f"{acknowledgment.strip()} {question.strip()}".strip()
+            if acknowledgment
+            else question
+        )
+
+        conversation = list((state or {}).get("conversation") or [])
+        conversation.append(
+            {
+                "role": "interviewer",
+                "content": delivered,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
 
         if runtime is not None:
             item = runtime.current_item()
@@ -1876,7 +1889,8 @@ class InterviewerAgent(BaseAgent):
                 item.question_asked = delivered
 
         state_updates: Dict[str, Any] = {
-            "current_question":       delivered,
+            "current_question": delivered,
+            "conversation": conversation,
             "_agenda_needs_question": False,
             "_agenda_needs_followup": False,  # Fix 3 — clear flag after follow-up is sent
         }

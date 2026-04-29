@@ -10,11 +10,31 @@ Graph topology
     ├─► review_elicitation_agenda_turn → supervisor  (Sprint Zero step 4 — HITL)
     ├─► review_interview_record_turn → supervisor    (Sprint Zero step 6 — HITL, approve-only)
     ├─► review_requirement_list_turn → supervisor    (Sprint Zero step 8 — HITL)
-    ├─► sprint_agent_turn → supervisor               (Sprint Zero step 9)
+    ├─► sprint_agent_turn → supervisor               (Sprint Zero steps 9a and 9b)
+    ├─► analyst_estimation_turn → supervisor         (Sprint Zero step 9c)
     ├─► review_product_backlog_turn → supervisor     (Sprint Zero step 10 — HITL)
     ├─► analyst_turn → supervisor                    (Backlog Refinement step 1)
-    ├─► analyst_review_turn → supervisor             (Backlog Refinement step 2 — HITL)
+    ├─► review_validated_product_backlog_turn → supervisor  (Backlog Refinement step 2 — HITL)
     └─► END
+
+Sprint Zero backlog creation flow (steps 9a → 9c → 9b):
+  sprint_agent_turn (9a: create_user_stories → user_story_draft)
+    → analyst_estimation_turn (9c: estimate_and_validate_stories → analyst_estimation)
+        [if has_pending_splits AND split_round < MAX]
+        → sprint_agent_turn (split loop: apply split_proposals → updated user_story_draft)
+        → analyst_estimation_turn (re-estimate sub-stories)
+        [repeat until no splits or split_round = MAX]
+    → sprint_agent_turn (9b: build_product_backlog → product_backlog)
+
+sprint_agent_turn routing (after_sprint_agent conditional edge):
+  • user_story_draft absent               → process_stories()  (Step 9a)
+  • analyst_estimation present
+    AND has_pending_splits=True
+    AND split_round < MAX                 → process_splits()   (split loop)
+  • user_story_draft present
+    AND analyst_estimation present
+    AND (has_pending_splits=False OR
+         split_round >= MAX)              → process_backlog()  (Step 9b)
 
 HITL review order:
   1. review_product_vision_turn      — human reviews/edits the ProductVision
@@ -22,15 +42,12 @@ HITL review order:
   3. review_interview_record_turn    — human reads raw Q&A (approve-only, no reject)
   4. review_requirement_list_turn    — human reviews the synthesised Requirement List
      • Reject here re-runs synthesis only; interview_record is NOT touched.
+  5. review_product_backlog_turn     — PO reviews the assembled product_backlog
+     • Reject removes product_backlog, user_story_draft, AND analyst_estimation
+       so all three steps (9a → 9c → 9b) re-run with PO feedback.
   On vision rejection: only product_vision is removed; agenda is NOT reset.
   On agenda rejection: elicitation_agenda_artifact removed; agent rebuilds
   using reviewed_product_vision + elicitation_agenda_feedback.
-
-Stopping design (Interviewer-only)
-────────────────────────────────────
-INTERVIEWER IS THE SOLE AUTHORITY on stopping.  EndUserAgent has no mechanism
-to set interview_complete.  The LangGraph edge always routes back to
-interviewer_turn after enduser_turn completes.
 
 Review node design (HITL pattern)
 ──────────────────────────────────
@@ -73,6 +90,7 @@ from .supervisor import supervisor_node, supervisor_router
 logger = logging.getLogger(__name__)
 
 _INTERVIEW_SAFETY_MAX_TURNS = 3
+_MAX_SPLIT_ROUND            = 2   # mirrors sprint.py constant
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -168,34 +186,35 @@ ARTIFACT_SUMMARIES: Dict[str, str] = {
     # Sent inside review_product_backlog_turn interrupt — alongside the artifact.
     "product_backlog": (
         "## 📦 Initial Product Backlog Ready\n\n"
-        "The Sprint Agent has converted all approved requirements into **User Stories** "
-        "and assembled the initial Product Backlog.\n\n"
+        "The Sprint Agent (Product Owner) and Analyst Agent (Technical Lead) have "
+        "collaborated to build the initial **Product Backlog**.\n\n"
         "**What's inside:**\n"
         "- Each item written as: *As a \\<role\\>, I can \\<capability\\>, so that \\<benefit\\>*\n"
-        "- Fibonacci story point estimates (Complexity + Effort + Uncertainty)\n"
-        "- WSJF priority scores and ranked order\n"
-        "- INVEST quality flags per story\n\n"
+        "- Fibonacci story point estimates from the Analyst (Technical Lead)\n"
+        "- WSJF priority scores with dependency-aware ranking\n"
+        "- INVEST quality flags per story\n"
+        "- Dependency map (blocked_by / blocks)\n\n"
         "**Your action:** Review the backlog below. "
-        "Click **Accept** to hand it to the Analyst for INVEST validation and "
-        "Acceptance Criteria synthesis. "
+        "Click **Accept** to hand it to the Analyst for Acceptance Criteria generation. "
         "Click **Request Changes** to send it back for revision — describe what "
-        "story points, priorities, or story descriptions need adjustment."
+        "story points, priorities, or story descriptions need adjustment. "
+        "A rejection will trigger a full rebuild: stories → estimation → assembly."
     ),
 
-    # Sent inside analyst_review_turn interrupt — alongside the artifact.
+    # Sent inside review_validated_product_backlog_turn interrupt — alongside the artifact.
     "validated_product_backlog": (
         "## ✅ Validated Product Backlog Ready\n\n"
-        "The Analyst Agent has groomed the entire backlog in one pass:\n\n"
+        "The Analyst Agent has written Acceptance Criteria for every PBI:\n\n"
         "**What was done:**\n"
-        "- **INVEST validation** — each user story checked against all 6 criteria; "
-        "size warnings and split suggestions included where needed\n"
         "- **Acceptance Criteria** — 2–5 Given-When-Then criteria written per story, "
-        "derived from the story's capability clause and Sprint 0 reasoning traces\n"
+        "derived from original elicitation evidence and the user story capability clause\n"
         "- **Status** — every story with AC is now marked `ready`\n\n"
+        "**Note:** INVEST validation and story point estimation were completed during "
+        "backlog creation and are preserved unchanged.\n\n"
         "**Your action:** Review the validated backlog below. "
         "Click **Accept** to mark all `ready` stories available for Sprint planning. "
-        "Click **Request Changes** to send the entire backlog back for re-grooming — "
-        "describe any AC quality issues, INVEST failures, or missing coverage."
+        "Click **Request Changes** to send the backlog back for AC re-generation — "
+        "describe any AC quality issues or missing coverage."
     ),
 }
 
@@ -297,15 +316,76 @@ def enduser_turn_fn(state: WorkflowState) -> Dict[str, Any]:
 
 
 def sprint_agent_turn_fn(state: WorkflowState) -> Dict[str, Any]:
-    """Run SprintAgent — builds the product_backlog from reviewed_interview_record."""
-    updates = _get_sprint_agent().process(state)
+    """
+    Route to the correct SprintAgent method based on current state.
+
+    Routing logic:
+      1. user_story_draft absent → process_stories() (Step 9a: create stories)
+      2. analyst_estimation present AND has_pending_splits=True
+         AND split_round < MAX → process_splits() (split loop)
+      3. user_story_draft present AND analyst_estimation present
+         AND (no pending splits OR split_round >= MAX) → process_backlog() (Step 9b)
+    """
+    agent      = _get_sprint_agent()
+    artifacts  = state.get("artifacts") or {}
+    split_round = state.get("split_round", 0)
+
+    has_draft      = "user_story_draft"   in artifacts
+    has_estimation = "analyst_estimation" in artifacts
+
+    if not has_draft:
+        logger.info("sprint_agent_turn: no user_story_draft → process_stories() (Step 9a).")
+        updates = agent.process_stories(state)
+
+    elif has_estimation:
+        estimation         = artifacts.get("analyst_estimation") or {}
+        has_pending_splits = estimation.get("has_pending_splits", False)
+
+        if has_pending_splits and split_round < _MAX_SPLIT_ROUND:
+            logger.info(
+                "sprint_agent_turn: has_pending_splits=True, split_round=%d → process_splits().",
+                split_round,
+            )
+            updates = agent.process_splits(state)
+        else:
+            if has_pending_splits and split_round >= _MAX_SPLIT_ROUND:
+                logger.warning(
+                    "sprint_agent_turn: split_round=%d reached MAX (%d). "
+                    "Proceeding to assembly with oversized stories.",
+                    split_round, _MAX_SPLIT_ROUND,
+                )
+            logger.info("sprint_agent_turn: estimation ready → process_backlog() (Step 9b).")
+            updates = agent.process_backlog(state)
+
+    else:
+        # user_story_draft present but analyst_estimation not yet available.
+        # Supervisor should have routed to analyst_estimation_turn instead.
+        logger.warning(
+            "sprint_agent_turn: user_story_draft present but analyst_estimation absent. "
+            "Supervisor routing may be inconsistent. Returning empty update."
+        )
+        updates = {}
+
     logger.debug("sprint_agent_turn updates: %s", list(updates.keys()))
     _sync_artifacts_to_store(state, updates)
     return updates
 
 
+def analyst_estimation_turn_fn(state: WorkflowState) -> Dict[str, Any]:
+    """
+    Run AnalystAgent.process_estimation() — Phase 1 technical estimation.
+
+    Called for Step 9c (estimate_and_validate_stories) and also during
+    split loop re-estimation when SprintAgent has applied split proposals.
+    """
+    updates = _get_analyst().process_estimation(state)
+    logger.debug("analyst_estimation_turn updates: %s", list(updates.keys()))
+    _sync_artifacts_to_store(state, updates)
+    return updates
+
+
 def analyst_turn_fn(state: WorkflowState) -> Dict[str, Any]:
-    """Run AnalystAgent — INVEST validation + AC synthesis + publish."""
+    """Run AnalystAgent.process() — Phase 2 AC generation."""
     updates = _get_analyst().process(state)
     logger.debug("analyst_turn updates: %s", list(updates.keys()))
     _sync_artifacts_to_store(state, updates)
@@ -371,7 +451,6 @@ def review_product_vision_turn_fn(state: WorkflowState) -> Dict[str, Any]:
         "interview_complete":      False,
         "product_vision_feedback": feedback or "The reviewer did not provide specific feedback.",
     }
-
 
 
 def review_elicitation_agenda_turn_fn(state: WorkflowState) -> Dict[str, Any]:
@@ -443,12 +522,12 @@ def review_requirement_list_turn_fn(state: WorkflowState) -> Dict[str, Any]:
 
     After resume:
       approved=True  → write requirement_list_approved sentinel;
-                       flow → sprint_agent_turn.
+                       flow → sprint_agent_turn (Step 9a: create_user_stories).
       approved=False → remove ONLY requirement_list artifact, inject
                        requirement_list_feedback; flow returns to
                        interviewer_turn so synthesis re-runs with feedback.
                        interview_record and reviewed_interview_record are
-                       NOT removed — synthesis re-runs against the same record.
+                       NOT removed — only synthesis re-runs.
     """
     artifacts        = dict(state.get("artifacts") or {})
     req_list         = artifacts.get("requirement_list", {})
@@ -559,9 +638,10 @@ def review_product_backlog_turn_fn(state: WorkflowState) -> Dict[str, Any]:
 
     After resume:
       approved=True  → write product_backlog_approved sentinel;
-                       flow → analyst_turn (Backlog Refinement).
-      approved=False → remove product_backlog, inject product_backlog_feedback;
-                       flow returns to build_product_backlog (SprintAgent rebuilds).
+                       flow → analyst_turn (Phase 2: AC generation).
+      approved=False → remove product_backlog, user_story_draft, AND
+                       analyst_estimation so all three steps (9a → 9c → 9b)
+                       re-run with PO feedback injected.
     """
     artifacts = dict(state.get("artifacts") or {})
     backlog   = artifacts.get("product_backlog", {})
@@ -589,11 +669,16 @@ def review_product_backlog_turn_fn(state: WorkflowState) -> Dict[str, Any]:
             "product_backlog_feedback": None,
         }
 
-    artifacts.pop("product_backlog", None)
+    # On rejection: remove product_backlog AND the two intermediate artifacts
+    # so all three steps (9a → 9c → 9b) re-run from scratch with feedback.
+    artifacts.pop("product_backlog",     None)
+    artifacts.pop("user_story_draft",    None)
+    artifacts.pop("analyst_estimation",  None)
     logger.info("[ReviewProductBacklog] REJECTED. Feedback: %s", feedback or "(none)")
     return {
         "artifacts":               artifacts,
         "product_backlog_feedback": feedback or "The reviewer did not provide specific feedback.",
+        "split_round":             0,   # reset split counter for fresh cycle
     }
 
 
@@ -610,8 +695,9 @@ def review_validated_product_backlog_turn_fn(state: WorkflowState) -> Dict[str, 
 
     After resume:
       approved=True  → write validated_product_backlog_approved sentinel; Sprint N can begin.
-      approved=False → remove validated_product_backlog, inject validated_product_backlog_feedback;
-                       flow returns to groom_backlog (full re-groom).
+      approved=False → remove validated_product_backlog, inject analyst_feedback;
+                       flow returns to generate_acceptance_criteria (AC re-written only,
+                       INVEST and estimation are NOT repeated).
     """
     artifacts = dict(state.get("artifacts") or {})
     validated = artifacts.get("validated_product_backlog") or {}
@@ -634,7 +720,7 @@ def review_validated_product_backlog_turn_fn(state: WorkflowState) -> Dict[str, 
             len([
                 item["id"]
                 for item in (validated.get("items") or [])
-                if item.get("status") == "ready"
+                if item.get("planning", {}).get("status") == "ready"
             ]),
             validated.get("refinement_stats", {}).get("total_ac", 0),
         )
@@ -774,63 +860,67 @@ def _build_interview_review_payload(
 
 
 def _build_product_backlog_review_payload(backlog: Dict[str, Any]) -> Dict[str, Any]:
-    """Build the structured payload shown to the PO when reviewing the raw backlog."""
+    """Build the structured payload shown to the PO when reviewing the product_backlog.
+
+    Reflects the consolidated PBI schema: estimation, prioritization, dependencies,
+    planning, and quality blocks instead of flat top-level fields.
+    """
     items = backlog.get("items") or []
 
     story_summaries = []
     for item in items:
-        invest = item.get("invest") or {}
-        failed = [k for k, v in invest.items() if not v]
+        est   = item.get("estimation") or {}
+        pri   = item.get("prioritization") or {}
+        deps  = item.get("dependencies") or {}
+        plan  = item.get("planning") or {}
+        qual  = item.get("quality") or {}
+
         story_summaries.append({
             "id":            item.get("id"),
             "title":         item.get("title"),
             "type":          item.get("type"),
-            "description":   item.get("description"),   # user story text
-            "story_points":  item.get("story_points"),
-            "priority_rank": item.get("priority_rank"),
-            "wsjf_score":    item.get("wsjf_score"),
-            "invest_failures": failed,
-            "status":        item.get("status"),
+            "description":   item.get("description"),
+            "story_points":  est.get("story_points"),
+            "priority_rank": pri.get("priority_rank"),
+            "wsjf_score":    pri.get("wsjf_score"),
+            "invest_flags":  qual.get("invest_flags", []),
+            "status":        plan.get("status"),
+            "blocked_by":    deps.get("blocked_by", []),
+            "blocks":        deps.get("blocks", []),
         })
 
     return {
         "total_stories":   len(items),
         "methodology":     backlog.get("methodology", {}),
-        "notes":           backlog.get("notes", ""),
+        "quality_warnings": backlog.get("quality_warnings", {}),
+        "notes":           backlog.get("pass_notes", ""),
         "stories":         story_summaries,
     }
 
 
 def _build_validated_product_backlog_review_payload(validated: Dict[str, Any]) -> Dict[str, Any]:
-    """Build the structured payload shown to the PO when reviewing the validated backlog."""
+    """Build the structured payload shown to the PO when reviewing the validated_product_backlog.
+
+    Reflects the consolidated PBI schema including the AC written by AnalystAgent.
+    """
     items = validated.get("items") or []
 
     pbi_summaries = []
     for item in items:
-        iv     = item.get("invest_validation") or {}
-        ac     = item.get("acceptance_criteria") or []
-        issues = iv.get("issues") or []
+        qual = item.get("quality") or {}
+        est  = item.get("estimation") or {}
+        plan = item.get("planning") or {}
+        ac   = qual.get("acceptance_criteria") or []
 
         pbi_summaries.append({
             "id":            item.get("id"),
             "title":         item.get("title"),
             "type":          item.get("type"),
             "description":   item.get("description"),
-            "story_points":  item.get("story_points"),
-            "priority_rank": item.get("priority_rank"),
-            "status":        item.get("status"),
-            "invest_validation": {
-                "failed_criteria": iv.get("failed_criteria", []),
-                "issues": [
-                    {
-                        "criterion":  iss.get("criterion"),
-                        "severity":   iss.get("severity"),
-                        "message":    iss.get("message"),
-                        "suggestion": iss.get("suggestion"),
-                    }
-                    for iss in issues
-                ],
-            },
+            "story_points":  est.get("story_points"),
+            "priority_rank": (item.get("prioritization") or {}).get("priority_rank"),
+            "status":        plan.get("status"),
+            "invest_flags":  qual.get("invest_flags", []),
             "acceptance_criteria": [
                 {
                     "id":    c.get("id"),
@@ -1013,6 +1103,7 @@ def build_graph(store=None, checkpointer=None):
     g.add_node("review_interview_record_turn",           review_interview_record_turn_fn)
     g.add_node("review_requirement_list_turn",           review_requirement_list_turn_fn)
     g.add_node("sprint_agent_turn",                      sprint_agent_turn_fn)
+    g.add_node("analyst_estimation_turn",                analyst_estimation_turn_fn)
     g.add_node("review_product_backlog_turn",            review_product_backlog_turn_fn)
     g.add_node("analyst_turn",                           analyst_turn_fn)
     g.add_node("review_validated_product_backlog_turn",  review_validated_product_backlog_turn_fn)
@@ -1029,6 +1120,7 @@ def build_graph(store=None, checkpointer=None):
             "review_interview_record_turn":          "review_interview_record_turn",
             "review_requirement_list_turn":          "review_requirement_list_turn",
             "sprint_agent_turn":                     "sprint_agent_turn",
+            "analyst_estimation_turn":               "analyst_estimation_turn",
             "review_product_backlog_turn":           "review_product_backlog_turn",
             "analyst_turn":                          "analyst_turn",
             "review_validated_product_backlog_turn": "review_validated_product_backlog_turn",
@@ -1051,6 +1143,7 @@ def build_graph(store=None, checkpointer=None):
     g.add_edge("review_interview_record_turn",           "supervisor")
     g.add_edge("review_requirement_list_turn",           "supervisor")
     g.add_edge("sprint_agent_turn",                      "supervisor")
+    g.add_edge("analyst_estimation_turn",                "supervisor")
     g.add_edge("review_product_backlog_turn",            "supervisor")
     g.add_edge("analyst_turn",                           "supervisor")
     g.add_edge("review_validated_product_backlog_turn",  "supervisor")

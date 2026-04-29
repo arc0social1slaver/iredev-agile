@@ -152,7 +152,9 @@ def start(current_user, chat_id):
         # stakeholder reply. write_interview_record copies this into
         # interview_record["requirements_identified"].
         "requirements_draft": [],
+        "backlog_draft": [],
         "errors": [],
+        "_needs_srs_synthesis": False,
         "_workflow_started_message": False,
     }
     print(initial_state)

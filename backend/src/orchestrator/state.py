@@ -204,6 +204,23 @@ class WorkflowState(TypedDict, total=False):
     _invest_scratch: List[Dict[str, Any]]
     _ac_scratch:     List[Dict[str, Any]]
 
+    # ── Sprint / Analyst collaboration intermediate artifacts ──────────────
+    # user_story_draft: produced by SprintAgent Pass 1.
+    # Contains raw user stories before technical estimation.
+    # AnalystAgent reads this to perform feasibility + INVEST + estimation.
+    user_story_draft: Dict[str, Any]
+
+    # analyst_estimation: produced by AnalystAgent Pass 1+2.
+    # Contains story points, INVEST results, dependency mapping,
+    # split proposals, and feasibility notes per story.
+    # SprintAgent reads this to run WSJF + assembly.
+    analyst_estimation: Dict[str, Any]
+
+    # split_round: tracks how many split cycles have occurred between
+    # SprintAgent and AnalystAgent. Hard limit = 2 to prevent infinite loops.
+    # Cleared to 0 when a new product_backlog cycle begins.
+    split_round: int
+
     # ── ReAct internals (transient) ────────────────────────────────────────
     _last_react_thought:        str
     _react_strategy:            str

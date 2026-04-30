@@ -1,0 +1,55 @@
+Project: SpendSmart – Personal Expense Tracking App with Automatic Spending Categories
+
+Description: Most people have a rough idea that they are spending too much, but no clear
+picture of where the money actually goes. Writing expenses in a notebook is tedious and
+people stop doing it after a week. Bank statements are hard to read and do not give
+a useful breakdown by category. We want a simple app where a user can quickly log what
+they spent — or connect their bank account — and the app automatically sorts expenses
+into categories like food, transport, entertainment, and rent, then shows a clear monthly
+summary. As a personal finance advisor, I regularly see clients who genuinely do not
+know how much they spend on coffee or takeaway. Awareness alone changes behaviour.
+
+General Needs & Background
+Personal budgeting tools either do too much (complex investment features, bank integrations
+that require sensitive login sharing) or too little (just a list of transactions with no
+insight). What most people need is something between a spreadsheet and a banking app —
+a friendly, visual tracker that helps them see patterns without overwhelming them. Manual
+entry should be fast (under 10 seconds per transaction), and automatic categorisation
+should be accurate enough that users rarely need to correct it. A monthly budget-setting
+feature and a simple alert when a category is approaching its limit would help people
+adjust before it is too late.
+
+Relevant Stakeholders
+Primary users: Individuals managing personal finances, young adults and students budgeting
+on limited income, couples tracking household expenses
+Secondary users: Personal finance coaches and advisors using the data summaries with
+clients, accountants reviewing spending patterns for self-employed clients
+Project stakeholders: Project team, course lecturer, financial literacy programme advisors
+Indirect stakeholders: Banks and financial institutions, consumer protection agencies,
+government financial literacy initiatives
+
+What We Want the App to Do
+- Allow users to log an expense in under 10 seconds: amount, category, optional note.
+- Auto-suggest a category based on the description (e.g., "McDonald's" → Food, "Grab" →
+  Transport).
+- Let users set a monthly budget for each category and track progress against it.
+- Show a clear monthly summary: total spent, spent by category, vs. last month.
+- Send a notification when a category reaches 80% of its budget.
+- Allow splitting a single expense across multiple categories (e.g., a supermarket trip
+  with both groceries and household items).
+- Support recurring expenses (rent, subscriptions) so they are automatically included each month.
+- Export a summary as a spreadsheet or PDF for tax or review purposes.
+
+Practical Limits We Are Working With
+- Many users are not comfortable linking their real bank account — manual entry must be
+  a fully supported option.
+- The app must be usable without a financial background — no jargon.
+- Data must be private and not used for advertising.
+- Must support multiple currencies for users who travel or earn in different currencies.
+- Must work offline — people log expenses at the moment of purchase, often without Wi-Fi.
+
+What Good Looks Like
+- Users know exactly where their money goes without spending hours on a spreadsheet.
+- Monthly overspending is caught early, not discovered at end of month.
+- After three months, a user can see clear trends and make intentional changes.
+- The categorisation is accurate enough that users trust it without checking every entry.

@@ -1,33 +1,54 @@
-Project: AI guidebook
-Description: Artificial Intelligence is rapidly becoming part of students’ everyday learning—from summarising textbooks to generating study notes, practice questions, and explanations. At the same time, students often feel uncertain about what is allowed, how to use AI responsibly, and how to protect their privacy. Teachers and universities also struggle to provide clear guidance that is consistent, ethical, and easy to understand. Your team will develop a functional website called AIGuidebook, designed for students at university level. The goal of the website is to give students simple, trustworthy guidance on how to use AI tools in their studies in a safe, responsible, and academically honest way.
+Project: AIGuidebook – Responsible AI Use Guide for University Students
 
-General Needs & Background Students need clear rules and examples of acceptable vs. unacceptable AI use. They need help understanding privacy, data protection, hallucination risks, and academic integrity. Universities want consistency between teachers and across study programmes. Teachers want ready-made explanations, examples, and practical tips they can share with students. Institutions need a reference point that supports responsible AI literacy.
+Description: Artificial intelligence tools are increasingly present in university life,
+yet most students have no clear guidance on how to use them responsibly, safely, and
+in a way that respects academic integrity. We want a website that gives university
+students simple, trustworthy, and practical guidance on using AI tools appropriately
+in their studies — covering key risks, acceptable use, and good habits.
+
+General Needs & Background
+Students are using AI tools regardless of whether guidance exists, but policies differ
+between courses and no shared reference point exists for staff or students. Teachers
+struggle to give consistent answers, and students are left anxious or uninformed about
+where the boundaries are. A readable, student-friendly website — not a policy document
+— could serve as that shared reference. It should explain the key risks and boundaries
+in plain language, with practical guidance students can act on immediately.
 
 Relevant Stakeholders
-Primary users: Students (first-year and continuing students)
-Secondary users: Teachers, academic advisors, study administration
-Project stakeholders: Project team (your group), course lecturer, IT support staff
-Indirect stakeholders: Educational policymakers, exam committees, data protection officers
+Primary users: University students (first-year and continuing) across all study programmes
+Secondary users: Teachers and lecturers sharing guidance with their classes, academic
+advisors supporting students with integrity questions, study administration staff handling
+AI-related policy queries
+Project stakeholders: Project team, course lecturer, IT support staff
+Indirect stakeholders: Educational policymakers, exam and assessment committees,
+data protection officers, university legal and compliance teams
 
-Initial Requirements (Starting Points)
-The AIGuidebook should:
-- Provide students with guidance on responsible AI use.
-- Explain risks connected to privacy, bias, hallucinations, and academic integrity.
-- Contain simple examples, checklists, and explanations.
-- Be accessible, readable, and easy to navigate.
-- Look visually clean and appropriate for an educational website.
-- Be responsive for desktop and mobile.
-- Include at least one interactive element (e.g., FAQ, checklist, or mini-tutorial).
+What We Want the Website to Do
+- Explain clearly what responsible AI use looks like in academic work, with concrete
+  examples of acceptable and unacceptable use.
+- Describe the main risks students should understand: AI hallucinations (confidently
+  wrong information), privacy risks when entering personal or assignment data into AI
+  tools, bias in AI outputs, and academic integrity boundaries.
+- Include practical checklists students can use before submitting work that involved AI.
+- Provide simple, jargon-free explanations — written for a first-year student, not a
+  computer scientist.
+- Be easy to navigate so a student can find the answer to their specific question quickly.
+- Include at least one interactive element such as an FAQ, a self-check quiz, or a
+  scenario-based mini-tutorial.
+- Look clean, credible, and appropriate for an educational context.
+- Work equally well on a phone as on a laptop.
 
-Constraints
-- Must be developed within the course timeline, using teamwork and agile methods.
-- Must be a functional website (not just wireframes or mockups).
-- Must have publicly accessible content (no login required).
-- Must include proper citations when using external sources.
-- Must follow basic accessibility and usability principles.
+Practical Limits We Are Working With
+- Must be developed within the course timeline using teamwork and agile methods.
+- Must be a working website — not just wireframes or a slide deck.
+- All content must be publicly accessible without requiring a student login.
+- Any external sources or statistics used must be properly cited.
+- Must follow basic accessibility principles so all students can use it regardless of
+  disability or device.
 
-Evaluation Criteria
-- Visual Appeal: Design is sustainable, engaging, and consistent with the green theme.
-- Functionality: Web pages are accessible and functional.
-- Content: All required content is present and well-organized.
-- Quality: Tested with usability and system tests.
+What Good Looks Like
+- A student who is unsure whether their AI use is acceptable can find a clear answer
+  within two minutes on the site.
+- Teachers feel confident pointing their entire class to the site as a shared reference.
+- The content is accurate, consistent, and does not contradict the university's own policies.
+- Students come away feeling informed and empowered, not frightened or confused.

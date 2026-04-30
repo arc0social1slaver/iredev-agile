@@ -22,24 +22,30 @@ Turn LAST — SRS Synthesis (runs once, no ReAct):
   _synthesise_srs() runs a 4-pass pipeline:
 
     Pass 1 — FR Extraction:
-      Inputs:  project_description + elicitation Q&A
+      Inputs:  project_description + elicitation Q&A (including elicitation_goal per item)
       Output:  List[Requirement] — functional requirements only.
-      Key rule: aggressive decomposition — one rich answer yields 3–6 FRs.
+      Key rule: CoT via reasoning_log — every FR must be anchored in a stakeholder
+                quote and a concrete user outcome. Echoes of the project description
+                with no new stakeholder detail are marked status="inferred".
 
     Pass 2 — NFR & CON Extraction:
       Inputs:  same as Pass 1
       Output:  List[Requirement] — non-functional, constraints, out-of-scope.
+      Key rule: CoT via reasoning_log — pre-classification table forces WHAT vs
+                HOW WELL decision and measurable threshold per NFR candidate.
 
     Pass 3 — Coverage Check:
       Inputs:  project_description + all requirements from Passes 1+2
       Output:  List[Requirement] — gap-filling items for uncovered PD bullets.
                All stamped source_elicitation_id="PD", status="inferred".
+               Dimension [G] catches tension-resolution gaps from [follow-up] blocks.
 
     Pass 4 — Quality Gate + Final Assembly:
       Inputs:  full draft from Passes 1–3 + session metadata
       Output:  SoftwareRequirementsSpecification — audited, renumbered, ordered.
-      Checks:  atomicity, testability, banned adjectives, null context on FRs,
-               duplicate statements.
+      Checks:  Step 0.5 User Value Gate (echo FRs rewritten or downgraded),
+               atomicity, testability, vague language sweep,
+               null context on FRs, duplicate statements.
 
   Sets interview_complete=True and clears _needs_srs_synthesis.
 
@@ -65,6 +71,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, List, Literal, Optional
+from pathlib import Path
 from datetime import datetime
 import json
 import re
@@ -82,12 +89,21 @@ logger = logging.getLogger(__name__)
 
 class StakeholderEntry(BaseModel):
     role: str = Field(
-        description="Job title or group label (e.g. 'First-year Student', 'Course Lecturer')."
-    )
-    type: Literal["primary_user", "beneficiary", "decision_maker", "blocker"] = Field(
         description=(
-            "primary_user   – directly operates the system.\n"
-            "beneficiary    – gains value without direct use.\n"
+            "The name of ONE individual stakeholder or stakeholder group as it appears "
+            "in the project description. One entry per named individual or group.\n"
+            "NEVER combine multiple distinct stakeholders into a comma-separated string. "
+            "If the PD lists multiple named roles under a single category label, each "
+            "becomes a separate StakeholderEntry with its own role string. The category "
+            "label determines the type field but is not the role name."
+        )
+    )
+    type: Literal["primary_user", "secondary_user", "beneficiary", "decision_maker", "blocker"] = Field(
+        description=(
+            "primary_user   – directly operates the system as the main audience.\n"
+            "secondary_user – uses the system occasionally or in a supporting role. "
+            "They interact with the system but are not the primary audience.\n"
+            "beneficiary    – gains value without directly using the system.\n"
             "decision_maker – approves scope, budget, or direction.\n"
             "blocker        – can veto or block the project."
         )
@@ -108,14 +124,25 @@ class Assumption(BaseModel):
         description="One sentence describing the consequence if this assumption is false."
     )
     needs_validation: bool = Field(
-        description="True if this assumption must be confirmed before work begins."
+        description=(
+            "True if a false assumption would materially change scope, architecture, "
+            "or user trust before or during development. "
+            "Assumptions with needs_validation=true generate high-priority agenda items."
+        )
     )
 
 
 class ProductVision(BaseModel):
     """
     North Star artifact produced at the start of elicitation.
-    Filtered against every Epic and User Story generated downstream.
+
+    Scope: vision-level fields only — core problem, value proposition, stakeholders,
+    assumptions, constraints, evaluation criteria, and out-of-scope items.
+
+    Intentionally omitted (extracted downstream by the agenda agent from the
+    project description text directly):
+      - initial_requirements  → agenda items with source_field="initial_requirement"
+      - non_functional_requirements → agenda items with source_field="non_functional_requirement"
     """
 
     target_audiences: List[StakeholderEntry] = Field(
@@ -123,93 +150,205 @@ class ProductVision(BaseModel):
     )
     core_problem: str = Field(
         description=(
-            "The single most important pain point the project must solve. "
-            "1–2 sentences. Specific enough to reject unrelated feature requests."
+            "The underlying tension the project must resolve, stated as the primary "
+            "pain point. Names two competing forces, not just an observable symptom."
         )
     )
     value_proposition: str = Field(
         description=(
-            "What this solution uniquely delivers to resolve the core problem. "
-            "1–2 sentences. Must NOT read like a feature list."
+            "The outcome delivered to users when the core tension is resolved. "
+            "Describes what changes for the user, not what the system does."
         )
     )
-    hard_constraints: List[str] = Field(
-        description=(
-            "Non-negotiable limits: timeline, technology, access model, compliance. "
-            "Append '(implied)' to constraints inferred but not explicitly stated."
-        )
+    evaluation_criteria: List[str] = Field(
+        default_factory=list,
+        description="Specific measurable design or testing expectations ACTUALLY stated in the project description. Extract only items that appear verbatim or are clearly declared."
+    )
+    project_constraints: List[str] = Field(
+        default_factory=list,
+        description="Hard delivery limits explicitly stated in the project description: timeline, budget, methodology, tooling, team size, or other non-negotiable conditions."
     )
     assumptions: List[Assumption] = Field(
         description=(
-            "Implicit beliefs driving design decisions not yet confirmed. "
-            "Minimum 3. Flag which ones need stakeholder validation."
+            "Implicit beliefs that must be true for the solution to work, "
+            "but are not confirmed anywhere in the project description. "
+            "Each carries a risk_if_wrong consequence and a needs_validation flag."
         )
     )
-    core_workflows: List[str] = Field(
-        description=(
-            "3–5 major functional areas (Epics) that define the system's boundaries. "
-            "Each Epic is a user-journey cluster, not a feature list "
-            "(e.g. 'Account Management', 'Core Gameplay', 'Reporting & Archive'). "
-            "MUST include at least one operational/system-level Epic "
-            "(e.g. 'System Administration', 'Monitoring & Maintenance', 'Data Archive'). "
-            "Every downstream requirement will be assigned to exactly one of these Epics."
-        )
-    )
+
     out_of_scope: List[str] = Field(
         description=(
-            "Capabilities explicitly excluded. At least 2 items. "
-            "Prevents scope creep in later sprints."
+            "Capabilities explicitly excluded from the system. "
+            "Each item names something a stakeholder might reasonably expect to be included "
+            "but which the project explicitly rejects."
+        )
+    )
+    reasoning_log: str = Field(
+        description=(
+            "Chain-of-thought scratchpad. Records the five reasoning steps "
+            "(tension + stakeholder value map, success condition, boundaries, "
+            "capability & quality scan, stakeholder inventory) before any "
+            "other field is populated. "
+            "Used for debugging and quality review; not shown to end users."
         )
     )
 
 
-# ── Fix 1: extended source_field to cover initial requirements ────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 class AgendaItem(BaseModel):
     item_id: str = Field(
         description=(
-            "Unique identifier. Use prefixes that match source_field:\n"
-            "  assumption_N, stakeholder_N, hard_constraint_N,\n"
-            "  out_of_scope_N, initial_req_N, eval_criterion_N."
+            "Unique identifier using the canonical prefix for each source_field:\n"
+            "  source_field=assumption              → assumption_N\n"
+            "  source_field=stakeholder_concern     → stakeholder_N\n"
+            "  source_field=project_constraint      → hard_constraint_N\n"
+            "  source_field=non_functional_requirement → nfr_N\n"
+            "  source_field=out_of_scope            → out_of_scope_N\n"
+            "  source_field=initial_requirement     → initial_req_N\n"
+            "  source_field=evaluation_criterion    → eval_criterion_N\n"
+            "N is a zero-based index within each category."
         )
     )
     source_field: Literal[
         "assumption",
         "stakeholder_concern",
-        "hard_constraint",
+        "project_constraint",
+        "non_functional_requirement",
         "out_of_scope",
-        "initial_requirement",   # Fix 1 — bullets from "Initial Requirements" section
-        "evaluation_criterion",  # Fix 1 — bullets from "Evaluation Criteria" section
-    ] = Field(description="Which Vision or project-description field produced this item.")
+        "initial_requirement",
+        "evaluation_criterion",
+    ] = Field(
+        description=(
+            "Classification of the item based on its source and the Q1→Q4 decision test.\n\n"
+            "TWO SOURCES — each type has exactly one source:\n\n"
+            "  From Vision JSON (structural reading):\n"
+            "    assumption, stakeholder_concern, project_constraint,\n"
+            "    evaluation_criterion, out_of_scope.\n\n"
+            "  From Project Description text (semantic reading):\n"
+            "    initial_requirement     → binary capability in PD (Q4 = YES).\n"
+            "    non_functional_requirement → quality on a spectrum in PD (Q3 = YES).\n"
+            "    Vision excluded these intentionally. Read PD text only.\n"
+            "    The PD Extraction Audit (enumerate → classify → tally) ensures\n"
+            "    these are not missed."
+        )
+    )
     source_ref: str = Field(
-        description="Verbatim content from the Vision or project description that triggered this item."
+        description=(
+            "Traceability link to the source material. Two valid forms:\n"
+            "  Form 1 — Verbatim: copy the exact sentence or bullet from the ProductVision\n"
+            "    JSON or project description that triggered this item. Use whenever a\n"
+            "    source sentence exists.\n"
+            "  Form 2 — Inferred gap: write 'No assumption recorded about [risk area].\n"
+            "    This item surfaces a project-threatening blind spot not addressed in\n"
+            "    the current ProductVision.' Use only when no verbatim source exists\n"
+            "    but the risk is significant enough that omitting it could cause the\n"
+            "    project to fail silently."
+        )
     )
     elicitation_goal: str = Field(
-        description="What must be confirmed or clarified by asking about this item."
+        description=(
+            "The specific user pain, need, or value this item must surface — not a system\n"
+            "specification to confirm. Must pass the stakeholder VALUE LENS: what does the\n"
+            "stakeholder value, and how could this item fail that value?\n\n"
+            "Every goal must satisfy all of:\n"
+            "  1. Names a user pain, need, or value (not a system property or spec decision)\n"
+            "  2. States the evidence the interviewer must hear to write a testable requirement\n"
+            "  3. Specific enough that a draft acceptance criterion can be written after the answer\n"
+            "  4. Domain-specific — cannot be copy-pasted unchanged to a different project\n\n"
+            "Framing is derived from what KIND of thing the item is (concept-driven):\n"
+            "  Capability (Q4) → surface the ACTIVITY and FRICTION, not the feature spec.\n"
+            "  Quality (Q3) → surface the FAILURE MOMENT and TRUST THRESHOLD, not metrics.\n"
+            "  Constraint (Q1) → surface the IMPACT ON THE USER, not the constraint definition.\n"
+            "  Assumption → surface the CONCRETE FAILURE SCENARIO, not mitigation plans.\n\n"
+            "Banned framing (spec questions disguised as elicitation):\n"
+            "  'Identify what criteria...', 'Define what types...', 'Clarify what specific...',\n"
+            "  'Determine the [property]...', 'Explore what defines...'"
+        )
     )
     priority: Literal["high", "medium", "low"] = Field(
         description=(
-            "high   = unvalidated assumption OR initial_requirement.\n"
-            "medium = constraint / stakeholder / evaluation_criterion.\n"
-            "low    = out-of-scope confirmation."
+            "high   = assumption (needs_validation=true) | initial_requirement |\n"
+            "         stakeholder_concern where the stakeholder's veto or approval\n"
+            "         is on the critical path (decision_maker or blocker gating delivery).\n"
+            "medium = project_constraint | non_functional_requirement |\n"
+            "         evaluation_criterion | stakeholder_concern (default).\n"
+            "low    = out_of_scope."
+        )
+    )
+    stakeholders: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Ordered list of stakeholder roles whose perspective must be captured for this item. "
+            "Values must be EXACT role strings from ProductVision.target_audiences[].role. "
+            "Order by relevance: most directly affected role first. "
+            "Every item must have at least one stakeholder. "
+            "An item with multiple stakeholders generates one question per role; "
+            "all answers are collected before the item is marked answered. "
+            "List only roles whose perspective genuinely adds distinct information — "
+            "maximum three roles per item."
         )
     )
 
 
 class ElicitationAgenda(BaseModel):
     """
-    Ordered list of elicitation items derived from ProductVision fields
-    AND the initial requirements / evaluation criteria in the project description.
-    Items are sorted high → medium → low priority by the extraction prompt.
+    Ordered list of elicitation items produced by the agenda extraction agent.
+
+    The agenda agent receives two inputs and processes them in strict sequence
+    to prevent working memory overload:
+
+      Phase 2 — PD text first (semantic reading):
+        Source for: initial_requirement (Q4), non_functional_requirement (Q3).
+        Vision excluded these intentionally. Extracted via the 3-substep PD
+        Extraction Audit (enumerate → classify → tally) BEFORE opening
+        the Vision JSON.
+
+      Phase 3 — Vision JSON second (structural reading):
+        Source for: assumption, project_constraint, evaluation_criterion,
+        out_of_scope, stakeholder_concern (from target_audiences[]).
+        Cross-source dedup runs AFTER both inventories are complete.
+
+    Stakeholder coverage is resolved in Phase 4 (EMBED-GATE):
+      decision_maker and blocker → standalone. primary_user, secondary_user,
+      beneficiary → embedded into initial_req/nfr/eval_criterion host items
+      when the host genuinely addresses their key_concern. Standalone only
+      when no host qualifies.
+
+    Items are ordered high → medium → low priority.
     """
     items: List[AgendaItem] = Field(
         description=(
-            "One item per elicitation need. Cover ALL of:\n"
-            "  • every needs_validation assumption (priority=high)\n"
-            "  • every blocker stakeholder concern (priority=medium)\n"
-            "  • every hard constraint with hidden conditions (priority=medium)\n"
-            "  • every bullet in the 'Initial Requirements' section (priority=high)\n"
-            "  • every bullet in the 'Evaluation Criteria' section (priority=medium)\n"
-            "  • at least one out-of-scope item for stakeholder confirmation (priority=low)"
+            "One item per elicitation need. Two inputs processed in strict sequence:\n\n"
+            "  Phase 2 — PD text first (semantic reading) → source for:\n"
+            "    initial_requirement (Q4 capability), non_functional_requirement (Q3 quality).\n"
+            "    Extracted via the 3-substep PD Extraction Audit (enumerate → classify\n"
+            "    → tally) BEFORE opening the Vision JSON. A project with capability\n"
+            "    bullets in the PD must produce initial_requirement items.\n\n"
+            "  Phase 3 — Vision JSON second (structural reading) → source for:\n"
+            "    assumption, project_constraint, evaluation_criterion,\n"
+            "    out_of_scope, stakeholder_concern.\n\n"
+            "Stakeholder coverage (Phase 4 EMBED-GATE):\n"
+            "  decision_maker, blocker  → always standalone stakeholder_N items.\n"
+            "  primary_user, secondary_user, beneficiary → embedded into host items\n"
+            "    (initial_req, nfr, eval_criterion) when the host's elicitation_goal\n"
+            "    genuinely surfaces their key_concern.\n\n"
+            "Priority order: high → medium → low."
+        )
+    )
+    reasoning_log: str = Field(
+        description=(
+            "Chain-of-thought scratchpad written before the items array is populated.\n"
+            "Records all six reasoning phases in strict sequence:\n"
+            "  Phase 1 — Read for tension.\n"
+            "  Phase 2 — PD Extraction (PD text only, Vision JSON not yet opened):\n"
+            "    Substep A (raw enumeration), Substep B (Q1→Q4 classification),\n"
+            "    Substep C (tally and lock).\n"
+            "  Phase 3 — Vision JSON inventory (structural reading, then cross-source dedup).\n"
+            "  Phase 4 — Coverage map & stakeholder embedding (EMBED-GATE).\n"
+            "  Phase 5 — Draft all items with VALUE LENS reasoning per goal,\n"
+            "    concept-driven framing, blind spot audit.\n"
+            "  Phase 6 — Audit: duplication, missing risk, goal precision, coverage.\n"
+            "Used for debugging and quality review; not shown to end users."
         )
     )
 
@@ -258,13 +397,7 @@ class Requirement(BaseModel):
     req_id:                str = Field(
         description="Unique ID — FR-NNN, NFR-NNN, CON-NNN, or OOS-NNN. Sequential within each prefix."
     )
-    epic:                  str = Field(
-        description=(
-            "The Epic (from ProductVision.core_workflows) this requirement belongs to. "
-            "Must match one of the core_workflows strings exactly. "
-            "Use 'Cross-Cutting' only when the requirement genuinely spans all Epics."
-        )
-    )
+
     req_type:              Literal["functional", "non_functional", "constraint", "out_of_scope"] = Field(
         description="Category that determines how SprintAgent handles this requirement downstream."
     )
@@ -280,7 +413,7 @@ class Requirement(BaseModel):
     )
     rationale:             str = Field(
         description=(
-            "Business/academic justification. TWO parts, both required:\n"
+            "Justification grounded in stakeholder evidence. TWO parts, both required:\n"
             "  (a) PAIN — cite or paraphrase the stakeholder's own words about the current problem.\n"
             "  (b) OUTCOME — the concrete improvement the user achieves when this requirement is met "
             "      ('So that [user] can [outcome]'). If elicitation did not surface an explicit outcome, "
@@ -317,6 +450,14 @@ class SoftwareRequirementsSpecification(BaseModel):
     session_id:          str             = Field(description="Copied from WorkflowState.session_id.")
     project_description: str             = Field(description="Copied verbatim for self-contained traceability.")
     synthesised_at:      str             = Field(description="ISO-8601 timestamp of this synthesis pass.")
+    reasoning_log:       str             = Field(
+        default="",
+        description=(
+            "Pass 4 audit scratchpad. Record all audit decisions here: "
+            "Step 3 vague language found, Step 5 duplicate verdicts, "
+            "Step 7 status changes. This field is not shown to end users."
+        )
+    )
     requirements:        List[Requirement] = Field(
         description="All derived requirements, ordered by type then priority."
     )
@@ -324,6 +465,20 @@ class SoftwareRequirementsSpecification(BaseModel):
 
 class RequirementList(BaseModel):
     """Wrapper schema for Passes 1–3 so extract_structured enforces req_id."""
+    reasoning_log: str = Field(
+        description=(
+            "Write your full chain of thought here BEFORE populating the requirements list. "
+            "This is a mandatory scratchpad. For every elicitation item you process, record: "
+            "(1) the specific pain the stakeholder expressed in their own words, "
+            "(2) the concrete outcome the user gains when this need is met, "
+            "(3) whether a candidate requirement describes a system behaviour (FR) or a "
+            "quality attribute with a measurable threshold (NFR), and "
+            "(4) whether the candidate is grounded in what the stakeholder actually said "
+            "or is merely a paraphrase of the project description. "
+            "Only requirements that pass all four checks are written into the requirements list. "
+            "This field is not shown to end users but is used for quality review."
+        )
+    )
     requirements: List[Requirement] = Field(
         description="All requirements extracted in this pass."
     )
@@ -334,18 +489,78 @@ class RequirementList(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class AgendaRuntimeItem(BaseModel):
-    """AgendaItem extended with runtime tracking fields."""
-    item_id:          str
-    source_field:     str
-    source_ref:       str
-    elicitation_goal: str
-    priority:         str
-    status:           Literal["pending", "answered", "skipped"] = "pending"
-    question_asked:   Optional[str] = None
-    answer_received:  Optional[str] = None
+    """AgendaItem extended with runtime tracking fields.
+
+    Multi-stakeholder elicitation
+    ──────────────────────────────
+    Each item carries an ordered ``stakeholders`` list.  The runtime iterates
+    through it one by one: for each role it asks the same elicitation_goal
+    question, collects the answer into ``answers[role]``, then moves the cursor
+    (``stakeholder_idx``) to the next role.  The item is only marked "answered"
+    when all roles have been heard.
+
+    ``interviewed_stakeholder_role`` still tracks the CURRENT role being
+    interviewed (kept for backward-compat with synthesis passes that read it
+    from the interview_record).  It is updated each time stakeholder_idx advances.
+
+    ``answer_received`` is kept as a merged summary (all answers concatenated)
+    so that existing synthesis passes (Passes 1-4) that read ``answer_received``
+    see the full picture without modification.
+    """
+    item_id:                    str
+    source_field:               str
+    source_ref:                 str
+    elicitation_goal:           str
+    priority:                   str
+    stakeholders:               List[str]     = Field(default_factory=list)
+    status:                     Literal["pending", "answered", "skipped"] = "pending"
+    question_asked:             Optional[str] = None
+    answer_received:            Optional[str] = None
+
+    # ── Multi-stakeholder runtime fields ──────────────────────────────────────
+    # Per-role answer store: {"Role A": "...", "Role B": "..."}
+    answers:                    Dict[str, str] = Field(default_factory=dict)
+    # Index into stakeholders list — which role is being interviewed right now
+    stakeholder_idx:            int            = 0
+
+    # ── interviewed_stakeholder_role ──────────────────────────────────────────
+    # Always mirrors stakeholders[stakeholder_idx] for the current turn.
+    # Preserved in interview_record for synthesis passes (no breaking change).
+    interviewed_stakeholder_role: Optional[str] = None
+
     # ── Fix 3 fields ──────────────────────────────────────────────────────────
-    followup_asked:   bool          = False   # True once a follow-up question is sent
-    followup_answer:  Optional[str] = None    # stores the follow-up answer before merge
+    followup_asked:             bool          = False   # True once a follow-up question is sent
+    followup_answer:            Optional[str] = None    # stores the follow-up answer before merge
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def current_stakeholder(self) -> Optional[str]:
+        """Return the role currently being interviewed, or None when all are done."""
+        if self.stakeholders and self.stakeholder_idx < len(self.stakeholders):
+            return self.stakeholders[self.stakeholder_idx]
+        return None
+
+    def all_stakeholders_answered(self) -> bool:
+        """True when every assigned stakeholder has an entry in answers."""
+        if not self.stakeholders:
+            return bool(self.answers)   # legacy: no list → rely on answer_received
+        return self.stakeholder_idx >= len(self.stakeholders)
+
+    def advance_stakeholder(self) -> None:
+        """Move to the next stakeholder and update interviewed_stakeholder_role."""
+        self.stakeholder_idx += 1
+        role = self.current_stakeholder()
+        self.interviewed_stakeholder_role = role  # None when all done
+
+    def merge_answers(self) -> str:
+        """Produce a merged answer string for backward-compat synthesis passes."""
+        if not self.answers:
+            return self.answer_received or "(no answers collected)"
+        parts = [
+            f"[{role}] {ans}"
+            for role, ans in self.answers.items()
+        ]
+        return "\n".join(parts)
 
 
 class AgendaRuntime(BaseModel):
@@ -356,12 +571,16 @@ class AgendaRuntime(BaseModel):
 
     @classmethod
     def from_agenda(cls, agenda: ElicitationAgenda) -> "AgendaRuntime":
-        return cls(
-            items=[
-                AgendaRuntimeItem(**item.model_dump())
-                for item in agenda.items
-            ]
-        )
+        items = []
+        for item in agenda.items:
+            d = item.model_dump()
+            # Seed interviewed_stakeholder_role from the first stakeholder in the list
+            first_role = item.stakeholders[0] if item.stakeholders else None
+            d["interviewed_stakeholder_role"] = first_role
+            d["stakeholder_idx"]              = 0
+            d["answers"]                      = {}
+            items.append(AgendaRuntimeItem(**d))
+        return cls(items=items)
 
     def current_item(self) -> Optional[AgendaRuntimeItem]:
         if self.current_index < len(self.items):
@@ -384,410 +603,156 @@ class AgendaRuntime(BaseModel):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _w_framework_stage_hint(source_field: str, priority: str) -> str:
-    """Return a W-Framework stage recommendation for the current agenda item.
+    """Return a W-Framework stage label for the current agenda item.
 
-    Stage 1 (Wide/Discovery) — first exposure to a topic; stakeholder hasn't
-      spoken about this yet.
-    Stage 2 (Deep/Drill-Down) — assumption or initial_requirement that needs
-      root-cause probing.
-    Stage 4 (Closed/Confirmation) — out-of-scope items; just confirm agreement.
-
-    Stage 3 (High/Pull-Up) is reserved for follow-ups — not injected here.
+    Returns a short label only — the full stage explanation lives in _REACT_ADDENDUM.
+    The label anchors the agent to the correct stage without duplicating guidance.
     """
     if source_field == "out_of_scope":
-        return (
-            "Stage 4 — CLOSED (Confirmation). "
-            "Verify the stakeholder agrees this capability is excluded. "
-            "Example: 'Just to confirm — [X] is out of scope for this project?'"
-        )
-    if source_field in ("assumption", "initial_requirement") or priority == "high":
-        return (
-            "Stage 2 — DEEP (Drill-Down / 5 Whys). "
-            "This item is high-priority — probe the root cause, not just the surface need. "
-            "Ask 'why is this important?' or 'what has gone wrong before when this wasn't in place?'"
-        )
-    # Default for stakeholder_concern, hard_constraint, evaluation_criterion
-    return (
-        "Stage 1 — WIDE (Discovery). "
-        "Open-ended question to surface what the stakeholder values most here. "
-        "Ask them to walk you through the current situation or their main concern."
-    )
+        return "Stage 4 — CLOSED (Confirmation)"
+    if source_field in ("assumption", "initial_requirement", "non_functional_requirement") or priority == "high":
+        return "Stage 2 — DEEP (Drill-Down)"
+    return "Stage 1 — WIDE (Discovery)"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Prompts
+_INTERVIEWER_PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts" / "interviewer"
+
+def _load_interviewer_prompt(filename: str) -> str:
+    return (_INTERVIEWER_PROMPTS_DIR / filename).read_text(encoding="utf-8")
+
 # ─────────────────────────────────────────────────────────────────────────────
 
-_VISION_EXTRACTION_SYSTEM = """\
-You are a senior Agile Product Owner conducting the opening phase of requirements
-elicitation. Read the project description carefully, then produce a ProductVision —
-the North Star that will filter every Epic and User Story in this project.
+_VISION_EXTRACTION_SYSTEM = _load_interviewer_prompt("vision_extraction_system.txt")
 
-THINK FIRST (internal only — do not output this reasoning):
-  Before filling any field, mentally answer three questions:
-  (a) Who suffers the most from the current situation, and what exactly is the pain?
-  (b) What is the one thing this solution must deliver to be considered a success?
-  (c) What is explicitly excluded or clearly out of reach for this project?
-  (d) What are the 3–5 major user-journey clusters this system must support?
-      At least one cluster must be operational/system-level (admin, monitoring, archive).
-  Use these answers to anchor every field below.
 
-RULES:
-1. TARGET AUDIENCES
-   – List ALL stakeholder groups mentioned or clearly implied.
-   – Classify each as: primary_user / beneficiary / decision_maker / blocker.
-   – Rank by influence_level (high → medium → low).
-   – key_concern: ONE specific need or worry — no generic phrases like "ease of use".
-   – MANDATORY: include at least one operational/system-level stakeholder
-     (e.g. System Administrator, Developer, Data Analyst, Researcher) who requires
-     metrics, maintenance, audit, or archive capabilities.
-     If none is mentioned in the project description, infer the most likely one
-     and mark their key_concern with "(implied)".
+_VISION_EXTRACTION_USER = _load_interviewer_prompt("vision_extraction_user.txt")
 
-2. CORE PROBLEM
-   – 1–2 sentences maximum. Ground it in observable, measurable pain.
-   – Specific enough to reject unrelated feature requests as out-of-scope.
-   – BAD:  "The system lacks modern tooling."
-   – GOOD: "First-year students cannot identify and correct writing style errors
-            in their assignments without waiting days for lecturer feedback,
-            causing last-minute revisions and lower submission quality."
 
-3. VALUE PROPOSITION
-   – The OUTCOME the solution delivers for the stakeholder, not a feature list.
-   – Must NOT start with "The system will …" or list technologies/features.
-   – BAD:  "Provides real-time grammar checking, plagiarism detection, and a
-            recommendation engine for students."
-   – GOOD: "Students receive actionable, personalised feedback within seconds,
-            enabling independent skill improvement before submission deadlines."
+# ── Expanded mapping rules ─────────────────────────────────────────────
 
-4. CORE WORKFLOWS (Epics)
-   – 3–5 major functional areas that define the system's scope boundaries.
-   – Each Epic is a user-journey cluster (verb + object noun phrase):
-       ✓ "Account & Session Management"
-       ✓ "Core Estimation Workflow"
-       ✓ "Game Archive & Reporting"
-       ✓ "System Administration & Monitoring"
-   – MUST include at least one operational/system-level Epic.
-   – These become the "hộp cát" (sandboxes) that bound downstream elicitation.
-     Every requirement generated later must belong to exactly one Epic.
-   – Do NOT use generic labels like "Frontend", "Backend", "Database".
+_AGENDA_EXTRACTION_SYSTEM = _load_interviewer_prompt("agenda_extraction_system.txt")
 
-5. HARD CONSTRAINTS
-   – Non-negotiable limits: timeline, technology mandate, access model, compliance.
-   – ONLY include constraints directly evidenced in the text.
-   – Append "(implied)" to constraints you infer but that are not explicitly stated.
-   – NEVER fabricate a constraint — if genuinely uncertain, record it as an
-     Assumption with needs_validation=True instead.
 
-6. ASSUMPTIONS
-   – Minimum 5 implicit beliefs — cover ALL four quadrants below.
-     Missing a quadrant is an extraction failure.
+_AGENDA_EXTRACTION_USER = _load_interviewer_prompt("agenda_extraction_user.txt")
 
-   QUADRANT A — USER BEHAVIOUR
-     Beliefs about how users will actually interact: motivation levels,
-     technical literacy, access patterns (device, location, time of day).
-
-   QUADRANT B — TECHNICAL / INFRASTRUCTURE
-     Beliefs about hosting, load, browser/device support, third-party services,
-     data storage location, integration with existing systems.
-     Examples: "The system will be accessed from campus Wi-Fi only (implied)",
-               "No authenticated login is required (implied)".
-
-   QUADRANT C — SECURITY / PRIVACY / COMPLIANCE
-     Beliefs about what data is collected, who can see it, and what regulations
-     apply (GDPR, FERPA, institutional policy).
-     Examples: "No personally identifiable data is stored (implied)",
-               "Content does not require editorial review before publishing (implied)".
-
-   QUADRANT D — OPERATIONAL / MAINTENANCE
-     Beliefs about who maintains the system after launch, update cadence,
-     content ownership, and what happens when content becomes outdated.
-     Examples: "Content updates are infrequent and handled by one author (implied)",
-               "No SLA or uptime guarantee is required (implied)".
-
-   – risk_if_wrong: ONE concrete consequence sentence (not "it may fail").
-   – Set needs_validation=True for any assumption that, if false, would materially
-     change the project scope, architecture, timeline, or compliance posture.
-
-7. OUT OF SCOPE
-   – At least 2 capabilities EXPLICITLY excluded or clearly outside the boundary.
-   – Use definitive language; avoid hedging words like "may" or "might".
-   – BAD:  "Advanced analytics may not be included in the first release."
-   – GOOD: "Real-time plagiarism detection against external databases is excluded
-            from this project."
-
-Return structured JSON only. No prose outside schema fields.
-"""
-
-_VISION_EXTRACTION_USER = "Project Description:\n{project_description}"
-
-# ── Fix 1: expanded mapping rules ─────────────────────────────────────────────
-_AGENDA_EXTRACTION_SYSTEM = """\
-You are an Agile requirements analyst. Given a ProductVision AND the original
-project description, build an ordered ElicitationAgenda — a comprehensive list
-of AgendaItems that the interviewer must cover to resolve every open question.
-
-THINK FIRST (internal only — do not output this reasoning):
-  Scan the ProductVision for every assumption with needs_validation=True, every
-  blocker stakeholder, every constraint that could have hidden conditions.
-  Scan the project description for every bullet in "Initial Requirements" and
-  "Evaluation Criteria" sections. Count how many items each mapping rule produces
-  before writing the final list — this ensures no bullet is accidentally omitted.
-
-MAPPING RULES — apply ALL of them, in this order:
-
-  1. assumption (needs_validation=True)
-       → one AgendaItem per assumption, priority="high"
-       → source_field: "assumption"
-       → source_ref: verbatim assumption statement from ProductVision
-       → elicitation_goal: TWO-PART — BOTH are required:
-           (a) VALIDATION: "Confirm whether '<statement>' is true in this project's
-               context and identify how a false assumption changes scope or design."
-           (b) SCENARIO PROBE: Name the concrete failure scenario that tests this
-               assumption. Write it as: "Ask what happens when [failure condition]."
-               For Quadrant B/C/D assumptions this is especially critical:
-                 B (infrastructure): "Ask how many concurrent users are expected
-                    and whether the system must work offline or on mobile devices."
-                 C (security/privacy): "Ask what student data the system will handle
-                    and what happens if a data breach occurs."
-                 D (operational): "Ask who will update content after launch and
-                    what the process is when information becomes outdated."
-         Write the elicitation_goal as one combined sentence covering both parts.
-       → item_id: "assumption_N" (N = 0-based index)
-       → MANDATORY: assumptions from all four quadrants (A=user behaviour,
-         B=technical, C=security/privacy, D=operational) MUST each have at least
-         one agenda item. If the ProductVision assumptions are clustered in only
-         1–2 quadrants, generate synthetic high-priority items for the missing
-         quadrants, marking their source_ref with "(inferred — no explicit
-         assumption; quadrant must be probed)".
-
-  2. stakeholder with type="blocker"
-       → one AgendaItem per blocker, priority="medium"
-       → source_field: "stakeholder_concern"
-       → source_ref: verbatim key_concern of that stakeholder
-       → elicitation_goal: "Clarify what compliance, approval, or veto conditions
-         <role> imposes and the minimum threshold to satisfy them."
-       → item_id: "stakeholder_N"
-
-  3. hard_constraint
-       → one AgendaItem per constraint that may have hidden conditions,
-         priority="medium"
-       → source_field: "hard_constraint"
-       → source_ref: verbatim constraint text from ProductVision
-       → elicitation_goal: "Clarify the exact standard, threshold, or exception
-         behind this constraint: '<constraint>'."
-       → item_id: "hard_constraint_N"
-
-  4. initial_requirement
-       → one AgendaItem for EACH bullet in the "Initial Requirements" section
-         (or equivalent) of the project description, priority="high"
-       → source_field: "initial_requirement"
-       → source_ref: verbatim bullet text — copy exactly, do NOT paraphrase
-       → elicitation_goal: TWO-PART goal — must cover BOTH:
-           (a) SCOPE: "Confirm the exact scope, acceptance threshold, and edge
-               cases for: '<bullet>'."
-           (b) VALUE: "Identify what the user can do DIFFERENTLY once this
-               requirement is met — the concrete outcome or workflow improvement
-               they gain ('So that...')."
-         Write the elicitation_goal as one combined sentence covering both parts.
-       → item_id: "initial_req_N" (N = 0-based index)
-
-  5. evaluation_criterion
-       → one AgendaItem for EACH bullet in the "Evaluation Criteria" section
-         (or equivalent), priority="medium"
-       → source_field: "evaluation_criterion"
-       → source_ref: verbatim criterion text — copy exactly, do NOT paraphrase
-       → elicitation_goal: "Clarify the measurable threshold that defines
-         success for: '<criterion>'."
-       → item_id: "eval_criterion_N"
-
-  6. out_of_scope
-       → one AgendaItem per out-of-scope item, priority="low"
-       → source_field: "out_of_scope"
-       → source_ref: verbatim exclusion text from ProductVision
-       → elicitation_goal: "Confirm that all stakeholders agree this capability
-         is excluded and identify any edge case that might bring it back in scope."
-       → item_id: "out_of_scope_N"
-
-  7. epic_coverage
-       → one AgendaItem for EACH Epic in ProductVision.core_workflows, priority="medium"
-       → source_field: "stakeholder_concern"
-       → source_ref: verbatim Epic label from core_workflows
-       → elicitation_goal: "For the '<Epic>' area: identify any sub-roles or
-         permission levels within this user group (e.g. who can delete vs. who
-         can only view), and confirm what a successful outcome looks like for
-         the stakeholder most affected by this area."
-       → item_id: "epic_N" (N = 0-based index)
-       → Skip this rule for any Epic whose content is already fully covered
-         by existing initial_requirement items (DEDUPLICATION GUARD applies).
-
-DEDUPLICATION GUARD:
-  If two mapping rules would produce items with near-identical elicitation_goal
-  (same underlying question), keep only the HIGHER-priority one and note the
-  overlap in elicitation_goal. Do NOT generate duplicate questions for the same
-  concern expressed in different source sections.
-
-ORDER: high → medium → low.
-Within the same priority, preserve the order items appear in the source document.
-
-Return structured JSON only. No prose outside schema fields.
-"""
-
-_AGENDA_EXTRACTION_USER = """\
-ProductVision (JSON):
-{vision_json}
-
-Core Workflows / Epics (from ProductVision — use these as sandboxes for epic_coverage items):
-{core_workflows_list}
-
-Original Project Description (for initial_requirement and evaluation_criterion mapping):
-{project_description}
-"""
 
 # ── v3: Active Listening + LLM-delegated follow-up + relaxed decomposition ─────
 _REACT_ADDENDUM = """
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PRE-TURN INNER MONOLOGUE — run silently before every tool call
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Before calling any tool, answer these mentally:
+Start with the person, not the requirement. Before classifying anything, answer
+these questions mentally in order.
 
-  [1] CLASSIFICATION:
-      Is the information Functional (what must happen),
-      Non-Functional (quality/constraint/performance), or a hidden concern?
+First — who is this person? Read CURRENT STAKEHOLDER in the task. What role do
+they play in daily life? What would go wrong for THEM specifically if this project
+failed? Hold their perspective as the lens for everything that follows.
 
-  [2] HIDDEN REQUIREMENTS CHECK:
-      Is the answer too simple or surface-level?
-      If YES → drill down. Ask "Why?" or "What if?"
+Second — what did they actually say, and what did they NOT say? If an ENDUSER
+ANSWER is present, read it as a human statement, not a requirements input. What
+concern is underneath the words? What would they be worried about losing?
 
-  [3] STRATEGY: Drill-Down or Pull-Up?
-      Drill-Down (Stage 2): Go deeper — root cause, past failures.
-      Pull-Up (Stage 3):    Zoom out — competing needs, trade-off balancing.
-        Use ONLY when _agenda_needs_followup=True.
+Third — is this answer complete enough to write a testable requirement? If the
+answer is surface-level or vague, the right move is to go deeper — not broader.
+Ask why this matters to them, or what happened in the past when it went wrong.
 
-  [4] FOLLOW-UP DECISION (only when an answer is present):
-      A follow-up is warranted ONLY when a GENUINE TENSION exists.
-      Ask: "Which two dimensions pull in opposite directions here?"
-        usability ↔ security | automation ↔ control | speed ↔ accuracy
-        openness ↔ privacy   | cost ↔ quality       | flexibility ↔ simplicity
-      If you CANNOT name the specific tension → needs_follow_up=False.
-      Long answers or many topics alone are NOT sufficient reasons.
+Fourth — is there a genuine tension in this answer? Two needs the stakeholder
+expressed that pull in opposite directions at the same time. The two sides must
+come from what the stakeholder ACTUALLY SAID — not from abstract categories.
+Test: can you write '[A] vs [B]' where both [A] and [B] are quoted or closely
+paraphrased from their answer? If you cannot fill in both slots with their
+words, there is no tension. A long answer or a list of topics is not a
+tension. Set needs_follow_up to False unless you can write both sides clearly.
 
-  [5] ACKNOWLEDGMENT DRAFTING (only when about to call ask_question):
-      Draft one sentence mirroring a SPECIFIC element from the prior answer.
-      GOOD: "Understood — your concern is that unclear wording gets ignored."
-      BAD:  "Thank you for sharing." / "Great, let's move on."
-      EXCEPTION: the very first question has no prior answer — pass empty string.
+Fifth — if you are about to call ask_question, draft the acknowledgment from
+THIS stakeholder's words — not from the agenda item's label, and not from
+another stakeholder's answer listed under PRIOR ANSWERS. Quote or closely
+paraphrase something THIS person said — their concern, their example, their
+frustration. If you are asking this stakeholder for the first time on this
+item (they have no prior answer yet), pass an empty string.
 
-  Then:
-    □ Am I about to call more than one tool?  → STOP. One tool only.
-    □ ENDUSER ANSWER present AND _agenda_needs_followup=False? → MUST call record_answer.
-    □ _agenda_needs_followup=True?  → MUST call ask_question (Stage 3 follow-up).
-    □ Have I already asked a follow-up this item? → Do NOT ask another.
+Sixth — check tool discipline. You may call exactly one tool this turn. Stop
+before calling. Is there an ENDUSER ANSWER present and _agenda_needs_followup is
+False? Then call record_answer. Is _agenda_needs_followup True? Then call
+ask_question with a Stage 3 tension-balancing question only. Is neither condition
+met and elicitation is not complete? Then call ask_question with a Stage 1 or
+Stage 2 question. Is elicitation_complete True? Then call conclude.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TURN STRUCTURE — EXACTLY ONE TOOL PER TURN
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Each turn you receive:
-  • AGENDA PROGRESS
-  • CURRENT ITEM
-  • ENDUSER ANSWER (optional)
-  • FOLLOW-UP CONTEXT (optional)
+Each turn you receive agenda progress, the current item, an optional ENDUSER
+ANSWER, and an optional FOLLOW-UP CONTEXT. Follow this decision sequence exactly,
+stopping at the first match.
 
-DECISION TREE — follow exactly, top to bottom:
+If elicitation_complete is True, call conclude and nothing else.
 
-  ┌─ elicitation_complete = True?
-  │     YES → call conclude ONLY.
-  │
-  ├─ FOLLOW-UP CONTEXT present (_agenda_needs_followup = True)?
-  │     YES → call ask_question ONLY with a Stage 3 tension-balancing question.
-  │           Include acknowledgment referencing the prior answer.
-  │           Do NOT call record_answer — original answer already stored.
-  │
-  ├─ ENDUSER ANSWER present AND _agenda_needs_followup = False?
-  │     YES → call record_answer ONLY with:
-  │             needs_follow_up=True  if a NAMED tension exists (see [4] above)
-  │             needs_follow_up=False otherwise
-  │             follow_up_reasoning = one sentence naming the tension,
-  │               OR empty string if needs_follow_up=False.
-  │
-  └─ No answer, no follow-up, not complete?
-        YES → call ask_question ONLY. One Stage 1 or Stage 2 question.
-              Include acknowledgment when a prior answer exists.
+If FOLLOW-UP CONTEXT is present (meaning _agenda_needs_followup is True), call
+ask_question with a Stage 3 tension-balancing question. Include an acknowledgment
+referencing the prior answer. Do not call record_answer — the original answer is
+already stored.
 
-NEVER call two tools in one turn.
+If ENDUSER ANSWER is present and _agenda_needs_followup is False, call
+record_answer with needs_follow_up set to True if a named tension exists, or False
+otherwise. Pass a one-sentence description of the tension in follow_up_reasoning if
+needs_follow_up is True, or an empty string if it is False.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+If no answer is present, no follow-up is active, and elicitation is not complete,
+call ask_question with one Stage 1 or Stage 2 question. Include an acknowledgment
+when a prior answer exists.
+
+Never call two tools in one turn.
+
 W-FRAMEWORK — every question fits exactly one stage
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  Stage 1 — WIDE (Discovery)
-    Open-ended. Surface what the stakeholder cares about.
-    "Walk me through how you currently handle [topic]…"
-    "What worries you most about [area]?"
-    → Use for the FIRST question on any agenda item.
+Stage 1 is Wide or Discovery. Open-ended. Let the stakeholder define what matters.
+Use Stage 1 for the first question on any agenda item. Ask them to walk you through
+their current situation or their main concern — in their own words.
 
-  Stage 2 — DEEP (Drill-Down / 5 Whys)
-    Narrow in on a specific concern. Go to root cause.
-    "You mentioned [X] — what specifically makes that a problem for you?"
-    "What went wrong in the past when [X] wasn't in place?"
-    → Use when the prior answer feels surface-level.
+Stage 2 is Deep or Drill-Down. Narrow into a specific concern raised by the
+stakeholder and go to root cause. Ask why it matters to them, or what went wrong in
+the past. Use Stage 2 when the prior answer is surface-level or leaves the real
+concern unstated.
 
-  Stage 3 — HIGH (Pull-Up / Tension Balancing)
-    Zoom out. Ask how competing needs should be balanced.
-    "How do you want to handle the situation where [A] conflicts with [B]?"
-    "If you had to choose between [X] and [Y], which matters more for you?"
-    → Use ONLY when _agenda_needs_followup=True.
-    → NEVER use as the first question on a new agenda item.
+Stage 3 is High or Pull-Up, for Tension Balancing. Ask how the stakeholder wants to
+navigate a situation where two things they care about conflict. A good Stage 3
+question names the two competing needs in the stakeholder's own language and asks
+how they would choose. Use Stage 3 only when _agenda_needs_followup is True.
+Never use it as the first question on a new agenda item.
 
-  Stage 4 — CLOSED (Confirmation)
-    Verify a specific boundary, threshold, or constraint.
-    "So to confirm — if [condition], the system must [behaviour]?"
-    → Reserve for out-of-scope or confirmation items only.
+Stage 4 is Closed or Confirmation. Verify a specific boundary or constraint that
+was stated earlier. Reserve Stage 4 for out-of-scope items only.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FOLLOW-UP RULES (Stage 3 — when _agenda_needs_followup=True)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FOLLOW-UP RULES (Stage 3 only)
 
-  Step 1 — Read the previous answer. Find the strongest tension.
-  Step 2 — Name it: "This is a [X] ↔ [Y] tension."
-            If you cannot name it → the follow-up should not have been triggered.
-  Step 3 — Ask ONE question about how to BALANCE that tension.
+When _agenda_needs_followup is True, find the strongest tension in the previous
+answer. Name both sides in plain language — the stakeholder's language, not
+requirement-category language. Then ask one question about how the stakeholder
+would want to handle that conflict if both things cannot be fully satisfied at the
+same time. A good Stage 3 question puts the trade-off in the stakeholder's hands.
+A bad one asks for more detail on the same topic — that is Stage 2. The hard limit
+is one follow-up per item. Never request a second.
 
-  ✓ GOOD: "You mentioned strict access control — how would you handle a student
-    who genuinely needs access from a shared campus library computer?"
-  ✗ BAD:  "What types of access controls specifically are you thinking of?"
-          (Stage 2 — not a tension question.)
-
-  Hard limit: ONE follow-up per item. Never request a second.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 QUESTION QUALITY RULES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  1. ONE question per turn.
-  2. Match W-Framework stage (Stage 1 first, Stage 2 to drill, Stage 3 for follow-up).
-  3. Be specific to the current item's elicitation_goal.
-  4. Neutral — do not lead the stakeholder toward a preferred answer.
-  5. No redundancy — do not re-ask answered questions.
-  6. ≤ 2 sentences total (acknowledgment + question).
+Ask one question per turn. Match the W-Framework stage to the QUESTION STRATEGY
+label provided in the task — do not override it based on your own classification.
+Be specific to the current item's elicitation_goal AND to this stakeholder's role.
+Stay neutral. Do not lead. Keep total output to at most two sentences.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ANTI-PATTERNS — NEVER do these
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ANTI-PATTERNS
 
-  ✗ Call record_answer and ask_question in the same turn.
-  ✗ Ask a question when an ENDUSER ANSWER is waiting (and no follow-up is due).
-  ✗ Ask about a different item than the CURRENT ITEM.
-  ✗ Re-ask a question already answered.
-  ✗ Lead the stakeholder toward a specific answer.
-  ✗ Use technical jargon in question or acknowledgment.
-  ✗ Use "how to balance X?" as a first question — Stage 3 is for follow-ups only.
-  ✗ Narrate your reasoning — deliver acknowledgment + question only.
-  ✗ Request a second follow-up after the first follow-up answer is received.
-  ✗ Set needs_follow_up=True because the answer is long — only when you can
-    NAME the specific tension dimension.
-  ✗ Use generic acknowledgments ("Thank you", "Great point", "Let's move on").
+Never call record_answer and ask_question in the same turn. Never ask a question
+when an ENDUSER ANSWER is waiting and no follow-up is due. Never ask about a
+different item than the current item. Never re-ask an answered question. Never lead
+the stakeholder toward a specific answer. Never use technical jargon in the
+question or acknowledgment. Never use a tension-balancing question as the first
+question on a new agenda item. Never narrate your reasoning — deliver the
+acknowledgment and question only. Never request a second follow-up after the first
+follow-up answer is received. Never set needs_follow_up to True because the answer
+is long — only set it True when you can write both sides as '[A] vs [B]' from the
+stakeholder's words. Never use generic acknowledgments such as "Thank you",
+"Great point", or "Let's move on". Never acknowledge what a DIFFERENT stakeholder
+said as if the current stakeholder said it — PRIOR ANSWERS belong to other people.
 
 Never chain two tool calls in one turn. The orchestrator handles sequencing.
 """
@@ -801,845 +766,41 @@ Never chain two tool calls in one turn. The orchestrator handles sequencing.
 # Pass 4 — Quality Gate:    all passes       → atomicity check + final assembly
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── Shared field-level guidance injected into every pass prompt ───────────────
-_FIELD_GUIDANCE = """\
-FIELD-LEVEL RULES (apply to EVERY requirement you generate):
-
-──────────────────────────────────────────────────────
-epic
-──────────────────────────────────────────────────────
-  • Assign to exactly ONE Epic from ProductVision.core_workflows.
-  • The Epic label must match the core_workflows string exactly.
-  • Use 'Cross-Cutting' ONLY when the requirement genuinely applies to every Epic
-    (e.g. a global accessibility or security policy).
-  • NEVER leave this field empty. A requirement without an Epic is an
-    extraction failure — Pass 4 must reject and re-assign it.
-
-──────────────────────────────────────────────────────
-statement
-──────────────────────────────────────────────────────
-Format:  "The system SHALL …" or "The system SHALL NOT …"
-Rules:
-  • ONE behaviour, ONE verb.
-  • If the sentence contains "and" or "or" linking two DISTINCT behaviours,
-    split it into two separate Requirement objects immediately.
-  • Testable by a QA engineer from the statement alone — no guessing required.
-  • No implementation detail: no library names, no framework choices, no tech stack.
-  • BANNED modal verbs in the statement: should, may, can, could, might, ideally.
-
-  BAD:  "The system should handle assignment uploads and provide feedback quickly."
-  GOOD-1: "The system SHALL accept assignment uploads in PDF and DOCX formats."
-  GOOD-2: "The system SHALL return automated feedback within 30 seconds of submission."
-
-──────────────────────────────────────────────────────
-stakeholder
-──────────────────────────────────────────────────────
-  • A SPECIFIC role from the Project Description
-    (e.g. "First-year Students", "Course Lecturers", "IT Support Staff").
-  • NEVER "All Users", "Everyone", or "End Users" — if truly universal,
-    use the most affected primary_user role and note "(affects all roles)".
-
-──────────────────────────────────────────────────────
-context
-──────────────────────────────────────────────────────
-  • WHERE or WHEN this requirement applies.
-    Examples: "On the assignment submission page",
-              "When a student clicks 'Submit'",
-              "During the grading workflow".
-  • MUST NOT be null for any functional requirement.
-  • For NFR/CON that apply system-wide, use "Across all system interactions".
-
-──────────────────────────────────────────────────────
-rationale
-──────────────────────────────────────────────────────
-  TWO parts — BOTH are mandatory for every requirement:
-
-  (a) PAIN — cite or closely paraphrase the stakeholder's own words from the
-      elicitation answer that describes the current problem or frustration.
-      Must be traceable to a specific elicitation item (EL-NNN) or the project
-      description (PD).
-
-  (b) OUTCOME ("So that") — the concrete workflow improvement the stakeholder
-      achieves once this requirement is met. State it as:
-      "So that [specific role] can [observable outcome]."
-      If the elicitation answer did not explicitly state the outcome, infer the
-      most plausible one from context and set status="inferred" on this requirement.
-
-  Format:  "<pain statement>. So that <outcome statement>."
-
-  BAD:  "This is important for user satisfaction."
-  BAD:  "Stakeholder stated: 'Students get frustrated when feedback is slow.'"
-        (pain only — missing the outcome)
-  GOOD: "Stakeholder stated: 'Students close the tab if they wait more than a
-         minute.' So that students can review automated feedback before their
-         next revision cycle without losing momentum."
-
-  Do NOT copy-paste the same rationale text across multiple requirements.
-
-──────────────────────────────────────────────────────
-acceptance_criteria
-──────────────────────────────────────────────────────
-  Format:  Given-When-Then bullets (1–3 for FR, 1–2 for NFR).
-  Rules:
-  • ONLY objective, measurable conditions — no subjective assertions.
-  • Use technical thresholds, not adjectives:
-      ✗ "The interface should be easy to use."
-      ✓ "Response time ≤ 2 s under 500 concurrent users."
-      ✓ "WCAG 2.1 Level AA compliance on all interactive elements."
-      ✓ "Viewport renders correctly at widths ≥ 320 px."
-
-  BANNED words anywhere in acceptance_criteria:
-    easy, clean, user-friendly, intuitive, beautiful, simple, appropriate,
-    fast, quickly, seamlessly, properly, correctly (without threshold),
-    reasonable, adequate, sufficient.
-
-  Empty list [] is VALID for constraint (CON) and out_of_scope (OOS) items.
-
-──────────────────────────────────────────────────────
-priority
-──────────────────────────────────────────────────────
-  Inherit from the elicitation item's priority unless the stakeholder's answer
-  explicitly overrides it. All out_of_scope items → "low".
-
-──────────────────────────────────────────────────────
-status
-──────────────────────────────────────────────────────
-  confirmed  – stakeholder explicitly stated this in their own words.
-  inferred   – implied but not directly stated; flag for human reviewer.
-               Also set to "inferred" when the rationale outcome was inferred
-               rather than explicitly stated by the stakeholder.
-  excluded   – out-of-scope; recorded as an anti-requirement.
-"""
+# ── Per-pass field guidance loaded from individual files ─────────────────────
+# Each pass has its own COMPLETE guidance file — no shared base.
+# Loading is done lazily here so missing files fail loudly at startup.
+_FIELD_GUIDANCE_PASS1  = _load_interviewer_prompt("field_guidance_pass1.txt")
+_FIELD_GUIDANCE_PASS2  = _load_interviewer_prompt("field_guidance_pass2.txt")
+_FIELD_GUIDANCE_PASS3  = _load_interviewer_prompt("field_guidance_pass3.txt")
+_FIELD_GUIDANCE_PASS4  = _load_interviewer_prompt("field_guidance_pass4.txt")
 
 # ── Pass 1: Functional Requirements ──────────────────────────────────────────
-_PASS1_SYSTEM = """\
-You are a senior Requirements Engineer performing Pass 1 of a 4-pass SRS
-synthesis pipeline.
+_PASS1_SYSTEM = _load_interviewer_prompt("pass1_system.txt")
 
-YOUR ONLY JOB THIS PASS: extract Functional Requirements (FR) from the
-elicitation record. Do NOT extract NFR, CON, or OOS items — those belong to Pass 2.
 
-─────────────────────────────────────────────────────
-WHAT IS A FUNCTIONAL REQUIREMENT?
-─────────────────────────────────────────────────────
-A system behaviour — something the system must DO, DISPLAY, ALLOW, or PREVENT.
-Functional requirements map from source_fields:
-  assumption | stakeholder_concern | initial_requirement
+_PASS1_USER = _load_interviewer_prompt("pass1_user.txt")
 
-─────────────────────────────────────────────────────
-PRE-EXTRACTION SCAN (run before writing any output):
-─────────────────────────────────────────────────────
-For each elicitation item, read BOTH the main answer AND the [follow-up] block
-(if present). They are separate evidence sources — do not skip either.
-
-For each block, count:
-  (a) Distinct ACTORS mentioned (including secondary stakeholders).
-  (b) Distinct TRIGGERS or entry conditions.
-  (c) Distinct SYSTEM RESPONSES, outputs, or content types.
-  Each unique combination of (actor + trigger + response) = one FR candidate.
-
-─────────────────────────────────────────────────────
-ASSUMPTION ITEM RULE (source_field = "assumption"):
-─────────────────────────────────────────────────────
-Assumption items are often the richest source of BEHAVIOURAL requirements because
-they expose what the system must actively DO to validate or support the assumption.
-
-For EVERY assumption item:
-  Step 1 — Read the source_ref (the assumption statement).
-  Step 2 — Ask: "What must the system DO or DISPLAY so that this assumption
-            holds true or is actively supported?"
-  Step 3 — Generate at least ONE FR per distinct system behaviour identified.
-  Step 4 — Check the [follow-up] block for engagement/motivation/onboarding
-            behaviours (e.g. connecting guidelines to interests, showing benefits,
-            providing scaffolding). These yield SEPARATE FRs — do not fold them
-            into a single "provide guidance" FR.
-
-  EXAMPLE assumption: "Students are motivated to learn about responsible AI use."
-  → FR: "The system SHALL display the real-world consequence (grade penalty or
-         academic misconduct flag) of each prohibited AI use case alongside
-         the rule that prohibits it."
-  → FR: "The system SHALL surface a 'Why this matters' callout on each guidance
-         page linking the rule to a concrete student benefit."
-  These are DISTINCT from a generic "provide guidance" FR.
-
-─────────────────────────────────────────────────────
-SECONDARY STAKEHOLDER RULE:
-─────────────────────────────────────────────────────
-The elicitation record may mention stakeholders beyond the primary user.
-Before finalising output, scan every item for named roles other than the
-primary user (e.g. teachers, managers, administrators, advisors, support staff).
-
-For each secondary stakeholder mentioned:
-  • Determine whether the answer implies a system behaviour serving that role.
-  • If yes → generate a SEPARATE FR with stakeholder set to that role.
-  • Do NOT fold secondary-stakeholder needs into primary-user requirements.
-
-  MANDATORY: Items with source_field = "assumption" or "stakeholder_concern"
-  frequently mention teacher or admin needs in [follow-up] blocks.
-  Scan ALL [follow-up] blocks for secondary stakeholder behaviours even when
-  the primary answer was written for students.
-
-─────────────────────────────────────────────────────
-FOLLOW-UP EXTRACTION RULE:
-─────────────────────────────────────────────────────
-[follow-up] blocks contain tension-resolution answers that frequently introduce
-new actionable system behaviours not present in the main answer. For each
-[follow-up] block:
-  (a) Identify any actor+trigger+response combination not already captured
-      from the main answer → generate a new FR.
-  (b) Identify any new content type, user-facing feature, or support pathway
-      mentioned (e.g. onboarding pages, help sections, downloadable resources,
-      search features, progressive disclosure patterns, callout components)
-      → generate a separate FR per distinct item.
-  (c) Identify negated behaviours ("must not", "avoid", "should not", "no X",
-      "not flashy", "not cluttered") → generate a SHALL NOT FR for each.
-  (d) Identify ENGAGEMENT or MOTIVATION language ("curious", "connect to interests",
-      "show benefits", "makes them want to") → these imply a presentation behaviour
-      the system must support. Generate a distinct FR for each engagement mechanism.
-
-Do not discard a [follow-up] block because the main answer already yielded FRs.
-The two blocks are independent sources.
-
-─────────────────────────────────────────────────────
-CONTEXT SPECIFICITY RULE (critical for MDC):
-─────────────────────────────────────────────────────
-The `context` field MUST identify WHERE or WHEN — as specifically as possible.
-Generic values like "On the website" or "In the system" are EXTRACTION FAILURES.
-
-REQUIRED specificity levels:
-  • Name the PAGE or SECTION: "On the AI Use Guidelines page"
-  • OR name the TRIGGER: "When a student navigates to a risk topic"
-  • OR name the WORKFLOW STEP: "During the student's first session on the site"
-
-BANNED context values (reject and rewrite):
-  ✗ "On the AIGuidebook website"           → too generic
-  ✗ "Across all system interactions"       → use for NFR/CON only, never FR
-  ✗ "In the system"                        → too generic
-  ✗ "On the website"                       → too generic
-
-GOOD examples:
-  ✓ "On the Responsible AI Use guidance page, when a student views a rule"
-  ✓ "On the Privacy & Data Protection section"
-  ✓ "When a student opens the interactive checklist element"
-  ✓ "On the Academic Integrity page, when a student reads an example"
-  ✓ "In the Teacher Resources section, when a teacher browses shared materials"
-
-Each FR for a different page/section/trigger must have a DIFFERENT context value.
-Two FRs with identical context values must differ in stakeholder or system response.
-
-─────────────────────────────────────────────────────
-DECOMPOSITION RULE — split on signal, not on count:
-─────────────────────────────────────────────────────
-Split one answer into MULTIPLE FRs ONLY when you observe a CLEAR change in at
-least one of these three dimensions:
-
-  ACTOR   — a different role is the primary subject (student vs. teacher vs. admin)
-  TRIGGER — a different entry condition or user action initiates the behaviour
-  OUTCOME — the system produces a distinctly different output or state change
-
-Do NOT split merely because an answer is long, lists several topics, or uses
-"also" / "and" as connective tissue. One well-articulated answer may yield
-exactly 1 excellent FR.
-
-  SPLIT → "Students can browse rules AND teachers can flag a rule for review."
-           Actor changes (student → teacher) + outcome changes → 2 FRs.
-
-  NO SPLIT → "The guidance should be clear, visually clean, and well-organised."
-              Same actor + same trigger + same outcome (page presentation) → 1 FR
-              with a specific acceptance criterion. Do NOT manufacture 3 FRs.
-
-SELF-CHECK before submitting output:
-  For every FR you are about to write, confirm it passes the ACTOR/TRIGGER/OUTCOME
-  test against every other FR from the same elicitation item.
-  If two FRs share all three dimensions → merge into one more specific statement.
-  If they differ on at least one dimension → keep both.
-
-  NOTE: there is NO minimum FR count per item. A focused, specific answer that
-  expresses one coherent behaviour should produce exactly 1 FR. Forcing 3–6 FRs
-  from such an answer creates near-duplicates that harm MDC and SRS quality.
-
-ASSUMPTION ITEMS — minimum 2 FRs still applies ONLY when:
-  • The main answer and the [follow-up] block each contain at least one
-    DISTINCT actor/trigger/outcome combination not already captured.
-  If the follow-up merely elaborates the same behaviour → do NOT generate a
-  separate FR; instead, strengthen the single FR's acceptance_criteria.
-
-MERGE RULE — merge into ONE more specific statement ONLY when two candidates
-  share the same stakeholder AND trigger AND outcome (even with different wording):
-  ✗ "The system SHALL store user data securely."
-  ✗ "The system SHALL protect user data from unauthorised access."
-  ✓ "The system SHALL encrypt all user data at rest using AES-256."
-
-DECOMPOSITION EXAMPLES (domain-neutral):
-  Answer: "notifications, audit logs, and role-based access"
-  → FR-001: The system SHALL send an in-app notification to the actor when a
-             watched item changes state.
-  → FR-002: The system SHALL write a timestamped audit-log entry for every
-             state-changing action performed by any user.
-  → FR-003: The system SHALL restrict access to each feature based on the
-             authenticated user's assigned role.
-  (Three FRs because actor + trigger + outcome each differ across items.)
-
-  Answer: "The page should feel welcoming and use calming colours."
-  → FR-001: The system SHALL render the guidance page using a colour palette
-             where background and foreground contrast ratio ≥ 4.5:1 (WCAG AA).
-  (One FR — same actor, same page, same visual output. Do not split into
-   "welcoming tone FR" + "colour FR" + "layout FR" if only one behaviour is described.)
-
-─────────────────────────────────────────────────────
-ATOMICITY RULE:
-─────────────────────────────────────────────────────
-One behaviour per statement. If your statement contains "and" linking two
-behaviours → split into two requirements before writing the output.
-
-─────────────────────────────────────────────────────
-ID ALLOCATION:
-─────────────────────────────────────────────────────
-FR-001, FR-002, … (sequential, no gaps, never reuse).
-source_elicitation_id: "EL-NNN" matching the elicitation item id.
-
-─────────────────────────────────────────────────────
-OUTPUT CONTRACT:
-─────────────────────────────────────────────────────
-Return a JSON array of Requirement objects ONLY.
-No prose, no markdown fences, no explanation text outside the array.
-Schema per object: req_id, epic, req_type ("functional"), stakeholder, statement,
-context, rationale, acceptance_criteria, priority, source_elicitation_id, status.
-
-{field_guidance}
-"""
-
-_PASS1_USER = """\
-PROJECT DESCRIPTION:
-{project_description}
-
-ELICITATION RECORD ({item_count} items):
-{elicitation_json}
-
-EXTRACTION CHECKLIST — work through these in order before writing output:
-
-1. For each assumption item (source_field="assumption"):
-   - List distinct actor+trigger+outcome combos from the main answer.
-   - List distinct actor+trigger+outcome combos from the [follow-up] block
-     (treat as an independent source).
-   - Generate one FR per distinct combo. If both blocks describe the same
-     behaviour, strengthen one FR's acceptance_criteria — do NOT duplicate.
-
-2. For each initial_requirement item:
-   - List distinct actor+trigger+outcome combos (not just topic areas).
-   - Confirm context is specific (names a page, section, or trigger — not "On the website").
-   - One focused behaviour = 1 FR. Multiple distinct combos = multiple FRs.
-
-3. Scan all [follow-up] blocks for secondary stakeholder mentions (teachers, admins).
-   Confirm each generates a SEPARATE FR with that stakeholder — different actor = split.
-
-4. Confirm NO two FRs share identical (actor + trigger + outcome).
-   If two FRs match on all three → merge into one more specific statement.
-
-Then extract ALL Functional Requirements. Return a JSON array.
-"""
 
 # ── Pass 2: Non-Functional Requirements, Constraints, Out-of-Scope ───────────
-_PASS2_SYSTEM = """\
-You are a senior Requirements Engineer performing Pass 2 of a 4-pass SRS
-synthesis pipeline.
+_PASS2_SYSTEM = _load_interviewer_prompt("pass2_system.txt")
 
-YOUR ONLY JOB THIS PASS: extract Non-Functional Requirements (NFR), Constraints
-(CON), and Out-of-Scope items (OOS) from the elicitation record.
 
-─────────────────────────────────────────────────────
-NFR IDENTITY TEST — apply before writing any NFR:
-─────────────────────────────────────────────────────
-Before classifying anything as NFR, apply this two-question test:
+_PASS2_USER = _load_interviewer_prompt("pass2_user.txt")
 
-  Q1: "Does this statement describe WHAT the system must DO, DISPLAY, or ALLOW?"
-      YES → This is a Functional Requirement. It belongs in Pass 1. SKIP — do not
-            write it here. Restatements of FR behaviours as NFRs inflate the SRS
-            with fake diversity and destroy quality metrics.
-
-  Q2: "Does this statement include a measurable threshold, standard, or limit?"
-      NO  → It is NOT ready to be an NFR. Either:
-            (a) Derive a threshold from an industry standard (WCAG, ISO 9241,
-                OWASP, HTTP response time conventions) and set status="inferred", OR
-            (b) Reclassify as CON if it is a hard process/legal limit with no threshold.
-
-  A valid NFR answers: "How WELL, how FAST, how RELIABLY, or how SECURELY
-  must the system perform a behaviour that Pass 1 already captured?"
-
-  EXAMPLES of INVALID NFRs (= behaviour restatements — do NOT generate):
-    ✗ "The system SHALL provide clear rules and examples."   ← behaviour → Pass 1
-    ✗ "The system SHALL be accessible and readable."         ← behaviour → Pass 1
-    ✗ "The system SHALL include interactive elements."       ← behaviour → Pass 1
-
-  EXAMPLES of VALID NFRs (= quality attributes with measurable thresholds):
-    ✓ "The system SHALL load any page within 3 seconds on a 10 Mbps connection."
-    ✓ "The system SHALL achieve WCAG 2.1 Level AA compliance on all public pages."
-    ✓ "The system SHALL remain available 99.5% of the time during academic term hours."
-    ✓ "The system SHALL NOT collect or store any personally identifiable information."
-    ✓ "The system SHALL render all pages correctly at viewport widths ≥ 320 px."
-    ✓ "The system SHALL display content in a colour palette where text contrast
-       ratio is ≥ 4.5:1 for normal text and ≥ 3:1 for large text (WCAG AA)."
-
-─────────────────────────────────────────────────────
-CATEGORY DECISION TABLE — use this to classify each concern:
-─────────────────────────────────────────────────────
-  Ask: "Does this concern describe WHAT the system must DO?"
-    YES → Functional Requirement → belongs in Pass 1, SKIP here.
-    NO  → Ask: "Does this describe a quality ATTRIBUTE with a measurable threshold?"
-      YES → NFR (non_functional).
-      NO  → Ask: "Is this a non-negotiable LIMIT on how the system is built or operated?"
-        YES → CON (constraint). Examples: technology mandate, budget cap,
-              legal/compliance requirement, deployment environment, access model.
-        NO  → Ask: "Is this a capability EXPLICITLY EXCLUDED from this project?"
-          YES → OOS (out_of_scope).
-
-─────────────────────────────────────────────────────
-QUALITY DIMENSIONS TO PROBE (for CHV coverage):
-─────────────────────────────────────────────────────
-Scan the elicitation record for evidence of ALL of the following dimensions.
-Generate at least one NFR for EACH dimension where evidence exists:
-
-  PERFORMANCE — page load time, response latency, throughput.
-    Trigger signals: "crash", "slow", "overloaded", "lots of students", "won't work".
-
-  RELIABILITY / AVAILABILITY — uptime, error recovery.
-    Trigger signals: "crash", "work all the time", "academic term", "deadlines".
-
-  ACCESSIBILITY — WCAG level, keyboard navigation, screen reader, contrast ratio.
-    Trigger signals: "disabilities", "regardless of abilities", "screen reader",
-                     "readable text", "navigate without trouble".
-
-  PRIVACY / DATA PROTECTION — PII handling, GDPR, data minimisation.
-    Trigger signals: "data protection", "regulations", "privacy", "GDPR",
-                     "personal information", "store data".
-
-  CONTENT INTEGRITY — review/approval process, citation standards, accuracy.
-    Trigger signals: "review process", "checked before it goes live",
-                     "accurate and trustworthy", "external sources", "citations".
-
-  VISUAL / BRAND CONSISTENCY — colour theme, typography standards.
-    Trigger signals: "green theme", "consistent", "colours", "fonts",
-                     "professional", "clean design".
-
-  USABILITY THRESHOLD — task completion rate, error rate, time-on-task.
-    Trigger signals: "frustration", "give up", "confused", "testing", "usability tests".
-
-─────────────────────────────────────────────────────
-ANTI-DUPLICATION RULE (critical):
-─────────────────────────────────────────────────────
-Pass 1 already owns all system behaviours (what the system must DO/DISPLAY/ALLOW/PREVENT).
-If a concern spans both a quality attribute AND a behaviour:
-  → Extract ONLY the quality dimension here (the threshold, the standard, the limit).
-  → Leave the behaviour itself to Pass 1.
-
-  EXAMPLE — "accessible navigation":
-    Pass 1 (FR): "The system SHALL display a persistent navigation menu on every page."
-    Pass 2 (NFR): "The system SHALL support full keyboard navigation across all pages
-                   with no mouse dependency (WCAG 2.1 SC 2.1.1)."
-
-  EXAMPLE — "clear citation display":
-    Pass 1 (FR): "The system SHALL display a formatted citation beneath each
-                  externally sourced piece of content."
-    Pass 2 (CON): "All external content citations SHALL follow APA 7th edition format."
-
-─────────────────────────────────────────────────────
-CATEGORY DEFINITIONS:
-─────────────────────────────────────────────────────
-  NFR (non_functional) — ID prefix: NFR-001, NFR-002, …
-    Maps from: hard_constraint (quality-focused), evaluation_criterion,
-    stakeholder_concern (when quality-focused), [follow-up] tension resolution.
-    EVERY NFR statement MUST include a measurable threshold or named standard.
-    If the elicitation answer does not supply one, set status="inferred" and apply
-    the most relevant industry standard (WCAG 2.1, ISO 9241, OWASP, HTTP spec).
-    acceptance_criteria MUST contain at least 1 Given-When-Then bullet with a
-    measurable condition — empty [] is NOT valid for NFR items.
-
-  CON (constraint) — ID prefix: CON-001, CON-002, …
-    Maps from: hard_constraint (operational/legal/compliance).
-    Statement describes a non-negotiable limit, NOT a behaviour or quality attribute.
-    rationale MUST cite the stakeholder's own words (pain + "So that" outcome).
-    Generic rationale like "to meet project goals" is an extraction failure.
-
-  OOS (out_of_scope) — ID prefix: OOS-001, OOS-002, …
-    Maps from: out_of_scope agenda items.
-    status MUST be "excluded". priority MUST be "low". acceptance_criteria MUST be [].
-    Statement format: "The system SHALL NOT provide …"
-    rationale MUST state WHY this is excluded (business reason or scope boundary),
-    not just restate the statement. A rationale of "." or empty string is a failure.
-
-─────────────────────────────────────────────────────
-FOLLOW-UP EXTRACTION RULE:
-─────────────────────────────────────────────────────
-[follow-up] blocks are the PRIMARY source for CON and NFR items because follow-up
-questions specifically probe tensions and trade-offs. Read every [follow-up]
-block independently from the main answer and apply the following scan:
-
-  (a) PRIORITY ORDERING → NFR.
-      When the stakeholder explicitly ranks two qualities (e.g. "X first, then Y"),
-      extract an NFR that encodes the priority as a measurable acceptance criterion.
-
-  (b) NEGATIVE CONSTRAINTS → CON using SHALL NOT.
-      Trigger words: "shouldn't", "must not", "avoid", "not overdo", "no X",
-      "not flashy", "not cluttered", "not overwhelming", "not too rigid", "limit",
-      "don't get stuck in too many meetings", "not overcomplicate".
-      For each negative statement found → generate one CON with SHALL NOT.
-      Skipping a negative statement is an extraction failure.
-
-  (c) ROLE-DIFFERENTIATED QUALITY NEEDS → separate NFR per role.
-      If the [follow-up] mentions a quality need for a secondary stakeholder
-      (e.g. teacher flexibility, admin control) that differs from the primary
-      user's need → generate a distinct NFR for that role.
-
-  (d) PROCESS / OPERATIONAL CONSTRAINTS → CON.
-      Mentions of workflow limits, meeting frequency, team structure, or
-      development approach preferences → CON items.
-
-─────────────────────────────────────────────────────
-DECOMPOSITION RULE (same as Pass 1):
-─────────────────────────────────────────────────────
-One answer mentioning multiple quality dimensions → separate NFR per dimension.
-  EXAMPLE: "contrast ratios, keyboard navigation, and text alternatives"
-    → NFR-001: contrast ratio ≥ 4.5:1 for normal text (WCAG AA)
-    → NFR-002: full keyboard navigation without mouse dependency (WCAG 2.1 SC 2.1.1)
-    → NFR-003: text alternatives for all non-text content (WCAG 2.1 SC 1.1.1)
-
-Merge near-identical NFRs into one more specific statement — do NOT list both.
-
-─────────────────────────────────────────────────────
-ID ALLOCATION:
-─────────────────────────────────────────────────────
-Start fresh: NFR-001, CON-001, OOS-001. Pass 1 owns FR-NNN.
-
-─────────────────────────────────────────────────────
-OUTPUT CONTRACT:
-─────────────────────────────────────────────────────
-Return a JSON array of Requirement objects ONLY. No prose, no markdown fences.
-CRITICAL: req_type MUST be exactly "non_functional" (underscore, NO hyphen).
-CRITICAL: Every item MUST include source_elicitation_id ("EL-NNN").
-CRITICAL: Every NFR MUST have at least 1 acceptance_criteria bullet with a
-          measurable condition. Empty [] on an NFR is an extraction failure.
-CRITICAL: Every CON and OOS rationale MUST contain at least one stakeholder quote
-          or paraphrase. A rationale of "." or a single generic sentence is a failure.
-
-{field_guidance}
-"""
-
-_PASS2_USER = """\
-PROJECT DESCRIPTION:
-{project_description}
-
-ELICITATION RECORD ({item_count} items):
-{elicitation_json}
-
-EXTRACTION CHECKLIST — work through these before writing output:
-
-1. NFR IDENTITY TEST: For each candidate NFR, confirm it passes both questions:
-   (Q1) It does NOT restate a behaviour already in Pass 1.
-   (Q2) It includes a measurable threshold or named standard.
-   If it fails either test → reclassify or discard.
-
-2. QUALITY DIMENSIONS COVERAGE: Confirm you have scanned for evidence of:
-   performance | availability | accessibility | privacy/data | content integrity |
-   visual/brand | usability threshold
-   Generate at least one NFR per dimension where the elicitation provides evidence.
-
-3. [follow-up] blocks: Confirm every negative constraint phrase (avoid, not flashy,
-   not too many meetings, etc.) produced a CON with SHALL NOT.
-
-4. CON and OOS rationale: Confirm every rationale cites stakeholder words
-   (not a generic justification). "." or single-sentence generic rationale = fail.
-
-Extract all NFR, CON, and OOS requirements. Return a JSON array.
-"""
 
 # ── Pass 3: Coverage Check ────────────────────────────────────────────────────
-_PASS3_SYSTEM = """\
-You are a senior Requirements Engineer performing Pass 3 of a 4-pass SRS
-synthesis pipeline.
+_PASS3_SYSTEM = _load_interviewer_prompt("pass3_system.txt")
 
-YOUR ONLY JOB THIS PASS: perform a gap analysis — identify bullets in the Project
-Description that are NOT adequately covered by the requirements from Passes 1 and 2,
-then generate gap-filling requirements for those bullets only.
 
-─────────────────────────────────────────────────────
-GAP DETECTION PROCEDURE — for every bullet in "Initial Requirements"
-and "Evaluation Criteria" sections:
-─────────────────────────────────────────────────────
-  Step 1 — State the INTENT of the bullet in one sentence:
-            "This bullet requires that [stakeholder] can [action] resulting in [outcome]."
-  Step 2 — Search ALREADY EXTRACTED for any requirement whose statement addresses
-            the same stakeholder + action + outcome combination.
-  Step 3 — THREE-WAY decision:
+_PASS3_USER = _load_interviewer_prompt("pass3_user.txt")
 
-    • FULLY COVERED   → An existing requirement has a specific stakeholder, trigger,
-                        and measurable outcome matching this bullet's intent.
-                        Do NOT generate a new requirement. Move to next bullet.
-
-    • PARTIALLY COVERED → A requirement exists for this topic, BUT its statement is
-                          too generic — it lacks a specific actor, specific trigger,
-                          or measurable outcome. A broad FR like "The system SHALL
-                          display content on the website" does NOT fully cover a bullet
-                          that specifically requires teacher-customisable module ordering,
-                          a search bar, or a citation display format.
-                          → Generate a MORE SPECIFIC complement requirement.
-                          Set status="inferred", source_elicitation_id="PD".
-
-    • NOT COVERED     → No existing requirement addresses this intent at all.
-                        → Generate a new gap-filling Requirement.
-
-  INTENT MATCH — a bullet is FULLY COVERED only when an existing requirement has:
-    (a) the same specific stakeholder role — "Students" does NOT cover a teacher or
-        admin bullet, even if teachers benefit from the same feature, AND
-    (b) the same trigger or entry condition, AND
-    (c) the same resulting system behaviour or output with a measurable outcome.
-
-  GENERIC IS NOT ENOUGH: A broad requirement that covers a topic area is NOT
-    full coverage for bullets that mention: secondary stakeholder roles, specific
-    UI features (search, filters), content workflows (review, approval, citation),
-    visual standards (colour, brand), or progressive disclosure patterns.
-
-─────────────────────────────────────────────────────
-MANDATORY DIMENSION SWEEP — run AFTER per-bullet analysis:
-─────────────────────────────────────────────────────
-After checking every bullet, verify coverage across these six dimensions.
-If ANY dimension has zero requirements in ALREADY EXTRACTED, generate at least
-one gap-filling requirement from the project description evidence for that dimension:
-
-  [A] SECONDARY STAKEHOLDER ACTIONS — behaviours specific to teachers, admins,
-      or other non-primary-user roles. Check: does any FR have a non-student stakeholder?
-
-  [B] SEARCH / NAVIGATION AIDS — any mention of search, filter, or browse
-      by category in the project description or elicitation.
-
-  [C] CONTENT REVIEW / APPROVAL WORKFLOW — any mention of content accuracy,
-      citation, review process, or source validation.
-
-  [D] VISUAL / BRAND STANDARD — any mention of colour scheme, theme, or
-      visual identity. If an evaluation criterion mentions a colour (e.g. green
-      theme), generate a FR with a measurable threshold
-      (e.g. "primary palette SHALL use #2E7D32 or equivalent").
-
-  [E] PROGRESSIVE CONTENT DISCLOSURE — any mention of layered information,
-      "key info first", "more detail on demand", or similar UX patterns.
-
-  [F] OPERATIONAL / SYSTEM-LEVEL — availability, load handling, maintenance,
-      data backup, or monitoring. Check: does any NFR address system uptime
-      or concurrent-user load capacity?
-
-─────────────────────────────────────────────────────
-RULES FOR NEW GAP-FILLING REQUIREMENTS:
-─────────────────────────────────────────────────────
-  • source_elicitation_id = "PD"    (project description, not elicitation)
-  • status = "inferred"             (not confirmed by stakeholder interview)
-  • Decomposition rule applies: one bullet may yield multiple requirements
-    if it describes multiple distinct behaviours or quality attributes.
-  • ID numbering: continue from the next available IDs provided below.
-    DO NOT reuse IDs from Passes 1 or 2.
-
-─────────────────────────────────────────────────────
-OUTPUT CONTRACT:
-─────────────────────────────────────────────────────
-Return a JSON array of NEW gap-filling Requirement objects only.
-Return an empty array [] if there are no genuine gaps.
-No prose, no commentary, no markdown fences.
-
-{field_guidance}
-"""
-
-_PASS3_USER = """\
-PROJECT DESCRIPTION:
-{project_description}
-
-ALREADY EXTRACTED ({already_count} requirements):
-{already_json}
-
-Next available IDs: FR-{next_fr:03d}, NFR-{next_nfr:03d}, CON-{next_con:03d}
-
-STEP 1 — Per-bullet gap analysis:
-For each bullet in "Initial Requirements" and "Evaluation Criteria":
-  (a) State the bullet's intent: "This bullet requires that [stakeholder] can [action]
-      resulting in [outcome]."
-  (b) Classify: FULLY COVERED / PARTIALLY COVERED / NOT COVERED.
-      A generic existing requirement (no specific stakeholder, trigger, or threshold)
-      counts as PARTIALLY COVERED, not FULLY COVERED.
-  (c) If PARTIALLY COVERED or NOT COVERED → generate the gap-filling Requirement.
-
-STEP 2 — Mandatory dimension sweep:
-Check dimensions [A]–[F] in the system prompt. For any dimension with zero
-coverage in the extracted requirements, generate at least one gap-filling
-requirement sourced from the project description.
-
-Return only the gap-filling requirements as a JSON array ([] if truly none).
-"""
 
 # ── Pass 4: Quality Gate ──────────────────────────────────────────────────────
-_PASS4_SYSTEM = """\
-You are a senior Requirements Engineer performing Pass 4 (Quality Gate) of a
-4-pass SRS synthesis pipeline. This is the final editorial and assembly pass.
+_PASS4_SYSTEM = _load_interviewer_prompt("pass4_system.txt")
 
-YOUR ROLE: audit the full draft for quality violations, fix each one in-place,
-then assemble and return the final SoftwareRequirementsSpecification.
 
-─────────────────────────────────────────────────────
-AUDIT WORKFLOW — process requirements in this order:
-─────────────────────────────────────────────────────
+_PASS4_USER = _load_interviewer_prompt("pass4_user.txt")
 
-STEP 0 — EPIC ASSIGNMENT CHECK
-  For every requirement where the `epic` field is empty, null, or set to
-  'Cross-Cutting' without justification:
-    → Infer the correct Epic from the requirement's statement, context, and
-      stakeholder. Assign it to the most specific matching Epic.
-    → 'Cross-Cutting' is valid ONLY for system-wide policies (security, accessibility,
-      compliance). Any functional requirement marked Cross-Cutting must be
-      reassigned to the Epic whose primary user is most affected.
-
-  For every requirement where `rationale` contains only a pain statement
-  (no "So that" clause):
-    → Infer the most plausible outcome from the statement and context.
-    → Append: ". So that [role] can [observable outcome]."
-    → Set status="inferred" if not already set.
-
-STEP 1 — ATOMICITY CHECK
-  For every requirement whose statement contains "and" or "or" linking two
-  DISTINCT behaviours:
-    → Split into two requirements. Assign the next available sequential IDs.
-    → Each split child inherits the parent's stakeholder, context, rationale,
-      priority, source_elicitation_id, status, and epic.
-    → Accept "and" only when it is part of an inseparable threshold
-      (e.g. "username AND password" in a single authentication step).
-
-STEP 2 — TESTABILITY CHECK
-  For every statement where a QA engineer would need to GUESS a threshold
-  or interpretation to write a test case:
-    → Rewrite to add a measurable condition or observable outcome.
-    → If no numeric threshold is available from elicitation, apply the
-      relevant industry standard (ISO 9241, WCAG 2.1, OWASP, etc.) and
-      set status="inferred" if not already set.
-
-STEP 3 — BANNED WORDS SWEEP
-  Scan every statement AND every acceptance_criteria bullet for the following
-  prohibited vocabulary. Replace each occurrence with an objective alternative.
-
-  CATEGORY A — Vague quality adjectives:
-    easy, simple, clean, intuitive, user-friendly, beautiful, elegant, modern,
-    graceful, seamless, appropriate, adequate, sufficient, reasonable, proper
-
-  CATEGORY B — Unquantified speed/frequency adverbs:
-    fast, quickly, rapidly, soon, promptly, regularly, often, sometimes,
-    normally, ideally, efficiently, effectively
-
-  CATEGORY C — Non-committal modal verbs (in statements):
-    should, may, can, could, might, would (replace with SHALL or SHALL NOT)
-
-  CATEGORY D — Implicit multi-requirement conjunctions:
-    "and" or "or" linking two DISTINCT behaviours (handled in Step 1 — verify
-    no survivors from that step remain)
-
-  REPLACEMENT STRATEGY:
-    Adjective → measurable criterion (e.g. "intuitive" → "≤ 3 clicks to complete")
-    Adverb → time/frequency threshold (e.g. "quickly" → "within 2 seconds")
-    Modal → SHALL (e.g. "should store" → "SHALL store")
-
-STEP 4 — NULL CONTEXT CHECK (functional requirements only)
-  For every requirement with req_type="functional" where context is null or empty:
-    → Infer the context from the statement and rationale.
-    → Provide the most specific context possible
-      (e.g. "On the assignment feedback page" rather than "In the system").
-
-STEP 5 — SEMANTIC DUPLICATE DETECTION (cross-type aware)
-  Two requirements are SEMANTIC DUPLICATES requiring action when:
-    (a) same stakeholder role (or roles that are functionally equivalent for this
-        context), AND
-    (b) same trigger or entry condition, AND
-    (c) same system response or output — regardless of wording differences.
-
-  CRITICAL — CROSS-TYPE DUPLICATE RULE:
-    An NFR is a semantic duplicate of an FR when its statement restates the same
-    BEHAVIOUR rather than adding a measurable quality THRESHOLD. The test:
-      → Does the NFR statement add a number, standard, or measurable condition
-         that the FR does not have? (e.g. "SHALL meet WCAG 2.1 Level AA",
-         "SHALL respond within 2 seconds under 500 concurrent users")
-         If YES → keep both (the NFR is a quality attribute on top of the FR).
-      → Does the NFR statement say the same thing as the FR in different words,
-         with no measurable threshold and no named standard?
-         If YES → REMOVE the NFR. It is not a non-functional requirement; it is
-         a behaviour that belongs in Pass 1. Retaining it inflates fake diversity.
-
-  THESE ARE NOT DUPLICATES — do not merge:
-    • Requirements with the same topic but different stakeholder roles.
-    • A positive FR ("SHALL display X") paired with a negative CON ("SHALL NOT…").
-    • Requirements that differ by trigger even when the outcome sounds similar.
-    • Requirements that address the same subject area but different quality dimensions
-      (e.g. colour vs. layout vs. typography → distinct items).
-
-  Action when a genuine duplicate IS confirmed:
-    Keep the MORE SPECIFIC or MORE TESTABLE statement and remove the other.
-    When uncertain, retain both and append to each rationale:
-    "Retained: distinct [attribute/role/trigger] — reviewed against [REQ-ID]."
-
-STEP 6 — OOS AND CON RATIONALE GUARD
-  For every requirement with req_type="out_of_scope" or req_type="constraint":
-    → Inspect the rationale field.
-    → FAIL conditions (any one is sufficient):
-        (a) rationale is null, empty, or a single punctuation character (e.g. ".").
-        (b) rationale is a generic phrase with no stakeholder attribution
-            (e.g. "To meet project goals", "For better user experience",
-            "Adheres to best practices").
-        (c) rationale lacks a "So that" clause.
-    → Fix action: rewrite using the PAIN + OUTCOME format from the field guidance,
-      citing the nearest elicitation item or project description bullet.
-      If no evidence exists, write: "Scope boundary confirmed by project
-      description. So that the team can maintain delivery focus within the
-      agreed timeline."
-      Set status="inferred".
-
-─────────────────────────────────────────────────────
-FINAL ASSEMBLY:
-─────────────────────────────────────────────────────
-After all audit steps:
-  ORDER:  functional → non_functional → constraint → out_of_scope
-  Within each group: high → medium → low
-  Renumber ALL IDs sequentially with no gaps:
-    FR-001, FR-002, … then NFR-001, NFR-002, … then CON-001, … then OOS-001, …
-  Preserve every field — especially source_elicitation_id, status, and epic.
-  Copy session_id, project_description, synthesised_at verbatim from METADATA.
-
-─────────────────────────────────────────────────────
-OUTPUT CONTRACT:
-─────────────────────────────────────────────────────
-Return a single JSON object conforming to SoftwareRequirementsSpecification.
-CRITICAL SCHEMA RULES:
-  - EVERY requirement MUST include source_elicitation_id. Do not drop this field.
-  - EVERY requirement MUST include epic. Do not drop this field.
-  - req_type values MUST be exactly: "functional", "non_functional", "constraint",
-    or "out_of_scope" (underscores, no hyphens, no spaces).
-No prose outside schema fields. No markdown fences.
-"""
-
-_PASS4_USER = """\
-METADATA:
-  session_id:          {session_id}
-  project_description: {project_description}
-  synthesised_at:      {synthesised_at}
-
-FULL DRAFT ({total_count} requirements from Passes 1–3):
-{draft_json}
-
-Run the 6-step audit in order:
-  Step 0 — Epic assignment + missing "So that" rationale clauses.
-  Step 1 — Atomicity: split any statement with two distinct behaviours joined by "and"/"or".
-  Step 2 — Testability: rewrite vague statements with measurable thresholds or standards.
-  Step 3 — Banned words sweep (Category A–D). Replace ALL occurrences in statements
-            AND acceptance_criteria.
-  Step 4 — Null context check: every functional requirement must have a non-null context.
-  Step 5 — Semantic duplicate detection (cross-type): remove NFRs that merely restate
-            an FR without adding a measurable threshold or named standard.
-  Step 6 — OOS and CON rationale guard: rewrite any rationale that is null, generic,
-            or missing a "So that" outcome clause.
-
-Fix all violations in-place, then return the final SoftwareRequirementsSpecification
-JSON object.
-"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1663,17 +824,20 @@ class InterviewerAgent(BaseAgent):
                 "YOU decide whether a follow-up is needed — the system no longer "
                 "makes this decision for you. Pass two arguments:\n\n"
                 "  needs_follow_up (bool, REQUIRED):\n"
-                "    True  → the answer contains a GENUINE TENSION worth probing at\n"
-                "            Stage 3 (Pull-Up). At least two competing requirement\n"
-                "            dimensions are present (e.g. openness ↔ security,\n"
-                "            flexibility ↔ control). Do NOT set True just because\n"
-                "            the answer is long or mentions many topics.\n"
+                "    True  → the answer contains a GENUINE TENSION worth probing.\n"
+                "            A tension means TWO SPECIFIC NEEDS the stakeholder\n"
+                "            expressed that pull in opposite directions. You must\n"
+                "            be able to name BOTH sides from the answer text.\n"
+                "            Do NOT set True just because the answer is long,\n"
+                "            mentions many topics, or sounds important.\n"
                 "    False → the answer is sufficient. Advance to the next item.\n\n"
                 "  follow_up_reasoning (str, REQUIRED when needs_follow_up=True):\n"
-                "    ONE sentence naming the specific tension: e.g.\n"
-                "    'Answer mentions strict access control (security) but also\n"
-                "     shared campus devices (usability) — classic openness↔security\n"
-                "     tension worth a Stage 3 question.'\n"
+                "    MANDATORY FORMAT: '[A] vs [B]' where [A] and [B] are the two\n"
+                "    competing needs quoted or closely paraphrased from the\n"
+                "    stakeholder's ACTUAL answer. Both sides must come from what\n"
+                "    they said — not from abstract category labels.\n"
+                "    If you cannot fill in both [A] and [B] with words the\n"
+                "    stakeholder actually used, set needs_follow_up to False.\n"
                 "    Pass an empty string when needs_follow_up=False.\n\n"
                 "Call this whenever an ENDUSER ANSWER is waiting in state AND\n"
                 "_agenda_needs_followup is NOT already True.\n\n"
@@ -1685,22 +849,26 @@ class InterviewerAgent(BaseAgent):
             name="ask_question",
             description=(
                 "Generate and deliver ONE question targeting the current agenda item's "
-                "elicitation_goal. Always the LAST tool call in a turn. "
+                "elicitation_goal. This is the ONE AND ONLY tool call this turn — "
+                "never pair it with record_answer or any other tool in the same turn.\n"
                 "Also used for follow-up questions when _agenda_needs_followup=True — "
                 "in that case narrow into ONE specific concern from the prior answer.\n\n"
                 "MANDATORY: When transitioning from a previous answer (any turn where "
                 "record_answer was just called), you MUST include a brief acknowledgment "
                 "sentence BEFORE the question. The acknowledgment must:\n"
-                "  • Reference a specific element from the stakeholder's last answer.\n"
+                "  • Reference a specific element from the CURRENT stakeholder's\n"
+                "    ACTUAL last answer — not from a different stakeholder's answer.\n"
                 "  • Be 1 sentence only — no padding, no generic praise.\n"
                 "  • Use plain language — no technical terms.\n"
-                "  BAD:  'Thank you for sharing.' / 'Great, let's move on.'\n"
-                "  GOOD: 'Understood — the risk of students misusing AI tools without "
-                "realising it is a key concern.'\n"
-                "If this is the very FIRST question (no prior answer yet), omit the "
-                "acknowledgment and go straight to the question.\n\n"
+                "  • NEVER use a generic phrase like 'Thank you for sharing' or "
+                "'Great, let\\'s move on'. Instead, name the concrete thing they said.\n"
+                "  • NEVER acknowledge answers given by OTHER stakeholders listed\n"
+                "    under PRIOR ANSWERS. Those belong to different people.\n"
+                "If this is the very FIRST question to this stakeholder (no prior\n"
+                "answer from THEM yet), pass an empty string for acknowledgment —\n"
+                "do not fabricate a transition.\n\n"
                 'Input: {"question": "<the actual question to ask, DO NOT include the acknowledgment here>", '
-                '"acknowledgment": "<one-sentence echo of the prior answer, or empty string>"}'
+                '"acknowledgment": "<one-sentence echo of THIS stakeholder\'s prior answer, or empty string>"}'
             ),
             func=self._tool_ask_question,
         ))
@@ -1713,16 +881,10 @@ class InterviewerAgent(BaseAgent):
             ),
             func=self._tool_conclude,
         ))
-        self.register_tool(Tool(
-            name="synthesise_requirements",
-            description=(
-                "INTERNAL — do NOT call this tool from ReAct. "
-                "It is invoked automatically by process() after conclude() fires. "
-                "Runs the 4-pass SRS synthesis pipeline: FR extraction, "
-                "NFR/CON/OOS extraction, coverage check, and quality gate."
-            ),
-            func=self._tool_synthesise_requirements,
-        ))
+        # synthesise_requirements is NOT registered here.
+        # It is called directly by process() when _needs_srs_synthesis=True.
+        # Exposing it to the ReAct tool list would allow the agent to call it
+        # erroneously under tool_choice="required" edge cases.
 
     # ─────────────────────────────────────────────────────────────────────────
     # Tool implementations
@@ -1737,19 +899,39 @@ class InterviewerAgent(BaseAgent):
     ) -> ToolResult:
         """Write EndUser's reply into the current agenda item.
 
-        Follow-up decision is fully delegated to the LLM:
-          needs_follow_up=True  → the LLM detected a genuine Stage 3 tension.
-                                   Store answer, set followup_asked=True, raise
-                                   _agenda_needs_followup=True WITHOUT advancing.
-          needs_follow_up=False → normal path: mark answered and advance.
+        Multi-stakeholder aware
+        ───────────────────────
+        Each AgendaRuntimeItem carries an ordered ``stakeholders`` list.
+        record_answer now checks whether the current item still has more
+        stakeholders to interview:
 
-        Follow-up append branch (second call after follow-up question):
-          Recognised when followup_asked=True AND followup_answer is None.
-          Appends the follow-up answer and advances normally.
+          • If yes → store answer in item.answers[current_role], advance
+            stakeholder_idx, update state["current_stakeholder_role"] to the
+            next role, set _agenda_needs_question=True WITHOUT advancing the
+            agenda index.  InterviewerAgent will re-ask the same elicitation
+            goal to the new stakeholder on the next turn.
+
+          • If no  → merge all per-role answers into item.answer_received,
+            mark item "answered", advance agenda index normally.
+
+        Follow-up logic is applied PER STAKEHOLDER: a follow-up is only
+        triggered for the current role and does not block the next role.
+
+        Backward compatibility
+        ──────────────────────
+        Items with an empty stakeholders list behave exactly as before:
+        single-answer path with no stakeholder iteration.
         """
-        answer  = (state or {}).get("enduser_answer", "")
-        runtime = self._load_runtime(state)
+        answer       = (state or {}).get("enduser_answer", "")
+        # current_stakeholder_role is the authoritative source — set by
+        # graph.py/enduser_turn_fn from item.current_stakeholder() before
+        # each EndUser turn.  Fallback to legacy enduser_role for compat.
+        enduser_role = (
+            (state or {}).get("current_stakeholder_role")
+            or (state or {}).get("enduser_role", "")
+        ).strip()
 
+        runtime = self._load_runtime(state)
         if runtime is None:
             return ToolResult(
                 observation="[record_answer] No agenda found in state.",
@@ -1765,51 +947,49 @@ class InterviewerAgent(BaseAgent):
             )
 
         # ── Follow-up append branch ───────────────────────────────────────────
-        # The interviewer previously asked a follow-up question (followup_asked=True).
-        # This call is arriving with the stakeholder's follow-up answer.
+        # The interviewer previously asked a follow-up for the CURRENT stakeholder.
         if item.followup_asked and item.followup_answer is None:
+            if enduser_role and not item.interviewed_stakeholder_role:
+                item.interviewed_stakeholder_role = enduser_role
             item.followup_answer = answer or "(no follow-up answer provided)"
-            item.answer_received = (
-                f"{item.answer_received or ''}\n[follow-up] {item.followup_answer}"
-            ).strip()
-            item.status = "answered"
-            runtime.advance()
-            logger.info(
-                "[InterviewerAgent] Follow-up answer merged for '%s'. "
-                "Next index: %d. Complete: %s",
-                item.item_id,
-                runtime.current_index,
-                runtime.elicitation_complete,
-            )
-            return ToolResult(
-                observation=(
-                    f"Follow-up answer merged for '{item.item_id}'. "
-                    f"Agenda complete: {runtime.elicitation_complete}. "
-                    "Advancing to next item."
-                ),
-                state_updates={
-                    "elicitation_agenda":      runtime.model_dump(),
-                    "enduser_answer":          "",
-                    "_agenda_needs_question":  True,
-                    "_agenda_needs_followup":  False,
-                },
-                should_return=True,
+            # Append follow-up into the per-role slot if multi-stakeholder
+            current_role = enduser_role or item.interviewed_stakeholder_role or "unknown"
+            if current_role in item.answers:
+                item.answers[current_role] = (
+                    f"{item.answers[current_role]}\n[follow-up] {item.followup_answer}"
+                )
+            else:
+                item.answers[current_role] = f"[follow-up] {item.followup_answer}"
+            # Reset follow-up state for next stakeholder
+            item.followup_asked  = False
+            item.followup_answer = None
+
+            # After follow-up, check if more stakeholders remain
+            return self._advance_or_next_stakeholder(
+                item=item,
+                runtime=runtime,
+                state=state or {},
+                context="Follow-up merged",
             )
 
-        # ── Initial answer ────────────────────────────────────────────────────
-        item.answer_received = answer or "(no answer provided)"
+        # ── Store answer for current stakeholder ──────────────────────────────
+        current_role = enduser_role or item.current_stakeholder() or "unknown"
+        item.answers[current_role] = answer or "(no answer provided)"
+        if not item.interviewed_stakeholder_role:
+            item.interviewed_stakeholder_role = current_role
 
         # ── Follow-up branch — LLM decided a Stage 3 question is warranted ───
         if needs_follow_up and not item.followup_asked:
             item.followup_asked = True
             logger.info(
-                "[InterviewerAgent] LLM requested follow-up for '%s': %s",
+                "[InterviewerAgent] LLM requested follow-up for '%s' (role=%s): %s",
                 item.item_id,
+                current_role,
                 follow_up_reasoning or "(no reasoning provided)",
             )
             return ToolResult(
                 observation=(
-                    f"Answer recorded for '{item.item_id}'. "
+                    f"Answer recorded for '{item.item_id}' (role={current_role}). "
                     f"Follow-up warranted: {follow_up_reasoning or '(see LLM reasoning)'}. "
                     "Call ask_question with a Stage 3 tension-balancing question."
                 ),
@@ -1823,37 +1003,94 @@ class InterviewerAgent(BaseAgent):
                 should_return=True,
             )
 
-        # ── Normal path — advance ─────────────────────────────────────────────
-        item.status = "answered"
+        # ── Normal path: check if more stakeholders remain ────────────────────
+        return self._advance_or_next_stakeholder(
+            item=item,
+            runtime=runtime,
+            state=state or {},
+            context="Answer recorded",
+        )
+
+    def _advance_or_next_stakeholder(
+        self,
+        item:    "AgendaRuntimeItem",  # type: ignore[name-defined]
+        runtime: "AgendaRuntime",      # type: ignore[name-defined]
+        state:   Dict[str, Any],
+        context: str = "",
+    ) -> ToolResult:
+        """Helper: after storing an answer, decide whether to move to the next
+        stakeholder within the same item or advance the agenda index.
+
+        Returns a ToolResult ready to be returned from record_answer.
+        """
+        # Advance the stakeholder cursor
+        if item.stakeholders:
+            item.advance_stakeholder()
+
+        next_role = item.current_stakeholder()
+
+        if next_role is not None:
+            # More stakeholders to interview for this item
+            logger.info(
+                "[InterviewerAgent] %s for '%s'. Next stakeholder: '%s'.",
+                context, item.item_id, next_role,
+            )
+            # Merge partial answers into answer_received so _build_task can show context
+            item.answer_received = item.merge_answers()
+            return ToolResult(
+                observation=(
+                    f"{context} for '{item.item_id}'. "
+                    f"Next stakeholder to interview: '{next_role}'. "
+                    "Returning — next turn will ask the same item to the new role."
+                ),
+                state_updates={
+                    "elicitation_agenda":        runtime.model_dump(),
+                    "enduser_answer":            "",
+                    "current_question":          "",
+                    "current_stakeholder_role":  next_role,
+                    "_agenda_needs_question":    True,
+                    "_agenda_needs_followup":    False,
+                },
+                should_return=True,
+            )
+
+        # All stakeholders answered — merge and advance agenda
+        item.answer_received = item.merge_answers()
+        item.status          = "answered"
         runtime.advance()
         logger.info(
-            "[InterviewerAgent] Recorded answer for '%s'. Next index: %d. Complete: %s",
-            item.item_id,
+            "[InterviewerAgent] %s for '%s' (all stakeholders done). "
+            "Next agenda index: %d. Complete: %s",
+            context, item.item_id,
             runtime.current_index,
             runtime.elicitation_complete,
         )
+        # Determine the first stakeholder for the newly current item (if any)
+        next_item      = runtime.current_item()
+        next_role_new  = next_item.current_stakeholder() if next_item else None
         return ToolResult(
             observation=(
-                f"Answer recorded for '{item.item_id}'. "
+                f"{context} for '{item.item_id}' (all stakeholders answered). "
                 f"Agenda complete: {runtime.elicitation_complete}. "
-                "Returning now — next turn will ask the new current item."
+                "Advancing to next item."
             ),
             state_updates={
-                "elicitation_agenda":     runtime.model_dump(),
-                "enduser_answer":         "",
-                "current_question":       "",
-                "_agenda_needs_question": True,
-                "_agenda_needs_followup": False,
+                "elicitation_agenda":       runtime.model_dump(),
+                "enduser_answer":           "",
+                "current_question":         "",
+                "current_stakeholder_role": next_role_new or "",
+                "_agenda_needs_question":   True,
+                "_agenda_needs_followup":   False,
             },
             should_return=True,
         )
 
     def _tool_ask_question(
-        self,
-        question:        str,
-        acknowledgment:  str = "",
-        state:           Dict[str, Any] = None,
-        **_,
+            self,
+            question: str,
+            acknowledgment: str = "",
+            state: Dict[str, Any] = None,
+            **_,
     ) -> ToolResult:
         """Deliver one elicitation question and mark it on the current item.
 
@@ -1931,13 +1168,47 @@ class InterviewerAgent(BaseAgent):
                         f"  Q: {item.question_asked or '(not recorded)'}\n"
                         f"  A: {item.answer_received}"
                     )
+                    # Export one record entry per answering stakeholder so
+                    # synthesis passes see each role's perspective individually.
+                    if item.answers:
+                        for role, ans in item.answers.items():
+                            requirements.append({
+                                "id":                           f"EL-{idx + 1:03d}",
+                                "source_field":                 item.source_field,
+                                "source_ref":                   item.source_ref,
+                                "elicitation_goal":             item.elicitation_goal,
+                                "question":                     item.question_asked or "",
+                                "answer":                       ans,
+                                "priority":                     item.priority,
+                                "status":                       "answered",
+                                "interviewed_stakeholder_role": role,
+                            })
+                    else:
+                        # Legacy single-answer fallback
+                        requirements.append({
+                            "id":                           f"EL-{idx + 1:03d}",
+                            "source_field":                 item.source_field,
+                            "source_ref":                   item.source_ref,
+                            "elicitation_goal":             item.elicitation_goal,
+                            "question":                     item.question_asked or "",
+                            "answer":                       item.answer_received,
+                            "priority":                     item.priority,
+                            "status":                       "answered",
+                            "interviewed_stakeholder_role": item.interviewed_stakeholder_role or "",
+                        })
+                else:
+                    # Skipped items are recorded with null answer so Pass 3
+                    # can detect coverage gaps from the project description.
                     requirements.append({
-                        "id":           f"EL-{idx + 1:03d}",
-                        "source_field": item.source_field,
-                        "source_ref":   item.source_ref,
-                        "question":     item.question_asked or "",
-                        "answer":       item.answer_received,
-                        "priority":     item.priority,
+                        "id":                           f"EL-{idx + 1:03d}",
+                        "source_field":                 item.source_field,
+                        "source_ref":                   item.source_ref,
+                        "elicitation_goal":             item.elicitation_goal,
+                        "question":                     item.question_asked or "",
+                        "answer":                       None,
+                        "priority":                     item.priority,
+                        "status":                       "skipped",
+                        "interviewed_stakeholder_role": item.interviewed_stakeholder_role or "",
                     })
 
         elicitation_notes = "\n\n".join(summary_lines) or "(no answers recorded)"
@@ -1990,6 +1261,69 @@ class InterviewerAgent(BaseAgent):
             should_return=True,
         )
 
+    @staticmethod
+    def _group_elicitation_records(
+        raw_requirements: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Group flat per-role elicitation records into multi-stakeholder items.
+
+        The interview record now contains one entry PER STAKEHOLDER PER ITEM —
+        e.g. EL-001 appears three times if three roles answered it.  Synthesis
+        passes need to see them as ONE logical elicitation item with multiple
+        responses so they can:
+          • merge agreements into a single requirement
+          • record distinct perspectives as separate requirements
+          • flag and resolve cross-stakeholder conflicts
+
+        Output schema per grouped item
+        ───────────────────────────────
+        {
+          "id":               "EL-001",
+          "source_field":     "assumption",
+          "source_ref":       "...",
+          "elicitation_goal": "...",
+          "priority":         "high",
+          "question":         "...",      # question asked (same for all roles)
+          "status":           "answered",
+          "responses": [
+            {
+              "stakeholder": "Role A",
+              "answer":      "..."
+            },
+
+            ...
+          ]
+        }
+        """
+        from collections import OrderedDict
+
+        # Preserve insertion order so high-priority items stay first
+        groups: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+
+        for rec in raw_requirements:
+            eid = rec.get("id", "")
+            if eid not in groups:
+                groups[eid] = {
+                    "id":               eid,
+                    "source_field":     rec.get("source_field", ""),
+                    "source_ref":       rec.get("source_ref", ""),
+                    "elicitation_goal": rec.get("elicitation_goal", ""),
+                    "priority":         rec.get("priority", "medium"),
+                    "question":         rec.get("question", ""),
+                    "status":           rec.get("status", "answered"),
+                    "responses":        [],
+                }
+            role   = rec.get("interviewed_stakeholder_role") or "Unknown"
+            answer = rec.get("answer") or ""
+            # Retain slot even for skipped/empty answers to signal coverage gap.
+            # Consensus analysis is delegated to the LLM in Pass 1/2 reasoning_log.
+            groups[eid]["responses"].append({
+                "stakeholder": role,
+                "answer":      answer,
+            })
+
+        return list(groups.values())
+
     def _synthesise_srs(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
         4-Pass Requirement List Synthesis Pipeline.
@@ -2003,21 +1337,41 @@ class InterviewerAgent(BaseAgent):
 
         Pass 1 — FR Extraction:
             Extract only Functional Requirements from elicitation Q&A.
-            Enforces aggressive decomposition: one rich answer → 3-6 FR items.
+            CoT via reasoning_log: LLM must anchor every FR in a stakeholder quote
+            and a concrete user outcome before writing it. Echoes of the project
+            description without new stakeholder detail are marked status="inferred".
+            elicitation_goal from each agenda item is included so the LLM can judge
+            whether the stakeholder's answer actually addressed what was asked.
+            No external assumptions block is injected — status ("confirmed" vs
+            "inferred") is derived from the answer text of each elicitation item
+            alone, using the Q1/Q2/Q3 MANDATORY PRE-EXTRACTION BEHAVIOUR CHECK.
 
         Pass 2 — NFR & CON Extraction:
             Extract Non-Functional Requirements, Constraints, and Out-of-Scope
             items from elicitation Q&A.
+            CoT via reasoning_log: evidence-gated — LLM must declare whether direct
+            stakeholder evidence exists for each quality dimension before generating
+            an NFR; zero NFRs for a dimension is a valid outcome. The Pass 1 FR list
+            is injected so the LLM can cross-check candidates and avoid restating
+            behaviours already captured as FRs. Thresholds must be grounded in the
+            project's own context rather than imported from external standards lists.
 
         Pass 3 — Coverage Check:
-            Compare passes 1+2 against the project description.
-            Generate gap-filling requirements (source="PD") for any bullet
-            in Initial Requirements or Evaluation Criteria not yet covered.
+            Compare passes 1+2 against both the project description and the approved
+            ProductVision. Gap detection is Vision-driven: every needs_validation
+            assumption must have coverage; every project constraint must have a CON;
+            every Vision NFR must have an NFR.
+            An elicitation goal coverage map is provided so the LLM can spot goals
+            that produced no requirements without free-form matching.
+            All gap-filling requirements are stamped source="PD", status="inferred".
 
         Pass 4 — Quality Gate:
             Audit all draft requirements for atomicity, testability, banned
-            words, cross-type duplicate detection, and OOS/CON rationale guard
-            (6-step pipeline). Assemble and return the final Requirement List object.
+            words, cross-type duplicate detection, and OOS/CON rationale guard.
+            Step 0.5 (User Value Gate) rewrites or downgrades FRs that are echoes
+            of the project description with no new stakeholder specifics.
+            Vague language sweep requires explicit listing before replacement.
+            Assembles and returns the final Requirement List object.
 
         Returns a partial state dict ready to merge.
         """
@@ -2038,47 +1392,171 @@ class InterviewerAgent(BaseAgent):
             if rl_feedback else ""
         )
 
-        # Build Epic context header for all synthesis passes
-        vision_data    = state.get("product_vision") or {}
-        core_workflows = vision_data.get("core_workflows") or []
-        epic_context   = (
-            "AVAILABLE EPICS (assign every requirement to exactly one):\n"
-            + "\n".join(f"  - {e}" for e in core_workflows)
-            if core_workflows
+        # Build context header for all synthesis passes.
+        # IMPORTANT: prefer reviewed_product_vision (post-HITL) over the raw
+        # product_vision draft so that any Stakeholders removed/renamed
+        # by the reviewer are correctly reflected in synthesis.
+        reviewed_vision = existing_artifacts.get("reviewed_product_vision") or {}
+        vision_data     = reviewed_vision or state.get("product_vision") or {}
+        target_audiences = vision_data.get("target_audiences") or []
+
+        stakeholder_context = (
+            "KNOWN STAKEHOLDERS (use these roles in the 'stakeholder' field):\n"
+            + "\n".join(
+                f"  - {s.get('role', '?')} ({s.get('type', '?')}) — concern: {s.get('key_concern', '?')}"
+                for s in target_audiences
+            )
+            if target_audiences
+            else ""
+        )
+        logger.info(
+            "[InterviewerAgent] Synthesis using %s vision — %d stakeholder(s).",
+            "reviewed" if reviewed_vision else "draft",
+            len(target_audiences),
+        )
+
+        # ── Group flat per-role records into multi-stakeholder items ─────────
+        # Each EL-NNN may appear N times (once per stakeholder who answered it).
+        # Synthesis passes receive ONE grouped object per elicitation goal so
+        # they can merge agreements, record distinct perspectives, and resolve
+        # conflicts before generating requirements.
+        grouped_records  = self._group_elicitation_records(raw_requirements)
+        elicitation_json = json.dumps(grouped_records, indent=2, ensure_ascii=False)
+        logger.info(
+            "[InterviewerAgent] Grouped %d flat record(s) into %d elicitation item(s) "
+            "for synthesis.",
+            len(raw_requirements),
+            len(grouped_records),
+        )
+
+        # NOTE: validated_assumptions_block removed — Pass 1 now derives
+        # status ("confirmed" vs "inferred") from the answer text of each
+        # elicitation item directly, via the Q1/Q2/Q3 MANDATORY PRE-EXTRACTION
+        # BEHAVIOUR CHECK. No external list is injected into the prompt.
+        assumptions_list = vision_data.get("assumptions") or []
+
+        # Pass 1 & 2: Stakeholders enter via system prompt (field_guidance) only.
+        # Pass 3 & 4: also need out_of_scope in user prompt — LLM must not generate
+        # gap-fill requirements for capabilities already ruled out by Vision scope.
+        out_of_scope_list = vision_data.get("out_of_scope") or []
+        out_of_scope_block = (
+            "OUT-OF-SCOPE BOUNDARIES (do NOT generate requirements for these):\n"
+            + "\n".join(f"  - {item}" for item in out_of_scope_list)
+            + "\n\n"
+            if out_of_scope_list
             else ""
         )
 
-        elicitation_json = json.dumps(raw_requirements, indent=2, ensure_ascii=False)
-        field_guidance   = (epic_context + "\n\n" + _FIELD_GUIDANCE).strip()
+        # ── Vision block for Pass 3 (full rubric) ─────────────────────────────
+        # Pass 3 uses the reviewed Vision as the authoritative gap-detection rubric.
+        # Each section is included only when it carries content.
+        vision_section_lines = []
+        if assumptions_list:
+            needs_val_items = [
+                a for a in assumptions_list if a.get("needs_validation", False)
+            ]
+            if needs_val_items:
+                vision_section_lines.append(
+                    "Assumptions requiring validation (each must have at least one FR or NFR "
+                    "that addresses whether the assumption holds):\n"
+                    + "\n".join(
+                        f"  - [{a.get('item_id', 'unknown')}] {a.get('statement', '')}"
+                        if "item_id" in a
+                        else f"  - {a.get('statement', '')}"
+                        for a in needs_val_items
+                    )
+                )
+        project_constraints_list = vision_data.get("project_constraints") or []
+        if project_constraints_list:
+            vision_section_lines.append(
+                "Project Constraints (each must have a corresponding CON requirement):\n"
+                + "\n".join(f"  - {c}" for c in project_constraints_list)
+            )
+        pass3_vision_block = "\n\n".join(vision_section_lines) if vision_section_lines else "(no structured Vision data available)"
+
+        # Pass 4 gets a compact Vision block (OOS) directly in user prompt.
+        vision_block_lines = []
+        if out_of_scope_list:
+            vision_block_lines.append(
+                "OUT-OF-SCOPE (any requirement covering these must be OOS or removed):\n"
+                + "\n".join(f"  - {item}" for item in out_of_scope_list)
+            )
+        vision_block = ("\n\n".join(vision_block_lines) + "\n\n") if vision_block_lines else ""
+
+        # ── Vision context for Passes 1, 2, 4 (lightweight reasoning anchor) ──
+        core_problem      = vision_data.get("core_problem", "")
+        value_proposition  = vision_data.get("value_proposition", "")
+        vision_context = ""
+        if core_problem or value_proposition:
+            vision_context = (
+                "VISION CONTEXT (reasoning anchor — do not generate requirements FROM these fields):\n"
+                f"  Core Problem:      {core_problem or '(not available)'}\n"
+                f"  Value Proposition: {value_proposition or '(not available)'}\n"
+            )
+
+        # ── Evaluation criteria for Pass 2 (NFR threshold derivation source) ──
+        eval_criteria_list = vision_data.get("evaluation_criteria") or []
+        evaluation_criteria_block = ""
+        if eval_criteria_list:
+            evaluation_criteria_block = (
+                "EVALUATION CRITERIA (from Vision — use to ground NFR thresholds):\n"
+                + "\n".join(f"  - {c}" for c in eval_criteria_list)
+            )
+
+        vision_header  = stakeholder_context
+        # Each pass gets its own field guidance to avoid cross-contamination of rules:
+        #   Pass 1 — FR-only rules (stakeholder assignment from interviewed role,
+        #             external precondition guard)
+        #   Pass 2 — NFR/CON/OOS rules (stakeholder from interviewed role,
+        #             external precondition → CON conversion)
+        #   Pass 3 — gap-filling rules (all new reqs are inferred)
+        #   Pass 4 — audit rules (status audit + quality gate)
+        field_guidance_pass1 = (vision_header + "\n\n" + _FIELD_GUIDANCE_PASS1).strip()
+        field_guidance_pass2 = (vision_header + "\n\n" + _FIELD_GUIDANCE_PASS2).strip()
+        field_guidance_pass3 = (vision_header + "\n\n" + _FIELD_GUIDANCE_PASS3).strip()
+        field_guidance_pass4 = (vision_header + "\n\n" + _FIELD_GUIDANCE_PASS4).strip()
+        # Legacy alias kept for any remaining {field_guidance} references
+        field_guidance       = field_guidance_pass4
 
         try:
             # ── Pass 1: Functional Requirements ───────────────────────────────
             logger.info("[InterviewerAgent] Requirement List synthesis — Pass 1: FR extraction.")
             pass1_reqs: List[Dict[str, Any]] = self._run_structured_pass(
-                system_prompt=_PASS1_SYSTEM.format(field_guidance=field_guidance) + feedback_block,
+                system_prompt=_PASS1_SYSTEM.format(field_guidance=field_guidance_pass1) + feedback_block,
                 user_prompt=_PASS1_USER.format(
                     project_description=project_desc,
-                    item_count=len(raw_requirements),
+                    vision_context=vision_context,
+                    item_count=len(grouped_records),
                     elicitation_json=elicitation_json,
                 ),
             )
-            logger.info(
-                "[InterviewerAgent] Pass 1 complete — %d FR(s) extracted.", len(pass1_reqs)
-            )
+
+            logger.info("[InterviewerAgent] Pass 1 complete — %d FR(s) extracted.", len(pass1_reqs))
+
+            print(f"\n{'='*70}\nDEBUG START - PASS 1 ARTIFACT\n{'='*70}")
+            print(json.dumps(pass1_reqs, indent=2, ensure_ascii=False))
+            print(f"{'='*70}\nDEBUG END - PASS 1 ARTIFACT\n{'='*70}\n")
 
             # ── Pass 2: NFR, CON, OOS ─────────────────────────────────────────
             logger.info("[InterviewerAgent] Requirement List synthesis — Pass 2: NFR/CON/OOS extraction.")
+            pass1_json_for_p2 = json.dumps(pass1_reqs, indent=2, ensure_ascii=False)
             pass2_reqs: List[Dict[str, Any]] = self._run_structured_pass(
-                system_prompt=_PASS2_SYSTEM.format(field_guidance=field_guidance) + feedback_block,
+                system_prompt=_PASS2_SYSTEM.format(field_guidance=field_guidance_pass2) + feedback_block,
                 user_prompt=_PASS2_USER.format(
                     project_description=project_desc,
-                    item_count=len(raw_requirements),
+                    vision_context=vision_context,
+                    evaluation_criteria_block=evaluation_criteria_block,
+                    pass1_count=len(pass1_reqs),
+                    pass1_json=pass1_json_for_p2,
+                    item_count=len(grouped_records),
                     elicitation_json=elicitation_json,
                 ),
             )
-            logger.info(
-                "[InterviewerAgent] Pass 2 complete — %d NFR/CON/OOS extracted.", len(pass2_reqs)
-            )
+            logger.info("[InterviewerAgent] Pass 2 complete — %d NFR/CON/OOS extracted.", len(pass2_reqs))
+
+            print(f"\n{'='*70}\nDEBUG START - PASS 2 ARTIFACT\n{'='*70}")
+            print(json.dumps(pass2_reqs, indent=2, ensure_ascii=False))
+            print(f"{'='*70}\nDEBUG END - PASS 2 ARTIFACT\n{'='*70}\n")
 
             # ── Pass 3: Coverage Check ────────────────────────────────────────
             logger.info("[InterviewerAgent] Requirement List synthesis — Pass 3: coverage check.")
@@ -2087,11 +1565,36 @@ class InterviewerAgent(BaseAgent):
             next_nfr    = self._next_id_counter(all_so_far, "NFR")
             next_con    = self._next_id_counter(all_so_far, "CON")
 
+            # Build elicitation goal coverage map from GROUPED records.
+            # Each group is one logical elicitation item — using grouped_records
+            # prevents duplicate EL-NNN entries from inflating the coverage map.
+            req_by_source: Dict[str, List[str]] = {}
+            for req in all_so_far:
+                src = req.get("source_elicitation_id", "")
+                if src and src != "PD":
+                    req_by_source.setdefault(src, []).append(req.get("req_id", ""))
+            goal_coverage = [
+                {
+                    "item_id":          g.get("id", ""),
+                    "elicitation_goal": g.get("elicitation_goal", ""),
+                    "stakeholders":     [r["stakeholder"] for r in g.get("responses", [])],
+                    "requirements":     req_by_source.get(g.get("id", ""), []),
+                }
+                for g in grouped_records
+            ]
+            goal_coverage_json = json.dumps(goal_coverage, indent=2, ensure_ascii=False)
+
             pass3_reqs: List[Dict[str, Any]] = self._run_structured_pass(
-                system_prompt=_PASS3_SYSTEM.format(field_guidance=field_guidance) + feedback_block,
+                system_prompt=_PASS3_SYSTEM.format(field_guidance=field_guidance_pass3) + feedback_block,
                 user_prompt=_PASS3_USER.format(
                     project_description=project_desc,
+                    out_of_scope_block=out_of_scope_block,
+                    vision_context=vision_context,
+                    vision_block=pass3_vision_block,
+                    item_count=len(grouped_records),
+                    goal_coverage_json=goal_coverage_json,
                     already_count=len(all_so_far),
+                    already_count_half=len(all_so_far) // 2,
                     already_json=json.dumps(all_so_far, indent=2, ensure_ascii=False),
                     next_fr=next_fr,
                     next_nfr=next_nfr,
@@ -2103,17 +1606,23 @@ class InterviewerAgent(BaseAgent):
                 len(pass3_reqs),
             )
 
+            print(f"\n{'='*70}\nDEBUG START - PASS 3 ARTIFACT\n{'='*70}")
+            print(json.dumps(pass3_reqs, indent=2, ensure_ascii=False))
+            print(f"{'='*70}\nDEBUG END - PASS 3 ARTIFACT\n{'='*70}\n")
+
             # ── Pass 4: Quality Gate + Final Assembly ─────────────────────────
             logger.info("[InterviewerAgent] Requirement List synthesis — Pass 4: quality gate.")
             full_draft = all_so_far + pass3_reqs
 
             srs: SoftwareRequirementsSpecification = self.extract_structured(
                 schema=SoftwareRequirementsSpecification,
-                system_prompt=_PASS4_SYSTEM + feedback_block,
+                system_prompt=_PASS4_SYSTEM.format(field_guidance=field_guidance_pass4) + feedback_block,
                 user_prompt=_PASS4_USER.format(
                     session_id=session_id,
                     project_description=project_desc,
                     synthesised_at=synthesised_at,
+                    vision_context=vision_context,
+                    vision_block=vision_block,
                     total_count=len(full_draft),
                     draft_json=json.dumps(full_draft, indent=2, ensure_ascii=False),
                 ),
@@ -2122,6 +1631,13 @@ class InterviewerAgent(BaseAgent):
 
             # Stamp metadata fields the LLM cannot reliably fill
             rl_dict                         = srs.model_dump()
+            # Log audit scratchpad then strip — it's internal, not a deliverable field
+            if rl_dict.get("reasoning_log"):
+                logger.debug(
+                    "[InterviewerAgent] Pass 4 reasoning_log (first 500 chars): %s",
+                    rl_dict["reasoning_log"][:500],
+                )
+            rl_dict.pop("reasoning_log", None)
             rl_dict["session_id"]           = session_id
             rl_dict["project_description"]  = project_desc
             rl_dict["synthesised_at"]       = synthesised_at
@@ -2138,6 +1654,10 @@ class InterviewerAgent(BaseAgent):
                 sum(1 for r in srs.requirements if r.req_type == "constraint"),
                 sum(1 for r in srs.requirements if r.req_type == "out_of_scope"),
             )
+
+            print(f"\n{'='*70}\nDEBUG START - PASS 4 (FINAL) ARTIFACT\n{'='*70}")
+            print(json.dumps(rl_dict, indent=2, ensure_ascii=False))
+            print(f"{'='*70}\nDEBUG END - PASS 4 (FINAL) ARTIFACT\n{'='*70}\n")
 
             return {
                 "artifacts":                  existing_artifacts,
@@ -2167,6 +1687,8 @@ class InterviewerAgent(BaseAgent):
         Guarantees req_id and all other required fields are present — eliminates
         the 'id' vs 'req_id' mismatch that caused validation errors in Pass 4.
         Returns a list of raw requirement dicts ready to merge into the draft.
+
+        reasoning_log is consumed for debugging but not propagated to the draft.
         """
         result: RequirementList = self.extract_structured(
             schema=RequirementList,
@@ -2174,6 +1696,11 @@ class InterviewerAgent(BaseAgent):
             user_prompt=user_prompt,
             include_memory=False,
         )
+        if result.reasoning_log:
+            logger.debug(
+                "[InterviewerAgent] Pass reasoning_log (first 500 chars): %s",
+                result.reasoning_log[:500],
+            )
         return [r.model_dump() for r in result.requirements]
 
     @staticmethod
@@ -2219,12 +1746,8 @@ class InterviewerAgent(BaseAgent):
         project_description: str = "",
         reviewer_feedback: Optional[str] = None,
     ) -> ElicitationAgenda:
-        core_workflows_list = "\n".join(
-            f"  {i+1}. {epic}" for i, epic in enumerate(vision.core_workflows)
-        ) if vision.core_workflows else "  (none defined)"
         user_prompt = _AGENDA_EXTRACTION_USER.format(
             vision_json=json.dumps(vision.model_dump(), indent=2),
-            core_workflows_list=core_workflows_list,
             project_description=project_description,
         )
         if reviewer_feedback:
@@ -2319,7 +1842,7 @@ class InterviewerAgent(BaseAgent):
                     "%d stakeholder(s), %d assumption(s), %d constraint(s).",
                     len(vision.target_audiences),
                     len(vision.assumptions),
-                    len(vision.hard_constraints),
+                    len(vision.project_constraints),
                 )
                 return updates
             except Exception as exc:
@@ -2343,11 +1866,17 @@ class InterviewerAgent(BaseAgent):
                 " (rebuild with reviewer feedback)" if agenda_feedback else "",
             )
             try:
-                # Strip HITL-gate sentinel fields before deserialising.
+                # Strip HITL-gate sentinel fields and any fields removed from the
+                # schema (initial_requirements, non_functional_requirements) before
+                # deserialising — guards against stale state from older runs.
                 raw_vision = artifacts["reviewed_product_vision"]
+                _STRIP_FROM_VISION = {
+                    "status", "reviewed_at", "review_notes", "created_at",
+                    "initial_requirements", "non_functional_requirements",
+                }
                 vision_fields = {
                     k: v for k, v in raw_vision.items()
-                    if k not in ("status", "reviewed_at", "review_notes", "created_at")
+                    if k not in _STRIP_FROM_VISION
                 }
                 vision_obj          = ProductVision(**vision_fields)
                 project_description = state.get("project_description", "")
@@ -2419,12 +1948,59 @@ class InterviewerAgent(BaseAgent):
             logger.warning("[InterviewerAgent] Failed to load AgendaRuntime: %s", exc)
             return None
 
+    @staticmethod
+    def _resolve_stakeholder_detail(
+        vision: Dict[str, Any],
+        role_name: str,
+    ) -> str:
+        """Look up key_concern and type for a stakeholder from ProductVision.
+
+        Returns a formatted string like:
+          '  Type: primary_user — directly uses the system.'
+          '  Key concern: "Need clear rules and examples."'
+        or "" if the role is not found.
+        """
+        _TYPE_LABELS = {
+            "primary_user":   "directly uses the system as the main audience",
+            "secondary_user": "uses the system occasionally or in a supporting role",
+            "beneficiary":    "gains value without directly using the system",
+            "decision_maker": "approves scope, budget, or direction",
+            "blocker":        "can veto or block the project",
+        }
+
+        audiences = vision.get("target_audiences") or []
+        if not audiences:
+            return ""
+
+        match = None
+        for entry in audiences:
+            if entry.get("role", "").strip().lower() == role_name.strip().lower():
+                match = entry
+                break
+
+        if match is None:
+            return ""
+
+        lines = []
+        stype = match.get("type", "")
+        if stype:
+            label = _TYPE_LABELS.get(stype, stype)
+            lines.append(f"  Type: {stype} — {label}.")
+        key_concern = match.get("key_concern", "")
+        if key_concern:
+            lines.append(f'  Key concern: "{key_concern}"')
+        return "\n".join(lines)
+
     def _build_task(self, state: Dict[str, Any]) -> str:
         """Inject ONLY the current agenda item + minimal Vision context.
 
         Fix 3 — when _agenda_needs_followup=True, injects a FOLLOW-UP CONTEXT
         block so the interviewer knows to narrow into one specific concern from
         the prior answer instead of moving to the next item.
+
+        Multi-stakeholder — injects CURRENT STAKEHOLDER so the interviewer
+        knows exactly who they are speaking with, plus already-collected
+        answers from prior stakeholders as context.
         """
         runtime = self._load_runtime(state)
         vision: dict = state.get("product_vision") or {}
@@ -2451,6 +2027,16 @@ class InterviewerAgent(BaseAgent):
         if item is None:
             return "Agenda is complete. Call conclude()."
 
+        # ── Determine current stakeholder for this turn ───────────────────────
+        current_role   = (
+            state.get("current_stakeholder_role")
+            or item.current_stakeholder()
+            or item.interviewed_stakeholder_role
+            or "Unknown Stakeholder"
+        )
+        total_roles    = len(item.stakeholders) if item.stakeholders else 1
+        role_idx       = item.stakeholder_idx if item.stakeholders else 0
+
         # ── Normal turn: inject current item + lightweight Vision context ─────
         answered_count = sum(1 for i in runtime.items if i.status == "answered")
         total_count    = len(runtime.items)
@@ -2468,28 +2054,62 @@ class InterviewerAgent(BaseAgent):
             f"  priority:         {item.priority}",
         ]
 
+        # ── Stakeholder context block ─────────────────────────────────────────
+        # Look up key_concern and type from ProductVision so the interviewer
+        # can target questions at the stakeholder's core worry.
+        stakeholder_detail = self._resolve_stakeholder_detail(vision, current_role)
+
+        if item.stakeholders:
+            sections += [
+                "",
+                f"STAKEHOLDER COVERAGE: {role_idx + 1}/{total_roles} roles for this item.",
+                f"  CURRENT STAKEHOLDER: {current_role}",
+            ]
+            if stakeholder_detail:
+                sections.append(stakeholder_detail)
+            sections.append(
+                f"  Remaining after this: {', '.join(item.stakeholders[role_idx + 1:]) or 'none'}",
+            )
+        else:
+            sections += [
+                "",
+                f"CURRENT STAKEHOLDER: {current_role}",
+            ]
+            if stakeholder_detail:
+                sections.append(stakeholder_detail)
+
+        # ── Already-collected answers from prior stakeholders ─────────────────
+        if item.answers:
+            prior_answers = {
+                role: ans
+                for role, ans in item.answers.items()
+                if role != current_role
+            }
+            if prior_answers:
+                sections += ["", "PRIOR ANSWERS FOR THIS ITEM (from other stakeholders — NOT the person you are talking to):"]
+                for role, ans in prior_answers.items():
+                    sections.append(f"  [{role}]: {ans}")
+                sections.append(
+                    "  → Use these answers as BACKGROUND CONTEXT only. "
+                    "Do NOT repeat what has already been asked. "
+                    "Do NOT acknowledge or reference these answers as if the "
+                    "current stakeholder said them — they belong to different people. "
+                    "Frame your question to surface THIS stakeholder's specific perspective."
+                )
+
         if needs_followup and item.answer_received:
             # Stage 3 follow-up — tension-balancing (W-Framework Pull-Up)
             sections += [
                 "",
-                "FOLLOW-UP CONTEXT (W-Framework Stage 3 — Pull-Up / Tension Balancing):",
-                f"  Previous answer for this item:",
+                "FOLLOW-UP CONTEXT (Stage 3 — Tension Balancing):",
+                f"  Stakeholder: {current_role}",
+                f"  Their previous answer:",
                 f"  \"{item.answer_received}\"",
                 "",
-                "  INNER MONOLOGUE REMINDER before composing your follow-up:",
-                "    [1] Which concern in this answer is the most critical?",
-                "    [2] Which requirement dimension does it CONFLICT with?",
-                "         (usability↔security | speed↔accuracy | openness↔privacy |",
-                "          automation↔control | cost↔quality | flexibility↔simplicity)",
-                "    [3] Frame ONE question asking how the stakeholder wants to BALANCE",
-                "         that specific tension — NOT asking for more detail on the same topic.",
-                "",
-                "  → Call ask_question ONLY with this Stage 3 tension-balancing question.",
-                "  → Plain language — no technical jargon.",
-                "  → ≤ 2 sentences.",
-                "  → Example: answer mentions 'strict security' → ask how that balances",
-                "    with a student needing access from a shared campus device.",
-                "  → Do NOT advance to the next agenda item.",
+                f"  Your job is to surface how {current_role} wants to navigate the tension"
+                f"  in this answer — not to classify it. Call ask_question with a Stage 3"
+                f"  question that names both competing needs in plain language and puts the"
+                f"  trade-off in their hands.",
             ]
         elif enduser_answer:
             sections += [
@@ -2498,13 +2118,14 @@ class InterviewerAgent(BaseAgent):
                 "→ Call record_answer first. Do not call ask_question now.",
             ]
         else:
-            # Inject W-Framework stage hint for first question
+            # Inject W-Framework stage label only — full stage guidance is in the system prompt.
             stage_hint = _w_framework_stage_hint(item.source_field, item.priority)
             sections += [
                 "",
                 f"QUESTION STRATEGY — {stage_hint}",
-                "→ Call ask_question to address the current item.",
-                "→ Plain language only. ≤ 2 sentences. No jargon.",
+                f"→ Call ask_question. One question only. Plain language. ≤ 2 sentences.",
+                f"→ Ground the question in {current_role}'s role and daily reality.",
+                f"→ You are speaking with: {current_role}",
             ]
 
         if vision:

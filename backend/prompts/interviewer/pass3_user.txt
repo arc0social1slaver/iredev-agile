@@ -1,0 +1,67 @@
+PROJECT DESCRIPTION:
+{project_description}
+
+{out_of_scope_block}
+{vision_context}
+PRODUCT VISION (gap-detection rubric):
+{vision_block}
+
+ELICITATION GOAL COVERAGE MAP ({item_count} items):
+{goal_coverage_json}
+
+Each item above shows: the elicitation_goal that was asked, the stakeholders who
+answered, and the requirement IDs already linked to that item from Passes 1 and 2.
+
+ALREADY EXTRACTED REQUIREMENTS ({already_count} items from Passes 1 and 2):
+{already_json}
+
+Continue numbering from: FR-{next_fr:03d}, NFR-{next_nfr:03d}, CON-{next_con:03d}.
+
+GAP-FILL DISCIPLINE — read this before generating any requirement.
+
+ZERO gap-fill requirements is a valid and often correct outcome. If Passes 1 and 2
+did a thorough job, there may be few or no genuine gaps.
+
+Every candidate must pass the MANDATORY GAP-FILL GATE in sequence:
+  G0 → TYPE CLASSIFICATION (Deployment Test → Threshold Test → Action Test)
+  G1 → SYSTEM BEHAVIOUR TEST (only for FR candidates that passed G0)
+  G2 → REDUNDANCY TEST (cross-type: check FR, NFR, CON, and OOS)
+
+Apply the Deployment Test to every candidate: "When the system is live in
+production, does this bullet describe something it does at runtime?" If it
+describes what the team does BEFORE or DURING development, it is a CON, never
+an FR. If the system cannot control or enforce it at all, skip entirely.
+
+OUTPUT VOLUME CHECK: if your output array has more items than
+⌊({already_count}) / 2⌋ = {already_count_half}, you are almost certainly
+generating too many. Re-verify each candidate against G0, G1, and G2 before
+finalising. Write your re-examination verdict in reasoning_log.
+
+For each project description bullet you evaluate, record in your reasoning_log:
+  1. The bullet text.
+  2. TYPE CLASSIFICATION: Deployment Test → Threshold Test → Action Test result.
+  3. G1 verdict (for FR candidates only): the "The system must [verb] [object]
+     when [trigger]" sentence and the Developer Implementation Test result.
+  4. G2 verdict: which existing requirement(s) cover this concept (cross-type).
+  5. Final verdict: FULLY COVERED / PARTIALLY COVERED / NOT COVERED.
+
+For each elicitation goal with an empty requirements list:
+  1. Check whether the goal's CONCEPT is covered by a requirement linked to a
+     different elicitation item. If yes, write "concept covered by [REQ-ID]
+     via [EL-NNN]" and skip.
+  2. If concept has zero coverage, apply MANDATORY GAP-FILL GATE (G0→G1→G2).
+
+For the VISION-DRIVEN checks:
+  Assumptions: apply the Deployment Test first — if the assumption describes
+  human behaviour or organisational capacity, it cannot produce an FR.
+  Constraints: check whether any CON already encodes this limit.
+  NFR: check whether any NFR already addresses this quality dimension.
+
+Every new requirement must have:
+  - source_elicitation_id: "PD" (for PD bullets) or the relevant EL-NNN
+  - status: "inferred" (always — gap-filling requirements are never confirmed)
+  - A statement that passes the Developer Implementation Test (for FRs)
+  - A measurable threshold grounded in source material (for NFRs)
+
+Return a JSON object with "reasoning_log" and "requirements" fields. An empty
+requirements array is a valid and often correct output.

@@ -1,0 +1,55 @@
+Project: TeamFlow – Lightweight Project Management with Task Tracking and Team Chat
+
+Description: Small teams — freelance groups, startup squads, student project groups —
+do not need the full complexity of enterprise tools like Jira or the distraction of having
+to switch between a task manager and a separate messaging app. We want a single, simple
+tool where a team of 3 to 15 people can create tasks, assign them, set deadlines, track
+progress, and chat in the context of the project — all in one place. It should be something
+a team can set up in 10 minutes and actually use every day without training. As someone
+who has coordinated multiple small project teams, the tools that get used are the simple
+ones, not the powerful ones nobody understands.
+
+General Needs & Background
+Small teams often start with good intentions — a shared spreadsheet, a Trello board, a
+WhatsApp group — but these quickly fall apart when tasks are spread across different tools,
+updates get buried in chat, and nobody knows what the current priority is. A unified tool
+that keeps tasks and team communication together means less context-switching and a
+clearer shared understanding of progress. The key insight is that small teams do not need
+advanced features like Gantt charts, resource allocation, or time tracking — they need to
+answer three questions clearly: What needs to be done? Who is doing it? Is it done yet?
+Everything else is secondary.
+
+Relevant Stakeholders
+Primary users: Small team members (designers, developers, coordinators) working on shared
+projects, team leads or project managers in SMEs and startups, student project groups
+Secondary users: Clients or external partners with read-only access to project progress,
+freelancers managing multiple concurrent client projects, team leads at NGOs or community
+organisations
+Project stakeholders: Project team, course lecturer, small business and startup community
+advisors
+Indirect stakeholders: HR and operations managers in growing companies, project
+management professional bodies, productivity software market analysts
+
+What We Want the Tool to Do
+- Allow teams to create a project with a name, description, and list of members.
+- Let anyone on the team create a task: title, description, assignee, due date, priority level.
+- Support simple status columns: To Do, In Progress, In Review, Done (like a basic Kanban).
+- Allow comments on individual tasks so discussion stays attached to the relevant work.
+- Include a team chat channel per project for general conversation without leaving the tool.
+- Send notifications when a task is assigned, moved, or commented on.
+- Show a project overview: tasks due this week, overdue tasks, and who is overloaded.
+- Allow file attachment on tasks (design files, documents, links).
+- Let a team lead set a project deadline and see overall progress as a simple percentage.
+
+Practical Limits We Are Working With
+- Setup should take under 10 minutes — no lengthy onboarding or admin configuration.
+- The tool must be free for small teams (up to 10 members) — most small teams cannot pay.
+- Must work reliably in the browser — no desktop installation required.
+- Mobile access is important — team members check tasks on their phone throughout the day.
+- Must not overwhelm users with features — every element on screen should have a clear purpose.
+
+What Good Looks Like
+- The whole team knows the current status of the project without a status meeting.
+- Tasks do not fall through the cracks because they are assigned and tracked in one place.
+- Team chat is focused on work, not scattered across WhatsApp and email.
+- A new team member can understand the full project state within five minutes of joining.

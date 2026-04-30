@@ -1,0 +1,55 @@
+Project: HomeHub – Unified Dashboard to Monitor and Control Smart Home Devices
+
+Description: Smart home devices are becoming more common, but the biggest frustration
+for homeowners is that every brand has its own separate app. I have lights from one
+brand, a security camera from another, a smart air conditioner, and a smart door lock —
+and I need to open four different apps to control them. It is confusing, especially for
+older family members at home. We want a single dashboard — on a phone or tablet or
+browser — where we can see and control all our devices in one place, set simple
+automations like "turn off all lights at midnight," and check if everything is on or off
+before we leave the house.
+
+General Needs & Background
+The smart home market is growing, but integration between brands is a major pain point
+for everyday users. Non-technical homeowners buy devices based on price or features,
+not compatibility, and end up with an unmanageable collection of apps. A unified
+interface that speaks to common smart home protocols (like Wi-Fi, Zigbee, or cloud APIs)
+would make the smart home experience accessible to the average family — not just
+tech enthusiasts. The dashboard should be simple enough for a 60-year-old parent to
+understand but powerful enough for the person who set everything up to automate
+daily routines.
+
+Relevant Stakeholders
+Primary users: Homeowners with multiple smart devices, family members sharing a smart
+home (including older adults and children)
+Secondary users: Property managers overseeing multiple units, home security monitoring
+staff, home automation enthusiasts
+Project stakeholders: Project team, course lecturer, home technology consultants
+Indirect stakeholders: Smart device manufacturers (e.g., Philips Hue, TP-Link, Samsung),
+internet service providers, energy utility companies
+
+What We Want the Dashboard to Do
+- Show all connected smart devices in one screen, grouped by room (e.g., living room,
+  bedroom, kitchen).
+- Allow basic controls: on/off toggle, brightness slider for lights, temperature setting for
+  AC, lock/unlock for doors.
+- Support automation rules: e.g., "If it is after 10 PM, dim living room lights to 30%."
+- Show energy usage data where the device supports it.
+- Send an alert if a device behaves unexpectedly (e.g., door unlocked when nobody is home).
+- Allow different access levels: owner (full control), family member (limited control),
+  guest (view only).
+- Work on both mobile and a wall-mounted tablet.
+- Support at least the most popular brands and work with third-party integrations.
+
+Practical Limits We Are Working With
+- Non-technical family members must be able to use it without reading a manual.
+- Must be secure — no unauthorised access to home devices.
+- Should not require replacing existing devices — it must work with what people already own.
+- Must remain functional even if one device brand's cloud service is down (partial control).
+- Response time for controls should feel instant — delays are frustrating and erode trust.
+
+What Good Looks Like
+- The whole family uses one app instead of four.
+- Leaving the house means checking one screen and tapping "Away Mode."
+- Automations run reliably without constant manual adjustments.
+- Older family members are confident controlling lights and the aircon without help.

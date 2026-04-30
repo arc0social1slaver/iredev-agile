@@ -1,0 +1,136 @@
+FIELD-LEVEL RULES FOR PASS 4 (Quality Gate / Final Assembly):
+
+STATEMENT
+
+Every statement follows the form "The system SHALL ..." or "The system SHALL NOT ...".
+Write one behaviour or quality per statement with one verb. If the sentence contains
+"and" or "or" linking two distinct behaviours, split it into two separate Requirement
+objects. The statement must be testable by a QA engineer from the text alone with no
+guessing. Include no implementation detail such as library names, framework choices, or
+technology stack. Non-committal modal verbs — any modal weaker than SHALL (such as
+should, may, can, could, might, would) — are not permitted in statements. Replace
+each with SHALL or SHALL NOT.
+
+TYPE CORRECTNESS (apply during Step 0.75)
+
+Read the verb phrase after "The system SHALL". Apply the Subject-Action Test:
+is the system the AGENT performing this action at runtime, or is the system the
+OBJECT of an action performed by humans?
+
+When the system is the OBJECT — something is done TO it (tested, developed,
+evaluated, reviewed, maintained, deployed) — the statement describes a process
+obligation and req_type MUST be "constraint", not "functional".
+
+When the system is the AGENT — it performs the action at runtime (displays,
+computes, stores, validates, navigates, filters, sends, prevents) — the statement
+describes a runtime behaviour and req_type is "functional".
+
+The grammatical subject "The system SHALL..." does NOT automatically make a
+statement a runtime behaviour. Read past the grammar to the actual action and
+determine who truly performs it.
+
+CONTEXT
+
+State where or when the requirement applies. Be as specific as the source material
+allows — name the page, section, trigger condition, or user action. For NFR and CON
+items that apply across the entire system, "Across all system interactions" is
+acceptable. Every functional requirement must have a non-null context value.
+
+RATIONALE
+
+The rationale has two mandatory parts. The first part states the pain the stakeholder
+expressed. The second part states the concrete outcome the stakeholder achieves when the
+requirement is met, in the form "So that [specific role] can [observable outcome]."
+
+Source discipline: derive the rationale exclusively from what appears in the elicitation
+answer text or the project description. Never invent a quote.
+
+Do not copy the same rationale text across multiple requirements.
+
+ACCEPTANCE CRITERIA
+
+Write 1 to 3 Given-When-Then conditions for FR and NFR items. Use only objective,
+measurable conditions — no subjective assertions. Subjective quality words — any
+adjective or adverb that a reasonable person could disagree about without a measurable
+threshold — are not permitted in acceptance criteria. The test: if two QA engineers
+could argue whether the criterion is met, the word is subjective and must be replaced
+with a measurable condition.
+
+An empty acceptance_criteria list on an FR or NFR is an extraction failure. If you
+cannot write a testable criterion, set status to "inferred" and write a criterion
+expressing the best available interpretation.
+
+When a threshold is missing from source material, propose a specific value
+using industry convention and append [Assumed Threshold] after it. Never
+write the tag without the value. The value makes the criterion testable;
+the tag signals it needs stakeholder sign-off.
+
+PRIORITY
+
+Preserve the existing priority unless the audit reveals a clear error.
+
+STATUS RULE (critical — overrides all prior status logic)
+
+The DEFAULT status for every requirement is "inferred".
+
+"confirmed" is ONLY valid when BOTH conditions are met:
+  1. The requirement maps to a specific bullet or explicit statement in the
+     original project description (PD).
+  2. A stakeholder's answer in the elicitation record directly addresses and
+     affirms that same PD statement.
+
+Stakeholder dialogue — even multi-turn, even when the stakeholder speaks clearly
+and specifically — is simulated dialogue, NOT formal confirmation. Dialogue is
+evidence for INFERENCE, not confirmation. Therefore:
+
+  - Requirements derived from stakeholder answers alone → "inferred"
+  - Requirements echoing PD with stakeholder affirmation → "confirmed"
+  - Requirements echoing PD with NO stakeholder data → "inferred"
+  - Requirements from Pass 3 gap-filling (source="PD") → "inferred"
+  - Out-of-scope items → "excluded"
+
+STATUS AUDIT RULE (Pass 4 specific — Step 7)
+
+For every requirement with status="confirmed", verify BOTH:
+  (a) The requirement's statement maps to a specific PD bullet.
+  (b) The elicitation answer (traceable via source_elicitation_id) contains a
+      sentence that explicitly affirms the PD bullet.
+
+If EITHER condition fails, downgrade to "inferred". In your reasoning log, list
+every requirement where you changed status and the reason.
+
+Additional mandatory downgrades:
+  - source_elicitation_id="PD" → always "inferred"
+  - Answer field is null, empty, or "(no answer provided)" → always "inferred"
+  - Statement is essentially a copy of a PD bullet with no new specifics from
+    stakeholder → always "inferred" (label "echo of PD" in reasoning log)
+  - Acceptance criteria threshold derived by engineering judgment → always "inferred"
+
+When status is "inferred", append "(Inferred — awaiting formal confirmation.)"
+to the rationale if not already present.
+
+STAKEHOLDER — PASS 4 RULE
+
+Preserve the existing stakeholder field unless it is provably wrong. Do NOT default
+to the first role in the KNOWN STAKEHOLDERS list.
+
+ANTI-HALLUCINATION GUARD
+
+Do NOT:
+  - Import any named standard, framework, or specification that does not
+    appear in the project description or elicitation answers.
+  - Use any example text from THIS PROMPT as content in your output.
+    Examples in prompts illustrate format only, not content.
+  - Generate requirements, stakeholder roles, or constraints from general
+    domain knowledge when no source material mentions them.
+
+Every field value must be traceable to a specific sentence or phrase in the
+source material. If you cannot point to the source, do not include the item.
+
+Exception — Assumed Thresholds: numeric values proposed under the
+[Assumed Threshold] rule in Step 3b are exempt from the source-traceability
+requirement above. They are engineering proposals, not source claims; the tag
+itself signals this distinction to reviewers. The obligation to produce a
+specific testable number overrides the obligation to trace to source when no
+source threshold exists. Do not interpret the anti-hallucination guard as
+permission to retain vague language.

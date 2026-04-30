@@ -1,0 +1,54 @@
+Project: MoveIt – Platform Connecting People Who Need Help Moving Items with Local Drivers
+
+Description: Moving a sofa, a fridge, or a pile of boxes across town sounds simple,
+but finding a trustworthy person with a van or truck to help — at short notice, at a fair
+price — is surprisingly hard. Hiring a full moving company is overkill and expensive for
+small moves. Asking friends is unreliable. There is no easy platform in most cities where
+someone can post "I need to move a washing machine tomorrow, who can help?" and get
+matched with a local driver with the right vehicle. We want a platform that works like
+a ride-hailing app but for moving small to medium loads, with transparent pricing, basic
+safety features, and ratings on both sides.
+
+General Needs & Background
+There is a large informal market of drivers who use their personal van or pick-up truck
+to earn extra income by helping people move items. Right now, these drivers get work
+through word of mouth or unorganised Facebook posts. On the customer side, people
+post in local community groups and hope someone responds in time. Both sides would
+benefit from a structured platform that matches supply to demand, handles basic
+communication, shows pricing upfront, and builds trust through reviews. This is not
+about large commercial removals — it is about the everyday person who bought a second-
+hand wardrobe and needs help getting it home.
+
+Relevant Stakeholders
+Primary users: People needing to move items locally (buyers of second-hand furniture,
+people relocating, businesses moving office supplies), local drivers with vans or trucks
+seeking flexible earning opportunities
+Secondary users: Local courier and logistics businesses offering overflow capacity,
+apartment building managers coordinating move-in/move-out schedules
+Project stakeholders: Project team, course lecturer, logistics and transport advisors
+Indirect stakeholders: Local transport regulators, insurance providers, second-hand
+marketplaces (e.g., Facebook Marketplace, Carousell) as referral sources
+
+What We Want the Platform to Do
+- Let customers post a move request: pick-up location, drop-off location, item description,
+  size/weight estimate, preferred time, and maximum budget.
+- Allow drivers to browse nearby requests and accept jobs that suit their vehicle and schedule.
+- Show customers nearby available drivers with vehicle type, ratings, and estimated price.
+- Calculate a suggested price based on distance and item size as a starting point.
+- Enable basic in-app chat between customer and driver once a job is accepted.
+- Allow both sides to rate and review each other after the job.
+- Send notifications to the customer when the driver is on the way and when they arrive.
+- Show job history for drivers to track their earnings.
+
+Practical Limits We Are Working With
+- Safety is critical — there must be basic identity verification for drivers.
+- Payment should be handled in-app or via a trusted method — no cash disputes.
+- Must work in areas with mixed internet connectivity.
+- Pricing must be transparent before commitment — no surprise charges.
+- The platform should not require drivers to be registered businesses — freelancers welcome.
+
+What Good Looks Like
+- A customer can find a driver for a small move within a few hours of posting.
+- Drivers build a reputation through reviews and get steady local bookings.
+- The move happens at a fair, agreed price with no awkward cash negotiation.
+- Both sides feel safe and informed throughout the process.

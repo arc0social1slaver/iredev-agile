@@ -1,0 +1,55 @@
+Project: MindLog – Personal Mood, Stress, and Daily Habit Tracking App
+
+Description: Many people go through periods of stress, low motivation, or emotional
+difficulty without realising it until things have already gotten worse. Tracking how you
+feel each day — even in small ways — can help people notice patterns, identify what
+drains or restores their energy, and make better decisions about their lifestyle. As a
+counsellor working with young adults, I see many clients who cannot describe when their
+symptoms started or what seems to make them better or worse. A simple daily check-in
+app that tracks mood, sleep, stress level, and basic habits would give both users and
+their support network a clearer picture over time, without requiring clinical knowledge
+to use.
+
+General Needs & Background
+Many people want to take care of their mental wellbeing but feel overwhelmed by complex
+apps or clinical-looking tools. A simple, private, and encouraging daily log can build
+a habit of self-awareness. Users should be able to record how they feel, what they did,
+and how they slept in less than two minutes. Over time, the app should show patterns —
+like "you tend to feel worse on Sundays" or "your mood improves on days you exercise."
+This is not a medical app and should never diagnose anything — it is purely a personal
+reflection and awareness tool. It should feel warm, not clinical.
+
+Relevant Stakeholders
+Primary users: Individuals managing daily stress, students, young professionals seeking
+self-awareness tools
+Secondary users: Mental health counsellors and therapists (whose clients may share
+summaries), wellness coaches, supportive friends or family members with shared access
+Project stakeholders: Project team, course lecturer, wellbeing centre advisors
+Indirect stakeholders: Mental health policymakers, employee wellness programme
+coordinators, healthcare professionals
+
+What We Want the App to Do
+- Offer a short daily check-in: mood rating (1–5 or emoji-based), stress level, sleep hours,
+  and a free-text note.
+- Allow users to track habits they define themselves (e.g., exercise, water intake, screen
+  time, journaling).
+- Show a weekly and monthly summary with simple charts showing mood and habit trends.
+- Highlight correlations in plain language (e.g., "On days you slept more than 7 hours,
+  your mood averaged higher").
+- Send a gentle daily reminder at a time the user chooses.
+- Keep all data private and stored only on the user's device or under their account.
+- Allow users to export a summary as a PDF to share with a counsellor if they choose.
+- Never show alarming language or suggest diagnoses — keep tone supportive and neutral.
+
+Practical Limits We Are Working With
+- The daily check-in must take under two minutes so users actually stick with it.
+- Data belongs to the user — no selling or sharing without explicit consent.
+- The app must be usable without an internet connection for offline journalling.
+- Must be accessible to people with low digital literacy — no complex menus.
+- Should be gentle in design — calming colours, no harsh notifications.
+
+What Good Looks Like
+- Users build a consistent habit of checking in without feeling pressured.
+- After a month, they can clearly see which habits correlate with better or worse days.
+- Counsellors report that clients come to sessions with better self-awareness.
+- The app never makes users feel judged, diagnosed, or alarmed.

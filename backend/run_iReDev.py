@@ -327,16 +327,21 @@ def display_product_vision(vision: dict) -> None:
     section("ARTIFACT: product_vision")
     stakeholders = vision.get("target_audiences") or []
     assumptions  = vision.get("assumptions") or []
-    print(f"  Core Problem    : {vision.get('core_problem', '?')[:160]}")
-    print(f"  Value Prop.     : {vision.get('value_proposition', '?')[:160]}")
-    workflows = vision.get("core_workflows") or []
-    print(f"  Epics ({len(workflows)})      :")
-    for w in workflows:
-        print(f"    • {w}")
-    constraints = vision.get("hard_constraints") or []
-    print(f"  Constraints ({len(constraints)}) :")
-    for c in constraints:
+    print(f"  Core Problem    : {vision.get('core_problem', '?')}")
+    print(f"  Value Prop.     : {vision.get('value_proposition', '?')}")
+    constraints = vision.get("project_constraints") or []
+    nfrs = vision.get("non_functional_requirements") or []
+    combined_constraints = constraints + nfrs
+    print(f"  Constraints & NFRs ({len(combined_constraints)}) :")
+    for c in combined_constraints:
         print(f"    • {c}")
+
+    eval_criteria = vision.get("evaluation_criteria") or []
+    if eval_criteria:
+        print(f"  Evaluation Criteria ({len(eval_criteria)}) :")
+        for e in eval_criteria:
+            print(f"    • {e}")
+
     oos = vision.get("out_of_scope") or []
     print(f"  Out-of-Scope ({len(oos)}):")
     for o in oos:
@@ -375,7 +380,7 @@ def display_requirement_list(rl: dict) -> None:
                 f"    {icon} [{r.get('req_id','?')}] "
                 f"({r.get('req_type','?')}, prio={r.get('priority','?')}) "
                 f"[{r.get('epic','?')}] "
-                f"{r.get('statement','')[:80]}"
+                f"{r.get('statement','')}"
             )
 
 def display_product_backlog(artifact: dict) -> None:
@@ -526,6 +531,8 @@ def run_workflow(initial_state, config, args):
         stream_input = initial_state
         should_stop = False
 
+        last_printed_turn = 0
+
         while not should_stop:
             interrupted = False
             for step_output in graph.stream(stream_input, config=config):
@@ -537,6 +544,22 @@ def run_workflow(initial_state, config, args):
                         break
                     else:
                         print(f"\n{'─'*70}\n  NODE: {node_name.upper()}\n{'─'*70}")
+
+                        if node_name == "interviewer_turn":
+                            question = updates.get("current_question")
+                            if question:
+                                print(f"\n  [INTERVIEWER] {question}\n")
+
+                        if node_name == "enduser_turn":
+                            conv = updates.get("conversation")
+                            if conv:
+                                new_turns = conv[last_printed_turn:]
+                                for turn in new_turns:
+                                    role = turn.get("role", "enduser")
+                                    content = turn.get("content", "")
+                                    print(f"\n  [{role.upper()}] {content}\n")
+                                last_printed_turn = len(conv)
+
                         if isinstance(updates, dict):
                             next_node = updates.get("next_node")
                             if next_node:

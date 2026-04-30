@@ -1,0 +1,100 @@
+FIELD-LEVEL RULES FOR PASS 3 (gap-filling requirements only):
+
+STATEMENT
+
+Every statement follows the form "The system SHALL ..." with one verb and one
+measurable behaviour or limit. Compound statements joined by "and" or "or" must be
+split into separate Requirement objects. Include no implementation detail.
+
+EXTERNAL PRECONDITION CHECK — apply three sequential decision tests:
+
+Before writing any gap-filling requirement, apply these tests IN ORDER. Record
+your answers in reasoning_log.
+
+  DEPLOYMENT TEST: "When the system is deployed and running, is this something the
+  SYSTEM does, or something a PERSON or TEAM does?" If the true subject is a
+  person, team, process, methodology, or organisational capacity → classify as CON
+  (if it constrains the project) or skip entirely (if the system cannot control or
+  enforce it at all). The grammatical subject "The system" does not automatically
+  make a statement a system behaviour — ask who ACTUALLY performs the action.
+
+  MEASURABILITY TEST: "Does this statement describe a quality that can only be
+  verified by human subjective judgment, with no objective metric derivable from
+  the source material?" If YES and the source material provides no measurable
+  threshold → skip (the concern is real but not yet ready to be a requirement).
+  If the source material implies a measurable dimension → reclassify to NFR with
+  that threshold.
+
+  AGENCY TEST: "Does the statement require the system to control human behaviour,
+  organisational decisions, or external capacity?" If YES → skip entirely. No
+  requirement type can encode something the system has no agency over.
+
+CONTEXT
+
+State where or when the requirement applies. Be as specific as the source material
+allows. For gap-filling requirements where no specific context appears in the
+source material, describe the user action or system state precisely enough that a
+developer knows where it applies. Never invent page names or section names that do
+not appear in the source material.
+
+RATIONALE (mandatory format)
+
+Part 1 — Gap Source: "Gap detected: [PD bullet / Vision assumption / Vision
+constraint / Vision NFR / elicitation goal] — '[source text]'."
+Part 2 — User Outcome: "So that [specific role] can [observable outcome]."
+
+The rationale must ground the gap in a specific source material element. A generic
+rationale like "for completeness" or "to meet project goals" is a gap-filling
+failure.
+
+ACCEPTANCE CRITERIA
+
+Write 1 to 3 Given-When-Then conditions using only objective, measurable conditions.
+Every FR must have at least one AC item with a specific scenario. NFR items must
+include measurable thresholds grounded in the source material. CON items may have
+an empty list.
+
+Apply the Two-Engineer Test to every word in your acceptance criteria: "If two QA
+engineers independently evaluated whether this criterion is satisfied, could they
+reasonably disagree?" If yes, the word is subjective and must be replaced with an
+observable, measurable condition.
+
+PRIORITY
+
+Default to "medium" for gap-filling requirements unless the source material
+explicitly indicates the priority.
+
+STATUS — hardcoded for Pass 3
+
+ALL gap-filling requirements get status="inferred". This is not a judgment call —
+Pass 3 requirements are by definition not directly confirmed by stakeholder
+testimony. Append "(Inferred — awaiting formal confirmation.)" to every rationale.
+
+SOURCE_ELICITATION_ID
+
+Set to "PD" for gaps identified from project description bullets, Vision
+assumptions, Vision constraints, and Vision NFRs. Set to the relevant EL-NNN
+identifier for gaps identified from uncovered elicitation goals. Never reuse an
+EL-NNN from an already-covered goal.
+
+STAKEHOLDER
+
+Set to the specific role whose need is not covered by existing requirements. Do
+NOT default to the primary user when the gap specifically concerns a secondary
+stakeholder role.
+
+REQ_TYPE
+
+The type must match the TYPE-FIRST CLASSIFICATION result from the system prompt.
+A bullet that was classified as a process obligation (Deployment Test = NO) MUST
+produce a CON, never an FR. A bullet classified as a quality attribute (Threshold
+Test = YES) MUST produce an NFR with a measurable threshold. Only bullets that
+passed both the Deployment Test and the Action Test may produce FRs.
+
+ANTI-HALLUCINATION GUARD
+
+Every value must trace to a specific sentence or phrase in one of: the project
+description, the elicitation record, or the reviewed product vision. Do not import
+named standards, domain-specific knowledge, or technical specifications from
+training data. If the source material describes a concern informally, use that
+same informal language. Do not use any example text from this prompt as content.

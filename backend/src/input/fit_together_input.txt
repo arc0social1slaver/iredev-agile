@@ -1,0 +1,54 @@
+Project: FitTogether – Workout Planning and Progress Sharing App for Friends
+
+Description: Working out alone is hard to sustain. Many people start a fitness routine
+with good intentions but drop off within a few weeks because there is nobody to stay
+accountable to. Fitness coaches and personal trainers already know that having a training
+partner or group dramatically improves consistency. We want an app where friends can
+create and share workout routines with each other, log their progress, cheer each other
+on, and even challenge each other to small friendly goals — without needing to buy an
+expensive gym membership app or share a gym account. It should feel social and
+motivating, not like a spreadsheet.
+
+General Needs & Background
+Most workout apps are designed for solo use — they track your runs or count your reps
+but do not connect you with the people you actually work out with. Friends who train
+together want to see each other's progress, share routines that worked for them, and
+celebrate milestones together. Group fitness instructors want a way to send a weekly plan
+to their informal group without having to message everyone individually. The social
+element — seeing a friend complete their workout — is often more motivating than any
+notification from an app. The app should make group fitness feel connected even when
+people are working out at different times or in different places.
+
+Relevant Stakeholders
+Primary users: Fitness enthusiasts who exercise in friend groups or informal gym buddies,
+individuals seeking workout accountability partners
+Secondary users: Personal trainers and group fitness instructors, sports coaches managing
+amateur teams, gym community managers
+Project stakeholders: Project team, course lecturer, sports and recreation advisors
+Indirect stakeholders: Gym facilities and equipment brands, sports medicine professionals,
+health insurance wellness programmes
+
+What We Want the App to Do
+- Let users create workout routines (exercises, sets, reps, rest times) and share them
+  directly with friends.
+- Show a friend feed where you can see who completed a workout today and leave a
+  reaction or comment.
+- Allow users to log each session: exercises done, weight used, how they felt.
+- Track progress over time with simple charts (e.g., total workouts per week, personal bests).
+- Support friendly challenges — e.g., "Who does the most workouts this month?"
+- Let a trainer or group leader create a weekly plan and push it to all group members.
+- Send a motivational nudge when a friend logs a workout but you have not yet today.
+- Allow workouts to be built from a library of common exercises with descriptions and images.
+
+Practical Limits We Are Working With
+- The app should work without a gym or equipment — bodyweight routines must be supported.
+- Friends must be able to form a private group — no public sharing without consent.
+- Must be usable offline so people can log workouts at gyms with poor wifi.
+- Should not require fitness expertise to create a routine — beginner-friendly.
+- No subscription required for core features — social and logging functions should be free.
+
+What Good Looks Like
+- Friends consistently work out more often because they can see each other's activity.
+- A trainer can manage a group of 10–15 people without using WhatsApp for workout plans.
+- Users stick with a routine for longer because of the social accountability.
+- Progress over months is visible and motivating.

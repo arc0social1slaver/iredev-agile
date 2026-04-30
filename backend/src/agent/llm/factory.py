@@ -72,6 +72,7 @@ class LLMFactory:
                 temperature=config.get("temperature", 0.1),
                 rate_limiter=limiter,
                 callbacks=[callback],
+                request_timeout=120,
             )
 
         if provider == "huggingface":

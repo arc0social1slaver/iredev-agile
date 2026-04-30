@@ -1,0 +1,5 @@
+ProductVision (JSON):
+{vision_json}
+
+Project Description:
+{project_description}

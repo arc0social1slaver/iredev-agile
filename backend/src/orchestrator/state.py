@@ -160,6 +160,14 @@ class WorkflowState(TypedDict, total=False):
     current_question: str
     enduser_answer:   str
 
+    # The role being interviewed in the current turn.
+    # Set by graph.py/enduser_turn_fn from item.current_stakeholder() before
+    # each EndUser turn, and updated by record_answer when the stakeholder cursor
+    # advances within a multi-stakeholder agenda item.
+    # EndUserAgent reads this to know which persona to embody.
+    # InterviewerAgent's record_answer uses this as the authoritative role key.
+    current_stakeholder_role: str
+
     # Final summary written by the conclude tool.
     # Format: one block per answered item — "Q: ...\nA: ..."
     elicitation_notes: str

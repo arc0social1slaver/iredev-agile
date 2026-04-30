@@ -1,0 +1,50 @@
+Project: BookSwap – Local Textbook Buying, Selling, and Exchange Platform for Students
+
+Description: Every semester, students spend a lot of money on textbooks they use for
+only a few months, then leave collecting dust on a shelf or throw away. At the same time,
+other students are looking for the same books but cannot find an affordable option.
+There is no easy way for students at the same university or nearby schools to find each
+other and exchange books directly. We want a simple platform where students can list
+the textbooks they no longer need, search for ones they do need, and arrange a meetup
+or trade locally — without paying shipping fees or dealing with strangers far away.
+
+General Needs & Background
+Students regularly overpay for new textbooks when used copies are perfectly fine for
+studying. Current options like Facebook Marketplace or group chats are unorganised —
+listings get buried, it is hard to search by course or subject, and there is no trust system.
+A dedicated platform for students, where books are linked to specific courses, would make
+it much faster to find what you need. Exchange or trade options (not just cash sales) would
+help students who are tight on budget. A local meetup system, such as a suggested safe
+spot on campus, would make transactions feel safer than meeting strangers off-campus.
+
+Relevant Stakeholders
+Primary users: University and college students looking to sell, buy, or exchange textbooks
+Secondary users: University librarians and student union officers, academic advisors
+recommending reading materials, student club coordinators
+Project stakeholders: Project team, course lecturer, student advisory board
+Indirect stakeholders: Textbook publishers and distributors, university administration,
+local printing and bookshop owners
+
+What We Want the Platform to Do
+- Let students post a listing for a textbook: title, author, edition, condition, asking price
+  or trade offer, and a photo.
+- Allow searching by course name, subject code, title, or author.
+- Show listings from students at the same university first, then nearby schools.
+- Let two students agree to trade books without money changing hands.
+- Include a simple rating or trust system so students know who is reliable.
+- Suggest a standard safe meetup location on campus (library, student centre, etc.).
+- Send a notification when someone lists a book you have been looking for.
+- Let students mark a listing as "sold" or "exchanged" when done.
+
+Practical Limits We Are Working With
+- Students must verify they belong to a university (e.g., using a student email).
+- No cash handling on the platform — all payment or exchange is arranged in person.
+- Privacy is important — students should not be forced to share their phone number publicly.
+- The platform should be free to use for all students.
+- Must work well on mobile since most students use their phones more than laptops.
+
+What Good Looks Like
+- A student can find a second-hand copy of their required textbook within a day of posting.
+- The exchange process feels safe, local, and straightforward.
+- Listings are organised and searchable, not buried in a group chat.
+- Students save a meaningful amount of money compared to buying new books.

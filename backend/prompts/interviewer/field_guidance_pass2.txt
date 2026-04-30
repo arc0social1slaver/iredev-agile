@@ -1,0 +1,138 @@
+FIELD-LEVEL RULES FOR PASS 2 (NFR, CON, OOS only):
+
+STATEMENT
+
+Every NFR statement follows the form "The system SHALL ..." with a measurable quality
+threshold. Every CON statement follows the form "The system SHALL ..." or "The system
+SHALL NOT ..." describing a non-negotiable limit. Every OOS statement follows the form
+"The system SHALL NOT provide ...". Write one concern per statement with one verb. If
+the sentence contains "and" or "or" linking two distinct quality dimensions, split it
+into two separate Requirement objects. The statement must be testable by a QA engineer
+from the text alone with no guessing. Include no implementation detail such as library
+names, framework choices, or technology stack. Non-committal modal verbs — any modal
+weaker than SHALL (such as should, may, can, could, might, would) — are not permitted
+in statements. Replace each with SHALL or SHALL NOT.
+
+THRESHOLD PROVENANCE (NFR statements only)
+
+Every numeric value or named standard in an NFR statement must have a traceable source.
+Before writing any threshold, verify it against these three — and ONLY these three —
+valid sources:
+  1. Direct stakeholder quote — a specific number, frequency, or named standard that
+     appears in the answer field of an elicitation item.
+  2. Project description text — a threshold stated verbatim in the PD.
+  3. Vision evaluation criteria — a measurable standard stated verbatim in the
+     evaluation criteria.
+
+If the threshold exists in the source material, record: "Threshold source: [exact
+quote]" in reasoning_log and preserve the existing status.
+
+If the threshold does NOT exist in any source, you have two options:
+  (a) Reclassify the item as a CON without a fabricated threshold.
+  (b) Keep as NFR, append "[Assumed Threshold]" to the statement, set status to
+      "inferred", and note in the rationale: "Threshold derived by engineering
+      judgment — not stated by any stakeholder or project document."
+
+Never write a threshold and leave status as "confirmed" unless the stakeholder or
+project document explicitly stated that exact number or standard.
+
+CONTEXT
+
+State where or when the requirement applies. Be as specific as the source material
+allows. For NFR and CON items that apply across the entire system, "Across all system
+interactions" is acceptable.
+
+RATIONALE
+
+The rationale has two mandatory parts. The first part states the pain the stakeholder
+expressed. The second part states the concrete outcome the stakeholder achieves when the
+requirement is met, in the form "So that [specific role] can [observable outcome]."
+
+Source discipline is the single most important rule for this field. The elicitation
+record contains an "answer" field per item and nothing else. You must derive the
+rationale exclusively from what appears in the answer text. Before writing either part,
+locate the specific sentence or clause in the answer field that most directly expresses
+the quality concern. If you cannot point to a specific sentence, note "no direct
+evidence found" in your reasoning log and set status to "inferred". Never invent a quote.
+
+For requirements with source_elicitation_id of "PD", paraphrase the relevant project
+description bullet instead.
+
+Do not copy the same rationale text across multiple requirements.
+
+ACCEPTANCE CRITERIA
+
+Write 1 to 3 Given-When-Then conditions for NFR items. Use only objective, measurable
+conditions — no subjective assertions. Where a number, standard, or observable outcome
+applies, state it explicitly and ground it in what the stakeholder said or what the
+project's own context implies. Subjective quality words — any adjective or adverb that
+a reasonable person could disagree about without a measurable threshold — are not
+permitted in acceptance criteria. The test: if two QA engineers could argue whether
+the criterion is met, the word is subjective and must be replaced with a measurable
+condition.
+
+An empty acceptance_criteria list on an NFR is an extraction failure. If you cannot
+write a testable criterion, set status to "inferred" and write a criterion expressing
+the best available interpretation. An empty list is valid for CON and OOS items only.
+
+PRIORITY
+
+Inherit the priority from the elicitation item unless the stakeholder's answer
+explicitly overrides it. All out-of-scope items take priority "low".
+
+STATUS RULE (critical — overrides all prior status logic)
+
+The DEFAULT status for every requirement is "inferred".
+
+"confirmed" is ONLY valid when BOTH conditions are met:
+  1. The requirement maps to a specific bullet or explicit statement in the
+     original project description (PD).
+  2. A stakeholder's answer in the elicitation record directly addresses and
+     affirms that same PD statement.
+
+Stakeholder dialogue — even multi-turn, even when the stakeholder speaks clearly
+and specifically — is simulated dialogue, NOT formal confirmation. Dialogue is
+evidence for INFERENCE, not confirmation. Therefore:
+
+  - Requirements derived from stakeholder answers alone → "inferred"
+  - Requirements echoing PD with stakeholder affirmation → "confirmed"
+  - Requirements echoing PD with NO stakeholder data → "inferred"
+  - Out-of-scope items → "excluded"
+
+When status is "inferred", append "(Inferred — awaiting formal confirmation.)"
+to the rationale.
+
+STAKEHOLDER — PASS 2 RULE
+
+Each elicitation item carries an "interviewed_stakeholder_role" field. Use it as the
+primary source for the stakeholder field on NFR and CON items, exactly as Pass 1 does
+for FRs. Do NOT default to the first role in the KNOWN STAKEHOLDERS list.
+
+For OOS items (req_type="out_of_scope"), stakeholder should reflect who raised or is
+most affected by the exclusion — typically the primary user or decision-maker.
+
+EXTERNAL PRECONDITION → CON RULE
+
+If an elicitation item describes an external precondition that Pass 1 correctly skipped
+for FR generation, evaluate whether it implies a deployment constraint. If yes, extract
+a CON with:
+  - statement: "The system SHALL be deployed in an environment where [precondition]"
+  - status: "inferred"
+  - rationale: paraphrase the assumption and its risk_if_wrong.
+Do NOT generate an NFR for it — external preconditions are constraints, not quality
+attributes.
+
+ANTI-HALLUCINATION GUARD
+
+Do NOT:
+  - Import any named standard, framework, or specification that does not
+    appear VERBATIM in the project description or elicitation answers. A general
+    description of a concern (informal language) does NOT license importing
+    a specific named standard from your training data.
+  - Use any example text from THIS PROMPT as content in your output.
+    Examples in prompts illustrate format only, not content.
+  - Generate requirements, stakeholder roles, or constraints from general
+    domain knowledge when no source material mentions them.
+
+Every field value must be traceable to a specific sentence or phrase in the
+source material. If you cannot point to the source, do not include the item.

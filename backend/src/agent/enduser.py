@@ -1,25 +1,27 @@
 """
-enduser.py – EndUserAgent (v2: High-Fidelity Stakeholder Simulation)
+enduser.py – EndUserAgent (v3: Domain-Agnostic Stakeholder Simulation)
 
-Changes from v1
-───────────────
+Key Design Principles
+─────────────────────
 1. Persona Archetypes — "The Resister", "The Perfectionist", "The Optimist".
-   Archetype is read from config or inferred from persona description.
-   Injected into task so the ReAct prompt honours the archetype's friction
-   patterns (impatience, hedging, over-optimism).
+   Archetype label is injected into the task; full behavioural definitions
+   live in enduser_react.txt (single source of truth).
 
-2. Negative Vocabulary Constraints — agent is forbidden from using or
-   understanding technical jargon. A banned-term list is injected into the
-   task. If the interviewer uses a banned term, the agent must respond as a
-   real non-technical stakeholder would: ask for clarification.
+2. Vocabulary — no hardcoded banned-term list. The prompt teaches the agent
+   the concept: "never use terms a person in your role wouldn't naturally use".
+   The agent decides what counts as jargon based on its persona.
 
-3. Implicit Requirements (Knowledge Gaps) — the agent is given a structured
-   set of "hidden concerns" it must NOT volunteer until the interviewer drills
-   down with Why / What if / specific scenario questions. This models the
-   real-world phenomenon where stakeholders only surface edge cases when probed.
+3. Stakeholder Context — key_concern and type are looked up from
+   ProductVision target_audiences at build_task time.  This grounds the
+   persona's answers in their core worry and relationship to the system.
 
-4. Information Asymmetry preserved — agent still does NOT read
-   elicitation_agenda or ProductVision internals.
+4. Topic Awareness — source_field of the current agenda item is resolved and
+   injected as a concept-level TOPIC NATURE hint so the agent calibrates its
+   answer style (assumption → express uncertainty; constraint → express
+   practical realities) without seeing the interviewer's elicitation strategy.
+
+5. Information Asymmetry — agent NEVER sees: elicitation_goal, source_ref,
+   item_id, or any agenda structure.
 
 Handshake protocol (unchanged)
 ──────────────────────────────
@@ -41,56 +43,78 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Archetype definitions
+# Archetype labels (behaviour definitions live in enduser_react.txt)
 # ─────────────────────────────────────────────────────────────────────────────
 
-_ARCHETYPE_PROMPTS: Dict[str, str] = {
-    "resister": """\
-ARCHETYPE — The Resister:
-  • You are busy and skeptical. Every question costs you time.
-  • You give short, direct answers. You do NOT elaborate unless pushed.
-  • If the interviewer repeats something you've already addressed,
-    show mild impatience: "I already mentioned that."
-  • You doubt whether "the system" will actually solve the real problem.
-  • You will NOT answer hypotheticals enthusiastically — "I don't know,
-    that hasn't happened yet." is a perfectly acceptable response for you.""",
-
-    "perfectionist": """\
-ARCHETYPE — The Perfectionist:
-  • You are afraid of committing to something that turns out to be wrong.
-  • Every answer comes with qualifications: "That depends…",
-    "I'd need to check with my colleagues first…", "I'm not 100% sure."
-  • You notice edge cases and volunteer them even when not asked.
-  • You are reluctant to give a final answer without caveats.
-  • If the interviewer asks you to confirm something, you add conditions.""",
-
-    "optimist": """\
-ARCHETYPE — The Optimist:
-  • You want the project to succeed and assume it will.
-  • You underestimate complexity: "Oh, that should be easy."
-  • You volunteer feature ideas and expansions beyond what was asked.
-  • You rarely mention risks or blockers unless directly forced to.
-  • You tend to over-promise what the system should do.""",
-}
-
+_VALID_ARCHETYPES = {"resister", "perfectionist", "optimist"}
 _DEFAULT_ARCHETYPE = "resister"
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Banned technical vocabulary
+# Topic-nature hints (source_field → concept-level context for the persona)
+#
+# These tell the agent *what kind of topic* the current question touches on,
+# so it can calibrate answer style (e.g., express uncertainty for assumptions,
+# describe practical realities for constraints).  They NEVER expose the
+# elicitation_goal, source_ref, or interviewer strategy.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_BANNED_JARGON = [
-    "UI/UX", "responsive", "lazy loading", "WCAG", "API", "backend",
-    "frontend", "microservice", "scalable", "agile", "sprint", "user story",
-    "endpoint", "refactor", "deploy", "stack", "pipeline", "cache",
-    "throughput", "latency", "asynchronous", "webhook", "OAuth",
-    "idempotent", "schema", "payload", "middleware",
-]
+_TOPIC_HINTS: Dict[str, str] = {
+    "assumption": (
+        "something that is believed but unconfirmed about this project. "
+        "You may have your own opinion or experience that supports or contradicts it."
+    ),
+    "initial_requirement": (
+        "a specific capability that is expected from the system. "
+        "You have experience with how this works or doesn't work today."
+    ),
+    "non_functional_requirement": (
+        "how well something should work — quality, speed, ease-of-use, or similar. "
+        "You care about this from your daily experience."
+    ),
+    "project_constraint": (
+        "a hard limit or rule that applies to this project. "
+        "You know the practical realities of working under this constraint."
+    ),
+    "evaluation_criterion": (
+        "how the result will be judged. "
+        "You have opinions about what 'good enough' looks like from your perspective."
+    ),
+    "out_of_scope": (
+        "something that may or may not be included in the project. "
+        "You may or may not have strong feelings about this."
+    ),
+    "stakeholder_concern": (
+        "a concern that directly affects people in your role. "
+        "You have firsthand experience with this."
+    ),
+}
+
+_TOPIC_HINT_FALLBACK = (
+    "a topic related to this project. Answer from your lived experience in this role."
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stakeholder type → natural-language relationship description
+# ─────────────────────────────────────────────────────────────────────────────
+
+_STAKEHOLDER_TYPE_LABELS: Dict[str, str] = {
+    "primary_user":   "You use this system directly and regularly — it is built for people like you.",
+    "secondary_user": "You use this system occasionally or in a supporting role.",
+    "beneficiary":    "You benefit from this system's outputs without using it directly.",
+    "decision_maker": "You have authority over the project's scope, direction, or approval.",
+    "blocker":        "You can veto or block this project if your concerns are not addressed.",
+}
 
 
 class EndUserAgent(BaseAgent):
-    """High-fidelity project stakeholder simulation with archetype, jargon
-    constraints, and implicit requirements (knowledge gaps)."""
+    """Domain-agnostic stakeholder simulation.
+
+    Grounds persona answers in ProductVision stakeholder data (key_concern,
+    type) and agenda-derived topic hints (source_field) without exposing the
+    interviewer's elicitation strategy.
+    """
 
     def __init__(self):
         super().__init__(name="enduser")
@@ -102,7 +126,7 @@ class EndUserAgent(BaseAgent):
 
         # ── Archetype ────────────────────────────────────────────────────────
         raw_archetype    = custom.get("archetype", "").strip().lower()
-        self._archetype  = raw_archetype if raw_archetype in _ARCHETYPE_PROMPTS \
+        self._archetype  = raw_archetype if raw_archetype in _VALID_ARCHETYPES \
                            else _DEFAULT_ARCHETYPE
 
         # ── Implicit requirements (knowledge gaps) ───────────────────────────
@@ -216,18 +240,31 @@ class EndUserAgent(BaseAgent):
     def _build_task(self, state: Dict[str, Any]) -> str:
         """Compose the task prompt for this turn.
 
-        Injects only what a real stakeholder would know:
-          • their own persona + archetype (behavioural instructions)
-          • banned technical vocabulary (negative constraints)
-          • implicit requirements they hold but haven't yet revealed
+        Injects only what a real stakeholder would naturally know:
+          • their own persona + archetype label
+          • key_concern and type (from ProductVision — what the stakeholder
+            cares about and their relationship to the system)
+          • topic nature hint (from agenda source_field — what *kind* of
+            topic is being discussed, without exposing the interviewer's
+            elicitation strategy)
+          • implicit requirements (knowledge gaps, if configured)
           • the question being asked
           • brief project context (description only)
 
-        Deliberately excludes: elicitation_agenda, elicitation_goal,
-        ProductVision internals.
+        Stakeholder identity resolution (priority order):
+          1. state["current_stakeholder_role"]  — set by graph.py/enduser_turn_fn
+             from the agenda cursor; always the authoritative source.
+          2. self._persona                       — config fallback.
+
+        Deliberately excludes: elicitation_goal, source_ref, item_id,
+        agenda structure.
         """
         question     = state.get("current_question", "").strip()
         project_desc = state.get("project_description", "(not provided)")
+
+        # Resolve persona: agenda cursor wins over static config
+        agenda_role = (state.get("current_stakeholder_role") or "").strip()
+        active_persona = agenda_role if agenda_role else self._persona
 
         if not question:
             return (
@@ -235,16 +272,21 @@ class EndUserAgent(BaseAgent):
                 "Wait for a question before responding."
             )
 
-        archetype_block = _ARCHETYPE_PROMPTS.get(self._archetype, "")
+        # ── Archetype (label only; behaviour is defined in enduser_react.txt) ─
+        archetype_block = f"Your archetype is: The {self._archetype.capitalize()}"
 
-        banned_block = (
-            "BANNED VOCABULARY (terms you must never use or understand naturally):\n"
-            + ", ".join(_BANNED_JARGON)
-            + "\n"
-            "If the interviewer uses any of these terms, respond as a real "
-            "non-technical person: ask what they mean in plain language."
+        # ── Stakeholder context from ProductVision ────────────────────────────
+        # Look up key_concern and type for the current role.
+        stakeholder_context = self._resolve_stakeholder_context(
+            state, active_persona
         )
 
+        # ── Topic nature from agenda source_field ─────────────────────────────
+        # Tells the persona *what kind of topic* is being discussed so they
+        # calibrate their answer style — without exposing elicitation_goal.
+        topic_block = self._resolve_topic_hint(state)
+
+        # ── Implicit requirements (knowledge gaps) ────────────────────────────
         implicit_block = ""
         if self._implicit_requirements:
             items = "\n".join(f"  • {r}" for r in self._implicit_requirements)
@@ -257,12 +299,19 @@ class EndUserAgent(BaseAgent):
             )
 
         parts = [
-            f"PERSONA: {self._persona}",
+            f"PERSONA: {active_persona}",
+            f"(You are playing the role of: {active_persona}. "
+            "Answer entirely from this stakeholder's perspective.)",
             "",
             archetype_block,
-            "",
-            banned_block,
         ]
+
+        if stakeholder_context:
+            parts += ["", stakeholder_context]
+
+        if topic_block:
+            parts += ["", topic_block]
+
         if implicit_block:
             parts += ["", implicit_block]
 
@@ -274,13 +323,97 @@ class EndUserAgent(BaseAgent):
             "INTERVIEWER'S QUESTION:",
             f"  {question}",
             "",
-            "Answer the question from your stakeholder perspective.",
+            f"Answer the question from the perspective of: {active_persona}.",
             "Stay in character. Use plain, everyday language — not technical terms.",
             "You may call search_knowledge once if you need domain context.",
             "Then call respond with your answer.",
         ]
 
         return "\n".join(parts)
+
+    # ── Stakeholder context resolution ─────────────────────────────────────
+
+    @staticmethod
+    def _resolve_stakeholder_context(
+        state: Dict[str, Any],
+        role_name: str,
+    ) -> str:
+        """Look up key_concern and type for the current stakeholder from
+        ProductVision target_audiences.  Returns a formatted block or "".
+
+        Uses reviewed_product_vision (post-HITL) if available, else falls back
+        to the draft product_vision.
+        """
+        # Prefer reviewed vision (post-HITL), fall back to draft
+        artifacts = state.get("artifacts") or {}
+        vision = (
+            artifacts.get("reviewed_product_vision")
+            or state.get("product_vision")
+            or {}
+        )
+        audiences = vision.get("target_audiences") or []
+        if not audiences:
+            return ""
+
+        # Find matching stakeholder entry by role name
+        match = None
+        for entry in audiences:
+            if entry.get("role", "").strip().lower() == role_name.strip().lower():
+                match = entry
+                break
+
+        if match is None:
+            return ""
+
+        key_concern    = match.get("key_concern", "")
+        stype          = match.get("type", "")
+        type_label     = _STAKEHOLDER_TYPE_LABELS.get(stype, "")
+
+        lines = ["YOUR STAKEHOLDER PROFILE:"]
+        if type_label:
+            lines.append(f"  Relationship: {type_label}")
+        if key_concern:
+            lines.append(f"  Your main concern: \"{key_concern}\"")
+            lines.append(
+                "  → This concern colours how you hear and answer every question."
+                "  When in doubt, steer your answer toward this worry."
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _resolve_topic_hint(state: Dict[str, Any]) -> str:
+        """Derive a concept-level topic hint from the current agenda item's
+        source_field.  Returns a formatted TOPIC NATURE block or "".
+
+        The hint tells the persona *what kind of topic* is being discussed
+        so it can calibrate answer style (e.g. express uncertainty for
+        assumptions, describe practical realities for constraints).
+        It NEVER exposes elicitation_goal, source_ref, or item_id.
+        """
+        raw_agenda = state.get("elicitation_agenda")
+        if not raw_agenda:
+            return ""
+
+        try:
+            # Lazy import to avoid circular dependency
+            from .interviewer import AgendaRuntime
+            runtime = (
+                AgendaRuntime(**raw_agenda)
+                if isinstance(raw_agenda, dict)
+                else raw_agenda
+            )
+            item = runtime.current_item()
+            if item is None:
+                return ""
+            source_field = getattr(item, "source_field", "")
+        except Exception:
+            return ""
+
+        hint = _TOPIC_HINTS.get(source_field, _TOPIC_HINT_FALLBACK)
+        return (
+            f"TOPIC NATURE: This question touches on {hint}\n"
+            "Use this to calibrate your answer — do not mention this hint directly."
+        )
 
     # ── LangGraph node entry point ─────────────────────────────────────────
 

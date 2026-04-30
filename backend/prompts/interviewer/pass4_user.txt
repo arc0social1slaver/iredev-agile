@@ -1,0 +1,60 @@
+Session ID: {session_id}
+Synthesised at: {synthesised_at}
+
+PROJECT DESCRIPTION:
+{project_description}
+
+{vision_context}
+{vision_block}
+
+DRAFT REQUIREMENTS ({total_count} items from Passes 1-3):
+{draft_json}
+
+AUDIT WORKFLOW — execute these steps IN ORDER:
+
+Step 0 — Read all requirements. Build a mental model of the full set.
+
+Step 0.5 — User Value Gate: for every FR with source="PD", check for echo of
+project description. Rewrite, downgrade, or merge.
+
+Step 0.75 — Type Correctness Audit: for every FR, apply the Deployment Test
+("Is this something the system does while running in production?") and the
+Objectivity Test ("Can a QA engineer test this without subjective judgment?").
+Reclassify failures to CON or NFR. This is a BATCH step — read ALL FRs before
+making any changes.
+
+Step 1 — Atomicity Audit: apply the Distinct Concern Test ("Could concept A be
+fully satisfied while concept B remains unsatisfied?"). If yes, split — regardless
+of syntactic connectors. This is a BATCH step.
+
+Step 2 — Status Audit: verify confirmed status requires both PD mapping AND
+stakeholder affirmation. Downgrade everything else to inferred.
+
+Step 3 — Vague Language Sweep: build a GLOBAL INVENTORY of every problematic
+word across ALL requirements using three decision tests:
+  - Desired-State Verb Test: does it describe an outcome, not a mechanism?
+  - Two-Engineer Test: could two QA engineers disagree on whether it's met?
+  - Referent Test: does the noun reference something undefined?
+Resolve each flagged item. This is a GLOBAL step — inventory first, then fix.
+
+Step 4 — OOS/CON Rationale Guard: verify every OOS and CON rationale is grounded
+in specific source material, not generic phrases.
+
+Step 5 — Semantic Duplicate Detection: build a TOPIC CLUSTER MAP grouping
+requirements by core subject regardless of type. For each cluster with multiple
+requirements, verify each adds unique value (different type, threshold, or
+stakeholder perspective). Merge duplicates.
+
+Step 5.5 — Subject-Action Test: for every remaining FR, verify the true subject
+is the running system, not a person or team. Ask: "Is the system the AGENT
+performing this action at runtime, or the OBJECT of an action performed by humans?"
+Reclassify to CON when the grammatical "The system SHALL..." masks a human process
+obligation.
+
+Step 6 — Final Assembly: assign sequential IDs, verify all fields populated.
+
+Steps 0.75, 3, and 5 require a GLOBAL VIEW of all requirements before making
+changes. Do not process requirements one at a time for these steps — build the
+full inventory first, then act.
+
+Assemble and return the final SoftwareRequirementsSpecification JSON.

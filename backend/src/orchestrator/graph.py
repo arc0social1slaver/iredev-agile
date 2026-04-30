@@ -139,7 +139,8 @@ ARTIFACT_SUMMARIES: Dict[str, str] = {
         "- Core problem statement (specific, measurable)\n"
         "- Value proposition (outcome-focused, not a feature list)\n"
         "- Major Epics that bound the system scope\n"
-        "- Hard constraints and key assumptions\n"
+        "- Project constraints, Non-functional requirements, and assumptions\n"
+        "- Evaluation and acceptance criteria (e.g., UI themes, testing)\n"
         "- Explicitly out-of-scope items\n\n"
         "**Your action:** Review the vision below. "
         "If it accurately represents your project, click **Accept** to proceed to the "
@@ -279,13 +280,35 @@ _ENDUSER_MAX_ATTEMPTS = 3
 def enduser_turn_fn(state: WorkflowState) -> Dict[str, Any]:
     """Run EndUserAgent, retrying if the agent exits without calling 'respond'.
 
+    Before each attempt, resolves current_stakeholder_role from the agenda
+    runtime so EndUserAgent always knows which persona to embody.
+
     EndUserAgent.respond sets should_return=True inside ITS OWN ReAct loop
     only.  It does NOT set interview_complete.  The edge from enduser_turn
     always returns to interviewer_turn — the enduser can never terminate the
     interview.
     """
+    # ── Resolve current stakeholder from agenda runtime ───────────────────────
+    # Priority: state["current_stakeholder_role"] (set by record_answer)
+    #           → item.current_stakeholder() (from agenda cursor)
+    #           → "" (fallback; EndUserAgent will use config persona)
+    resolved_role = (state.get("current_stakeholder_role") or "").strip()
+    if not resolved_role:
+        raw_agenda = state.get("elicitation_agenda")
+        if raw_agenda:
+            try:
+                from ..agent.interviewer import AgendaRuntime
+                runtime = AgendaRuntime(**raw_agenda) if isinstance(raw_agenda, dict) else raw_agenda
+                item    = runtime.current_item()
+                if item:
+                    resolved_role = item.current_stakeholder() or item.interviewed_stakeholder_role or ""
+            except Exception as exc:
+                logger.warning("enduser_turn_fn: failed to resolve stakeholder from agenda: %s", exc)
+
     for attempt in range(1, _ENDUSER_MAX_ATTEMPTS + 1):
         augmented_state = dict(state)
+        # Always inject the resolved role so EndUserAgent._build_task can read it
+        augmented_state["current_stakeholder_role"] = resolved_role
         if attempt > 1:
             augmented_state["_enduser_retry_hint"] = (
                 f"[Attempt {attempt}/{_ENDUSER_MAX_ATTEMPTS}] "
@@ -295,8 +318,8 @@ def enduser_turn_fn(state: WorkflowState) -> Dict[str, Any]:
 
         updates = _get_enduser().process(augmented_state)
         logger.debug(
-            "enduser_turn attempt %d/%d — updates: %s",
-            attempt, _ENDUSER_MAX_ATTEMPTS, list(updates.keys()),
+            "enduser_turn attempt %d/%d — role=%r — updates: %s",
+            attempt, _ENDUSER_MAX_ATTEMPTS, resolved_role, list(updates.keys()),
         )
 
         new_conversation = updates.get("conversation") or state.get("conversation") or []
@@ -493,6 +516,11 @@ def review_elicitation_agenda_turn_fn(state: WorkflowState) -> Dict[str, Any]:
             "reviewed_at":  datetime.now().isoformat(),
             "review_notes": feedback or None,
         }
+
+        _sync_artifacts_to_store(
+            state, {"artifacts": {"reviewed_elicitation_agenda": artifacts["reviewed_elicitation_agenda"]}}
+        )
+
         logger.info("[ReviewElicitationAgenda] APPROVED.")
         return {
             "artifacts":                  artifacts,
@@ -749,8 +777,9 @@ def _build_product_vision_review_payload(vision: Dict[str, Any]) -> Dict[str, An
     return {
         "core_problem":      vision.get("core_problem", ""),
         "value_proposition": vision.get("value_proposition", ""),
-        "core_workflows":    vision.get("core_workflows", []),
-        "hard_constraints":  vision.get("hard_constraints", []),
+        "evaluation_criteria":         vision.get("evaluation_criteria", []),
+        "non_functional_requirements": vision.get("non_functional_requirements", []),
+        "project_constraints":         vision.get("project_constraints", []),
         "out_of_scope":      vision.get("out_of_scope", []),
         "stakeholders": [
             {
@@ -806,7 +835,6 @@ def _build_requirement_list_review_payload(
         req_summaries.append({
             "req_id":      r.get("req_id"),
             "req_type":    rtype,
-            "epic":        r.get("epic"),
             "priority":    r.get("priority"),
             "status":      r.get("status"),
             "stakeholder": r.get("stakeholder"),

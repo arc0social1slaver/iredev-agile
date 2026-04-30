@@ -1,0 +1,54 @@
+Project: GameDay – Platform for Organising and Joining Local Gaming Events and Tournaments
+
+Description: The local gaming community — whether it is tabletop, card games, esports,
+or console tournaments at a LAN café — is active and growing, but it has no dedicated
+home online. Event organisers currently use Facebook Events, WhatsApp groups, or Discord
+servers that are hard to find if you are new to the community. Players who want to join
+a local tournament have no single place to look. We want a platform where anyone can
+create a local gaming event, set the format, take registrations, manage brackets, and
+communicate with participants — and where players can discover and join events in their
+city without needing to know the organiser personally.
+
+General Needs & Background
+Grassroots gaming communities are built on personal connections and word of mouth,
+which limits how much they can grow. New players want to find events but do not know
+where to look. Organisers want more participants but their reach is limited to existing
+followers. A dedicated platform, even a simple one, would help both sides. Tournament
+organisers need basic bracket management so they do not have to use spreadsheets during
+an event. Players want to see upcoming events near them, register with a few taps, and
+know what to bring and when to show up. Venue owners (LAN cafés, board game cafés)
+want to attract events to fill their space on slow days.
+
+Relevant Stakeholders
+Primary users: Gaming event organisers (individuals or gaming clubs), players looking for
+local tournaments or casual gaming sessions to join
+Secondary users: LAN café and board game café owners hosting events, gaming community
+managers, game publishers running regional promotions
+Project stakeholders: Project team, course lecturer, gaming community advisors
+Indirect stakeholders: Game retailers and distributors, esports organisations and sponsors,
+local youth recreation departments
+
+What We Want the Platform to Do
+- Let organisers create an event with: game title, format (tournament, casual, team-based),
+  date, time, location, max participants, entry fee (if any), and rules.
+- Allow players to discover events by city, game type, or date.
+- Support online registration and a waiting list if the event is full.
+- Provide a basic bracket generator for single elimination and round-robin formats.
+- Allow the organiser to post updates and announcements to all registered participants.
+- Let players build a simple profile showing their game preferences and event history.
+- Allow ratings and comments after an event so the community can identify good organisers.
+- Support both free and paid events, with the organiser managing payments externally.
+
+Practical Limits We Are Working With
+- Organisers range from experienced tournament directors to first-time community members
+  — the interface must be simple for both.
+- No in-app payment processing required at first — the focus is on discovery and registration.
+- Events can be indoors (LAN cafés, community halls) or online — both should be supported.
+- The platform should be free for community organisers — monetisation should not block access.
+- Must work well on mobile since most players check events on their phones.
+
+What Good Looks Like
+- A new player in a city can find a local gaming event within five minutes.
+- Organisers can run a 32-person tournament with brackets without using a spreadsheet.
+- Venues see an increase in bookings from community events.
+- The local gaming community grows because newcomers can actually find it.

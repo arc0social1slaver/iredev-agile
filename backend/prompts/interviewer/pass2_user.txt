@@ -1,0 +1,76 @@
+PROJECT DESCRIPTION:
+{project_description}
+
+{vision_context}
+{evaluation_criteria_block}
+
+FUNCTIONAL REQUIREMENTS ALREADY EXTRACTED IN PASS 1 ({pass1_count} items):
+{pass1_json}
+
+These are the functional requirements produced by Pass 1. Before classifying any
+NFR candidate, check it against this list. If the candidate describes the same
+system behaviour already captured here — the same action, the same actor, the same
+outcome — without adding a measurable quality threshold, it is a functional
+requirement that belongs in Pass 1, not an NFR. Write the FR-ID it overlaps with
+in your reasoning log and skip it.
+
+ELICITATION RECORD ({item_count} grouped items):
+{elicitation_json}
+
+RECORD STRUCTURE — same as Pass 1. Each item has a "responses" array (one entry
+per stakeholder role).
+
+For NFR and CON extraction, analyze the multi-stakeholder responses yourself:
+  • Conflicting responses on quality attributes frequently reveal NFR thresholds
+    or produce CON items with a conflict_note naming both positions.
+  • Distinct responses may reveal NFR concerns for a role that the primary user
+    did not raise. Each distinct quality concern produces its own NFR with the
+    correct stakeholder field.
+
+Processing order for every item:
+  1. Read all responses in full. Analyze whether responses agree, raise distinct
+     quality concerns, or conflict on the same quality attribute.
+  2. For each, check: does this response signal a quality concern (how well, how
+     fast, how reliably) rather than a behaviour (what)?
+  3. Apply WHAT vs HOW WELL test per role — do NOT merge a quality concern from
+     one role with a behaviour concern from another.
+  4. For conflict responses on quality: resolve or flag per conflict rule above.
+
+Begin by working through your full analysis in the reasoning log before writing any
+requirement. For every NFR candidate you consider, record: the quality dimension,
+which role(s) expressed it, whether it describes what the system must do (skip) or
+how well it performs a behaviour Pass 1 already captures (proceed), and the specific
+threshold grounded in project context.
+
+THRESHOLD PROVENANCE — apply to every NFR before writing it:
+For every NFR in your output, verify the threshold is traceable. Write in
+reasoning_log: "Threshold source: [exact quote or reference]". The three valid
+sources are: (1) direct stakeholder quote from the answer field, (2) project
+description text verbatim, (3) Vision evaluation criteria verbatim. If no source
+exists, reclassify to CON or append "[Assumed Threshold]" and set status to inferred.
+
+NAMED STANDARD GATE — apply to every statement before writing it:
+No named standard, framework, or specification may appear in any statement unless
+it appears VERBATIM in the PROJECT DESCRIPTION or ELICITATION RECORD above. If the
+source material describes a concern informally, use that same informal language —
+do not import a precise standard name from general knowledge.
+
+Check every follow-up block within each response for negative constraint language.
+Any phrase expressing that the system should not do something produces a CON item
+using SHALL NOT. Skipping a negative statement is an extraction failure.
+
+For each quality dimension, declare first in your reasoning log whether you found
+direct evidence — a sentence in any stakeholder's answer — that signals a quality
+concern in that area. If no direct evidence exists across ANY response, write "no
+evidence" for that dimension and move on.
+
+Confirm that every CON and OOS rationale paraphrases a specific stakeholder
+statement rather than offering a generic justification.
+
+MANDATORY FINAL GATE — run AFTER all items are drafted, BEFORE writing output:
+Gate A: Compare every NFR-CON pair for internal duplication. Write comparison in
+reasoning_log. Gate B: Verify every NFR has a threshold provenance entry. Fix any
+missing entries before writing output.
+
+Extract all NFR, CON, and OOS requirements. Return a JSON object with
+"reasoning_log" and "requirements" fields.

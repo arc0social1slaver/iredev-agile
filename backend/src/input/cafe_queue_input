@@ -1,0 +1,49 @@
+Project: CaféQueue – Booking and Queue Management App for Small Cafés and Restaurants
+
+Description: Running a small café or restaurant means dealing with walk-in customers,
+phone reservations, and peak-hour chaos all at once. We often lose track of who is
+waiting, forget reservations, or turn away customers because we cannot estimate wait
+times properly. We need a simple app that lets customers book a table or join a queue
+from their phone, and helps our staff see who is coming, when, and how many seats we
+need. It should be something our cashier or floor staff can use without any special
+training, and something customers can access without downloading anything complicated.
+
+General Needs & Background
+Small café and restaurant owners often manage reservations through paper notebooks or
+WhatsApp messages, which is unreliable and hard to track during busy hours. Customers
+get frustrated waiting without knowing how long it will take. Staff waste time answering
+the phone to take or confirm bookings. We want a system that reduces no-shows, keeps
+the queue visible to everyone on shift, and lets customers feel informed and respected
+even when it is busy. We do not want something expensive or complicated to set up —
+just something that works on a tablet behind the counter and on customers' phones.
+
+Relevant Stakeholders
+Primary users: Café and restaurant owners, floor staff and cashiers, customers making
+reservations or joining queues
+Secondary users: Kitchen staff (to know incoming volume), delivery staff, café managers
+reviewing daily booking history
+Project stakeholders: Project team, course lecturer, small business advisors
+Indirect stakeholders: Local business associations, food and beverage industry regulators,
+payment and POS system providers
+
+What We Want the App to Do
+- Let customers book a table online or scan a QR code at the door to join the walk-in queue.
+- Show staff a live view of the current queue and upcoming reservations on one screen.
+- Send a simple notification to the customer when their table is nearly ready.
+- Allow staff to mark a table as occupied, available, or reserved with one tap.
+- Show an estimated wait time based on how many people are ahead.
+- Let the owner set the number of tables and maximum party size.
+- Keep a record of daily bookings so the owner can see busy hours.
+
+Practical Limits We Are Working With
+- Staff are not tech-savvy — the interface must be extremely simple.
+- We cannot afford a subscription fee — the solution should be low cost or free to run.
+- Most customers will use their own phones; we do not want them to install an app.
+- The system should still work if the internet is slow (common in older shophouses).
+- Must work on a basic Android tablet mounted near the register.
+
+Evaluation Criteria
+- Staff can manage the queue without calling us every five minutes.
+- Customers stop asking "how long is the wait?" because the screen tells them.
+- No-shows decrease because customers get a reminder.
+- Booking history helps us plan staffing for weekends and holidays.

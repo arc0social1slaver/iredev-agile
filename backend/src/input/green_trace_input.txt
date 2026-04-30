@@ -1,0 +1,58 @@
+Project: GreenTrace – Personal Carbon Footprint Tracking App for Daily Activities
+
+Description: People generally want to live more sustainably, but they do not know where
+to start because they cannot see the impact of their daily choices. Flying once versus
+taking the train, eating meat every day versus a few times a week, driving versus cycling
+— these choices have very different carbon costs, but nobody carries that knowledge in
+their head. As a sustainability educator, I see a lot of guilt but not a lot of informed
+action. We want a simple app that helps everyday people log their daily activities —
+transport, food, energy use, purchases — and see their estimated carbon footprint in
+a way that is meaningful and motivating, not guilt-inducing. The goal is awareness and
+gradual improvement, not perfection.
+
+General Needs & Background
+Carbon footprint calculators already exist, but most are one-time tools — you fill in
+a survey, get a number, and forget about it. A daily tracking app would create habits
+around awareness, the same way calorie-counting apps changed how people think about food.
+The key challenge is making data entry easy enough that users actually do it — complex
+emission factor tables and scientific jargon will drive people away. The app should use
+simple categories (how did you get to work today? what did you eat for lunch?), provide
+rough but honest estimates, and show progress over weeks and months. A community or
+challenge feature would help users feel part of a broader movement rather than alone.
+
+Relevant Stakeholders
+Primary users: Environmentally conscious individuals wanting to understand and reduce
+their personal carbon footprint, students learning about sustainability
+Secondary users: Sustainability educators and programme coordinators, corporate HR teams
+running employee green challenges, community environmental groups
+Project stakeholders: Project team, course lecturer, environmental science advisors
+Indirect stakeholders: Government environmental agencies, carbon offset providers,
+sustainable product and service companies, climate NGOs
+
+What We Want the App to Do
+- Let users log daily activities across key categories: transport (car, bus, flight, cycling),
+  food (meat, vegetarian, vegan, food waste), home energy (electricity, heating), and
+  shopping (new clothes, electronics, etc.).
+- Estimate the carbon cost of each activity in kilograms of CO₂ using standard, cited
+  reference values.
+- Show a daily, weekly, and monthly carbon total with a comparison to the average person
+  in their country.
+- Highlight the one or two biggest contributors to the user's footprint each week.
+- Suggest one small, practical action each week to reduce footprint (e.g., swap one meal).
+- Allow users to join or create a group challenge (e.g., "our office tries to reduce
+  footprint by 10% this month").
+- Show progress over time as a positive trend — rewarding reduction, not punishing high days.
+
+Practical Limits We Are Working With
+- Emission estimates do not need to be scientifically exact — they need to be honest,
+  consistent, and cited so users can trust them.
+- The daily log should take under two minutes to complete.
+- The tone must be encouraging, not guilt-driven or preachy.
+- Must be free to use — sustainability tools should not be behind a paywall.
+- Should work offline and sync when connected — users log at the moment of activity.
+
+What Good Looks Like
+- After one month, users clearly understand which habits drive most of their footprint.
+- Users make at least one lasting behaviour change they can directly attribute to the app.
+- Group challenges create social motivation in workplaces and community groups.
+- The app feels empowering, not overwhelming or judgmental.

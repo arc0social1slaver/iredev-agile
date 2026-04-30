@@ -1,0 +1,75 @@
+PROJECT DESCRIPTION:
+{project_description}
+
+{vision_context}
+ELICITATION RECORD ({item_count} grouped items):
+{elicitation_json}
+
+RECORD STRUCTURE — read this before processing any item.
+
+Each item represents ONE elicitation goal asked to ONE OR MORE stakeholder roles.
+The "responses" array holds each role's answer — one entry per stakeholder.
+
+For multi-response items, YOU must analyze the responses to determine whether
+roles agree, raise distinct perspectives, or conflict. Record your analysis in
+reasoning_log before generating any requirements.
+
+Processing order for EVERY item:
+  1. Read all responses in full.
+  2. Analyze agreement, distinct perspectives, or conflicts across responses.
+  3. Apply the MANDATORY PRE-EXTRACTION BEHAVIOUR CHECK (Q1/Q2/Q3) from the system
+     prompt — write your answers in reasoning_log BEFORE touching the requirements list.
+     For Q1, apply the VERB CONCRETENESS GATE: test whether your verb describes a
+     mechanism (what the system does) or an outcome (what the system achieves). If it
+     describes an outcome, rewrite with a mechanism verb. Log both attempts.
+  4. Apply MULTI-STAKEHOLDER SYNTHESIS RULES from the system prompt.
+  5. Only then write FRs into the requirements list.
+
+The source_field, source_ref, elicitation_goal, and priority are reference
+information only. They do NOT grant automatic FR generation rights. The
+MANDATORY PRE-EXTRACTION BEHAVIOUR CHECK gates every item regardless of source_field.
+
+Work through the CHAIN OF THOUGHT and MANDATORY PRE-EXTRACTION BEHAVIOUR CHECK
+(Q1/Q2/Q3) from the system prompt in your reasoning_log for every item before
+writing any FR.
+
+STATUS RULES for assumption items:
+  Set status="confirmed" when the stakeholder's own words in the answer field
+  explicitly confirm or address the assumption statement in source_ref.
+  Set status="inferred" in all other cases — including when the answer is
+  consistent with the assumption but does not address it directly.
+  Derive status from the answer text of the item alone — do not reference
+  any external assumptions list.
+
+For conflict items: resolve the conflict in your reasoning_log BEFORE writing
+any FR. Name the nature of the conflict — what specifically do the stakeholders
+disagree about? Apply the resolution hierarchy (institutional constraint > policy >
+operational need > individual preference), and record your resolution. Never
+silently drop a conflicting stakeholder's concern.
+
+For items whose source_field is "initial_requirement": run Q1 first. Many
+initial_requirement items describe qualities or deliverable properties rather than
+system behaviours — these fail Q1 immediately. Only when Q1 produces a specific
+"The system must [verb] [object] when [trigger]" sentence do you proceed to
+extract actor-trigger-outcome combinations.
+
+MANDATORY FINAL GATE — run this AFTER drafting all FRs, BEFORE writing output.
+
+Gate A — PAIRWISE DUPLICATE DETECTION:
+Compare every pair of FRs with the same stakeholder. Two FRs are duplicates when
+they serve the same stakeholder, respond to the same trigger, and produce the same
+category of output — even if the wording differs. Write a comparison entry in
+reasoning_log for each pair examined. Merge duplicates into one stronger FR.
+
+Gate B — SECONDARY STAKEHOLDER COVERAGE CHECK:
+For each secondary_user and decision_maker role in KNOWN STAKEHOLDERS, check
+whether any FR addresses their key_concern. Write your verdict per role in
+reasoning_log. If no FR exists, scan all items one more time for that role's
+perspective. If the concern cannot produce a system behaviour (fails Q1/Q2),
+write "no system behaviour possible" — zero coverage is valid when confirmed.
+
+The output MUST NOT contain two FRs with the same stakeholder, same trigger, and
+same output category.
+
+Then extract all Functional Requirements. Return a JSON object with "reasoning_log"
+and "requirements" fields.
